@@ -450,8 +450,12 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 		if (buffer) {
 			char *ptr = buffer + pos;
 
+			/* The caller sized the buffer: stop when the next name does not fit */
+			if (pos + len + 1 > buflen)
+				break;
+
 			/* Copy filename */
-			strncpy(ptr, name, len);
+			memcpy(ptr, name, len);
 			ptr[len] = 0;
 
 			/* Update position */
@@ -462,10 +466,10 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 		cnt++;
 	}
 
-	/* Copy entries */
-	if (outbuf && buffer) {
-		/* Copy buffer */
-		memcpy(outbuf, buffer, buflen);
+	if (buffer) {
+		/* Copy the names, not the heap bytes after them */
+		if (outbuf)
+			memcpy(outbuf, buffer, pos);
 
 		/* Free buffer */
 		Mem_Free(buffer);

@@ -18,27 +18,44 @@
 bool sdio_Startup(void) { return true; }
 bool usbstorage_Init(void) { return true; }
 
-/* Mem_Alloc: a bump allocator with a live-block count, for leak checks. */
+/*
+ * Mem_Alloc: a bump allocator. Each block is followed by a guard zone that
+ * Mem_Free checks (a write past the block counts as a corruption), and live
+ * blocks are counted (for leak checks). The arena has no ASan redzones.
+ */
+#define GUARD 64
 static uint8_t arena[1 << 20] __attribute__((aligned(32)));
 static size_t arena_used;
-static int arena_live;
+static int arena_live, arena_corrupt;
 
 void *Mem_Alloc(u32 size)
 {
-	size = (size + 31) & ~31u;
-	if (arena_used + size > sizeof(arena))
+	u32 body = (size + 31) & ~31u;
+	if (arena_used + 32 + body + GUARD > sizeof(arena))
 		return NULL;
-	void *p = arena + arena_used;
-	arena_used += size;
+	uint8_t *p = arena + arena_used + 32;   /* header: the block's size */
+	memcpy(p - 32, &size, sizeof(size));
+	arena_used += 32 + body + GUARD;
 	arena_live++;
-	memset(p, 0xA5, size);          /* not zeroed, as on the Wii */
+	memset(p, 0xA5, body);                  /* not zeroed, as on the Wii */
+	memset(p + size, 0xEE, body - size + GUARD);
 	return p;
 }
 
 void Mem_Free(void *ptr)
 {
-	if (ptr)
-		arena_live--;
+	if (!ptr)
+		return;
+	uint8_t *p = ptr;
+	u32 size;
+	memcpy(&size, p - 32, sizeof(size));
+	u32 body = (size + 31) & ~31u;
+	for (u32 i = size; i < body + GUARD; i++)
+		if (p[i] != 0xEE) {
+			arena_corrupt++;
+			break;
+		}
+	arena_live--;
 }
 
 #include "fat_tools.c"
@@ -49,11 +66,13 @@ void fatw_reset(void)
 {
 	arena_used = 0;
 	arena_live = 0;
+	arena_corrupt = 0;
 	f_mount(0, NULL);
 	f_mount(1, NULL);
 }
 
 int fatw_live_blocks(void) { return arena_live; }
+int fatw_corruptions(void) { return arena_corrupt; }
 int fatw_mount(int dev) { return FAT_Mount((u8) dev, -1); }
 int fatw_unmount(int dev) { return FAT_Unmount((u8) dev); }
 int fatw_create(const char *path) { return FAT_CreateFile(path); }
@@ -67,7 +86,7 @@ int fatw_readdir(const char *path, char *out, unsigned int buflen, unsigned int 
 		 unsigned int entries)
 {
 	u32 n = 0;
-	s32 r = FAT_ReadDir(path, out, buflen, &n, entries, 0);
+	s32 r = FAT_ReadDir(path, out, buflen, &n, entries, 0);     /* out may be NULL */
 	*outlen = n;
 	return r;
 }
