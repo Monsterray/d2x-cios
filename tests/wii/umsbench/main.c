@@ -7,10 +7,14 @@
  * EHCI module's /dev/usb2, and times reads of 1 and 64 sectors in the middle
  * of the drive. With --write-back it also times writes that put back the
  * bytes it just read, then reads them again to check nothing changed: the
- * drive's data stays as it was. Output goes to the PC through hbc_netlog;
- * the last line starts with "RESULT" for scripts.
+ * drive's data stays as it was. Output goes to the PC through hbc_netlog
+ * until the IOS reload; the whole report is also saved to sd:/umsbench.txt
+ * (tests/wii/umsbench.py fetches it). Its last line starts with "RESULT".
  */
 #include <gccore.h>
+#include <fat.h>
+#include <sdcard/wiisd_io.h>
+#include <stdarg.h>
 #include <ogc/lwp_watchdog.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +33,36 @@
 
 static char dev_usb2[] ATTRIBUTE_ALIGN(32) = "/dev/usb2";
 static s32 heap = -1, fd = -1;
+static char report[16384];
+static size_t report_len;
+
+/* printf, and keep a copy for sd:/umsbench.txt */
+static void __attribute__((format(printf, 1, 2))) say(const char *fmt, ...)
+{
+	char line[512];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(line, sizeof(line), fmt, ap);
+	va_end(ap);
+	fputs(line, stdout);
+	if (n > 0 && (size_t) n < sizeof(line) && report_len + n < sizeof(report)) {
+		memcpy(report + report_len, line, n);
+		report_len += n;
+	}
+}
+
+/* The SD card only: the USB drive under test stays untouched. */
+static void save_report(void)
+{
+	if (!fatMountSimple("sd", &__io_wiisd))
+		return;
+	FILE *f = fopen("sd:/umsbench.txt", "wb");
+	if (f) {
+		fwrite(report, 1, report_len, f);
+		fclose(f);
+	}
+	fatUnmount("sd:");
+}
 
 struct timing {
 	u32 n, failed;
@@ -68,7 +102,7 @@ static u16 slot_version(u32 slot)
 	return ((tmd *) SIGNATURE_PAYLOAD((signed_blob *) tmd_buf))->title_version;
 }
 
-int main(int argc, char **argv)
+static int bench(int argc, char **argv)
 {
 	u32 ios = 249, sector_size = 0, sectors, lba;
 	bool write_back = false;
@@ -86,17 +120,19 @@ int main(int argc, char **argv)
 	}
 
 	hbc_netlog_init();
-	printf("umsbench: running on IOS%d v%d; slot %u holds v%u\n",
+	say("umsbench: running on IOS%d v%d; slot %u holds v%u\n",
 	       IOS_GetVersion(), IOS_GetRevision(), ios, slot_version(ios));
 
-	/* Reloading IOS takes the network down: close the log first. */
+	/* Reloading IOS takes the network down: close the log, and tell libogc
+	 * its network is gone, so a new hbc_netlog_init() starts it again. */
 	hbc_netlog_close();
+	net_deinit();
 	s32 ret = IOS_ReloadIOS(ios);
 	hbc_netlog_init();
-	printf("umsbench: IOS_ReloadIOS(%u) = %d; now IOS%d v%d\n", ios, ret,
+	say("umsbench: IOS_ReloadIOS(%u) = %d; now IOS%d v%d\n", ios, ret,
 	       IOS_GetVersion(), IOS_GetRevision());
 	if (ret < 0 || IOS_GetVersion() != (s32) ios) {
-		printf("RESULT ios=%u error=reload\n", ios);
+		say("RESULT ios=%u error=reload\n", ios);
 		return 1;
 	}
 
@@ -104,7 +140,7 @@ int main(int argc, char **argv)
 	heap = iosCreateHeap(2 * BIG * 512 + 4096);
 	fd = IOS_Open(dev_usb2, 0);
 	if (heap < 0 || fd < 0) {
-		printf("RESULT ios=%u error=open heap=%d fd=%d\n", ios, heap, fd);
+		say("RESULT ios=%u error=open heap=%d fd=%d\n", ios, heap, fd);
 		return 1;
 	}
 	IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", 0);
@@ -112,10 +148,10 @@ int main(int argc, char **argv)
 	ret = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_INIT, ":");
 	u32 init_ms = ticks_to_millisecs(diff_ticks(t0, gettime()));
 	sectors = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_GET_CAPACITY, ":i", &sector_size);
-	printf("umsbench: UMS_INIT = %d in %u ms; %u sectors of %u bytes\n", ret, init_ms,
+	say("umsbench: UMS_INIT = %d in %u ms; %u sectors of %u bytes\n", ret, init_ms,
 	       sectors, sector_size);
 	if ((s32) sectors <= 0 || (sector_size != 512 && sector_size != 4096)) {
-		printf("RESULT ios=%u error=nodrive init=%d\n", ios, ret);
+		say("RESULT ios=%u error=nodrive init=%d\n", ios, ret);
 		IOS_Close(fd);
 		return 1;
 	}
@@ -125,7 +161,7 @@ int main(int argc, char **argv)
 	u8 *buf = iosAlloc(heap, big * sector_size);
 	u8 *orig = iosAlloc(heap, big * sector_size);
 	if (!buf || !orig) {
-		printf("RESULT ios=%u error=nomem\n", ios);
+		say("RESULT ios=%u error=nomem\n", ios);
 		IOS_Close(fd);
 		return 1;
 	}
@@ -139,15 +175,15 @@ int main(int argc, char **argv)
 		s64 s = gettime();
 		add(&r64, s, rw(USB_IOCTL_UMS_READ_SECTORS, lba, big, buf, big * sector_size));
 	}
-	printf("umsbench: read 1 sector: avg %u us, max %llu us, %u failed\n", avg(&r1),
+	say("umsbench: read 1 sector: avg %u us, max %llu us, %u failed\n", avg(&r1),
 	       r1.max_us, r1.failed);
-	printf("umsbench: read %u sectors: avg %u us, max %llu us, %u failed\n", big, avg(&r64),
+	say("umsbench: read %u sectors: avg %u us, max %llu us, %u failed\n", big, avg(&r64),
 	       r64.max_us, r64.failed);
 
 	if (write_back) {
 		/* Put back exactly what is there: read, write the same bytes. */
 		if (rw(USB_IOCTL_UMS_READ_SECTORS, lba, big, orig, big * sector_size) != 0) {
-			printf("RESULT ios=%u error=readorig\n", ios);
+			say("RESULT ios=%u error=readorig\n", ios);
 			IOS_Close(fd);
 			return 1;
 		}
@@ -155,7 +191,7 @@ int main(int argc, char **argv)
 			s64 s = gettime();
 			add(&w1, s, rw(USB_IOCTL_UMS_WRITE_SECTORS, lba + (i % big), 1,
 				       orig + (i % big) * sector_size, sector_size));
-			printf("umsbench: write 1 sector #%d: %llu us\n", i,
+			say("umsbench: write 1 sector #%d: %llu us\n", i,
 			       ticks_to_microsecs(diff_ticks(s, gettime())));
 		}
 		for (int i = 0; i < (writes < 5 ? writes : 5); i++) {
@@ -165,17 +201,24 @@ int main(int argc, char **argv)
 		if (rw(USB_IOCTL_UMS_READ_SECTORS, lba, big, buf, big * sector_size) != 0 ||
 		    memcmp(buf, orig, big * sector_size) != 0)
 			changed = 1;
-		printf("umsbench: write 1 sector: avg %u us, max %llu us, %u failed\n", avg(&w1),
+		say("umsbench: write 1 sector: avg %u us, max %llu us, %u failed\n", avg(&w1),
 		       w1.max_us, w1.failed);
-		printf("umsbench: write %u sectors: avg %u us, max %llu us, %u failed\n", big,
+		say("umsbench: write %u sectors: avg %u us, max %llu us, %u failed\n", big,
 		       avg(&w64), w64.max_us, w64.failed);
-		printf("umsbench: data after write-back %s\n", changed ? "DIFFERS" : "unchanged");
+		say("umsbench: data after write-back %s\n", changed ? "DIFFERS" : "unchanged");
 	}
 
 	IOS_Close(fd);
-	printf("RESULT ios=%u rev=%d init_ms=%u r1_us=%u r1_max=%llu r64_us=%u w1_us=%u "
+	say("RESULT ios=%u rev=%d init_ms=%u r1_us=%u r1_max=%llu r64_us=%u w1_us=%u "
 	       "w1_max=%llu w64_us=%u failed=%u changed=%u\n", ios, IOS_GetRevision(), init_ms,
 	       avg(&r1), r1.max_us, avg(&r64), avg(&w1), w1.max_us, avg(&w64),
 	       r1.failed + r64.failed + w1.failed + w64.failed, changed);
 	return 0;
+}
+
+int main(int argc, char **argv)
+{
+	int rc = bench(argc, argv);
+	save_report();
+	return rc;
 }

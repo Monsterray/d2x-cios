@@ -21,7 +21,7 @@ umsbench.dol: umsbench.elf
 	$(ELF2DOL) $< $@
 
 umsbench.elf: main.c hbc_netlog.h
-	$(CC) $(CFLAGS) main.c $(LDFLAGS) -logc -o $@
+	$(CC) $(CFLAGS) main.c $(LDFLAGS) -lfat -logc -o $@
 
 clean:
 	rm -f umsbench.elf umsbench.dol
