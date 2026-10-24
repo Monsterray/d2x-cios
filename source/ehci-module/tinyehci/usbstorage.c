@@ -370,6 +370,7 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 	
 	
 
+    // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
           retval=__usbstorage_reset(dev,retries < USBSTORAGE_CYCLE_RETRIES);
 	
@@ -379,70 +380,55 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 	buffer=buffer2;
 	len=len2;
 
-		if(write)
+		retval = __send_cbw(dev, lun, len, write ? CBW_OUT : CBW_IN, cb, cbLen);
+		if(retval < 0)
+			continue;//reset+retry
+
+		// Data phase. tinyehci reports a STALL as a short transfer, and a
+		// device may end a read early with a short packet. Either way the
+		// data phase is over and the CSW says what happened (BOT 6.7.2,
+		// 6.7.3). Only a transfer error needs a reset recovery.
+		while(len > 0)
 		{
-
-			retval = __send_cbw(dev, lun, len, CBW_OUT, cb, cbLen);
+			thisLen=len;
+			retval = __USB_BlkMsgTimeout(dev, write ? dev->ep_out : dev->ep_in, thisLen, buffer);
 			if(retval < 0)
-				continue;//reset+retry
-			while(len > 0)
+				break;
+
+			len -= retval;
+			buffer += retval;
+
+			if(retval != thisLen)
 			{
-                thisLen=len;
-				retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
-           
-				if(retval==-ENODEV || retval==-ETIMEDOUT) break;
-
-				if(retval < 0)
-					continue;//reset+retry
-
-				if(retval != thisLen && len > 0)
-				{
-					retval = USBSTORAGE_EDATARESIDUE;
-					continue;//reset+retry
-				}
-				len -= retval;
-				buffer += retval;
+				// a short bulk-out transfer: the device halted the endpoint
+				if(write)
+					USB_ClearHalt(dev->usb_fd, dev->ep_out);
+				break;
 			}
-
-			if(retval < 0)
-				continue;
 		}
-		else
-		{
-			retval = __send_cbw(dev, lun, len, CBW_IN, cb, cbLen);
 
-			if(retval < 0)
-				continue; //reset+retry
-			while(len > 0)
-			{
-                thisLen=len;
-				
-				retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
-				
-				if(retval==-ENODEV || retval==-ETIMEDOUT) break;
-				
-				if(retval < 0)
-					continue; //reset+retry
-                                //hexdump(buffer,retval);
-               
-				len -= retval;
-				buffer += retval;
-
-				if(retval != thisLen)
-                                {
-                                        retval = -1;
-                                        continue; //reset+retry
-                                }
-			}
-
-			if(retval < 0)
-				continue;
-		}
+		if(retval < 0)
+			continue;//reset+retry
 
 		retval = __read_csw(dev, &status, &dataResidue);
 
+		if(retval == USBSTORAGE_ESHORTREAD)
+		{
+			// The CSW read STALLed: clear the halt and read the CSW once
+			// more (BOT 5.3.3 and its figure 2)
+			USB_ClearHalt(dev->usb_fd, dev->ep_in);
+			retval = __read_csw(dev, &status, &dataResidue);
+		}
+
 		if(retval < 0)
+			continue;//reset+retry
+
+		// Phase error: the device needs a reset recovery (BOT 5.3.3.1)
+		if(status == 2)
+		{
+			retval = USBSTORAGE_ESTATUS;
 			continue;
+		}
 
 		retval = USBSTORAGE_OK;
 	} while(retval < 0 && retries > 0);
@@ -1012,6 +998,24 @@ s32 USBStorage_ReadCapacity(usbstorage_handle *dev, u8 lun, u32 *sector_size, u3
 
 
 
+// REQUEST SENSE after a failed command: it also clears the condition on
+// devices that keep reporting it until the sense data is read.
+static s32 __usbstorage_sense(usbstorage_handle *dev, u8 lun)
+{
+	s32 retval;
+	u8 cmd[] = {SCSI_REQUEST_SENSE, lun << 5, 0, 0, SCSI_SENSE_REPLY_SIZE, 0};
+	u8 *sense = USB_Alloc(SCSI_SENSE_REPLY_SIZE);
+
+	if(!sense)
+		return -ENOMEM;
+	memset(sense, 0, SCSI_SENSE_REPLY_SIZE);
+	retval = __cycle(dev, lun, sense, SCSI_SENSE_REPLY_SIZE, cmd, sizeof(cmd), 0, NULL, NULL);
+	if(retval >= 0)
+		retval = sense[2] & 0x0F;
+	USB_Free(sense);
+	return retval;
+}
+
 static s32 __USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u8 *buffer)
 {
 	u8 status = 0;
@@ -1032,8 +1036,12 @@ static s32 __USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_s
 		return -EINVAL;
     
 	retval = __cycle(dev, lun, buffer, ((u32) n_sectors) * dev->sector_size[lun], cmd, sizeof(cmd), 0, &status, NULL);
-	if(retval > 0 && status != 0)
+	// CSW status 1, command failed (__cycle() returns 0 on success)
+	if(retval >= 0 && status != 0)
+	{
+		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
+	}
 	return retval;
 }
 
@@ -1056,8 +1064,12 @@ static s32 __USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_
 	if(lun >= dev->max_lun || dev->sector_size[lun] == 0)
 		return -EINVAL;
 	retval = __cycle(dev, lun, (u8 *)buffer, ((u32) n_sectors ) * dev->sector_size[lun], cmd, sizeof(cmd), 1, &status, NULL);
-	if(retval > 0 && status != 0)
+	// CSW status 1, command failed (__cycle() returns 0 on success)
+	if(retval >= 0 && status != 0)
+	{
+		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
+	}
 	return retval;
 }
 
@@ -1365,97 +1377,56 @@ int unplug_procedure(void)
 	return retval;
 }
 
-s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer)
-{
-   s32 retval=0;
-   int retry;
-   if(__mounted != 1)
-       return false;
-   
-   for(retry=0;retry<16;retry++)
-	{
-	 if(retry>12) retry=12; // infinite loop
-	//ehci_usleep(100);
-	 if(!unplug_procedure())
-		{
-		 retval=0;
-		}
-	
-		if(retval == USBSTORAGE_ETIMEDOUT && retry>0)
-		   {
-		   unplug_device=1;
-		   /*retval=__usbstorage_reset(&__usbfd,1);
-		   if(retval>=0) retval=-666;
-		   ehci_msleep(10);*/
-		   }
-		 if(unplug_device!=0 ) continue;
-		 //if(retval==-ENODEV) return 0;
-		 usb_timeout=1000*1000; // 4 seconds to wait
-	    if(retval >= 0)
-		   retval = USBStorage_Read(&__usbfd, __lun, sector, numSectors, buffer);
-		usb_timeout=1000*1000;
-		if(unplug_device!=0 ) continue;
-		 //if(retval==-ENODEV) return 0;
-		if(retval>=0) break;
-	}
+// How many times a read or write is tried while the device answers. A device
+// that has gone away is still waited for without a limit, as before, so a
+// game can survive the drive being plugged in again.
+#define USBSTORAGE_SECTOR_TRIES	4
 
-  /* if(retval == USBSTORAGE_ETIMEDOUT)
-   {
-       __mounted = 0;
-       USBStorage_Close(&__usbfd);
-   }*/
-   if(retval < 0)
-       return false;
-   return true;
+static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buffer)
+{
+	s32 retval;
+	int tries=0;
+
+	if(__mounted != 1)
+		return false;
+
+	for(;;)
+	{
+		// The device went away: unplug_procedure() resets the port and
+		// sets it up again once it answers.
+		if(unplug_device!=0)
+		{
+			unplug_procedure();
+			continue;
+		}
+
+		usb_timeout=1000*1000; // 4 seconds to wait
+		if(write)
+			retval = USBStorage_Write(&__usbfd, __lun, sector, numSectors, buffer);
+		else
+			retval = USBStorage_Read(&__usbfd, __lun, sector, numSectors, buffer);
+		usb_timeout=1000*1000;
+
+		if(retval >= 0)
+			return true;
+
+		// a timeout is handled as an unplug, as before
+		if(retval == USBSTORAGE_ETIMEDOUT)
+			unplug_device=1;
+
+		// The device answers but the command fails (a write-protected or
+		// failing drive): give up, so the caller sees an error.
+		if(++tries >= USBSTORAGE_SECTOR_TRIES)
+			return false;
+	}
 }
 
+s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer)
+{
+	return __USBStorage_Sectors(0, sector, numSectors, buffer);
+}
 
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer)
 {
-   s32 retval=0;
-   int retry;
-
-   if(__mounted != 1)
-       return false;
-
-    for(retry=0;retry<16;retry++)
-	{
-	 if(retry>12) retry=12; // infinite loop
-	
-	//ehci_usleep(100);
-
-	  if(!unplug_procedure())
-		{
-		 retval=0;
-		}
-
-		if(retval == USBSTORAGE_ETIMEDOUT && retry>0)
-		   {
-		   unplug_device=1;
-		   //retval=__usbstorage_reset(&__usbfd,1);
-		   //if(retval>=0) retval=-666;
-		   }
-		  if(unplug_device!=0 ) continue;
-		 usb_timeout=1000*1000; // 4 seconds to wait
-	    if(retval >=0)
-		   retval = USBStorage_Write(&__usbfd, __lun, sector, numSectors, buffer);
-		usb_timeout=1000*1000;
-		if(unplug_device!=0 ) continue;
-		if(retval>=0) break;
-	}
-
-
-  /* retval = USBStorage_Write(&__usbfd, __lun, sector, numSectors, buffer);
-   if(retval == USBSTORAGE_ETIMEDOUT)
-   {
-       __mounted = 0;
-       USBStorage_Close(&__usbfd);
-   }
-   */
-
-
-   if(retval < 0)
-       return false;
-   return true;
+	return __USBStorage_Sectors(1, sector, numSectors, (void *)buffer);
 }
-

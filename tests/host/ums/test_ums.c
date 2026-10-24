@@ -85,53 +85,57 @@ static void test_write_after_one_timeout(void)
 }
 
 /*
- * The drive answers a WRITE with CSW status 1 (command failed). The write
- * must be reported as failed, or retried until it succeeds; it must not be
- * reported as done while the data is not on the drive.
- *
- * Today __USBStorage_Write() checks `retval > 0 && status != 0`, but
- * __cycle() returns 0 on success, so the status is never looked at.
+ * The drive answers a WRITE with CSW status 1 (command failed) once. The
+ * driver must not report the write as done while the data is not on the
+ * drive: it reads the sense data (which clears the condition) and retries.
+ * (Before, `retval > 0 && status != 0` never saw the
+ * status, because __cycle() returns 0 on success.)
  */
-static void test_write_csw_failure_is_not_success(void)
+static void test_write_csw_failure_is_retried(void)
 {
 	mount();
 	CHECK_OK();
 	fill(buf, SECTOR, 4);
 	sim.fail_write_csw = 1;
-	s32 ok = USBStorage_Write_Sectors(7, 1, buf);
-	CHECK(!ok || sim.writes_ok == 1,
-	      "write reported success, but the drive failed it and it was not retried: %s",
-	      sim_summary());
+	CHECK(USBStorage_Write_Sectors(7, 1, buf), "write failed: %s", sim_summary());
+	CHECK(sim.writes_ok == 1 && memcmp(sim.data + 7 * SECTOR, buf, SECTOR) == 0,
+	      "the write was not retried: %s", sim_summary());
+	CHECK(sim.senses == 1, "%u REQUEST SENSE, expected 1: %s", sim.senses, sim_summary());
+	CHECK(sim.port_resets == 0 && sim.bot_resets == 0, "%s", sim_summary());
 }
 
 /*
  * The drive STALLs bulk-out at a WRITE's data phase once (a transient
  * error). Bulk-Only Transport 6.7.3: the host clears the halt and reads the
- * CSW; then it can retry. The write should succeed, in well under a second.
- *
- * Today __cycle() resends the data in its inner loop: each try moves 0
- * bytes, and the "continue; //reset+retry" there restarts the inner loop,
- * not the command, so it never ends.
+ * CSW (status 1), then retries. Done twice, a READ between them, so the
+ * clear-halt meets the host's bulk-out toggle at DATA0 once and at DATA1
+ * once: neither may lose a transfer or need a port reset.
+ * (Before, __cycle()'s inner loop resent to the halted endpoint forever.)
  */
 static void test_write_recovers_from_one_stall(void)
 {
 	mount();
 	CHECK_OK();
-	fill(buf, SECTOR, 5);
-	sim.stall_write_data = 1;
-	sim.limit_us = 60 * 1000000ull;
-	s32 ok = USBStorage_Write_Sectors(9, 1, buf);
-	CHECK(ok, "write failed: %s", sim_summary());
-	CHECK(memcmp(sim.data + 9 * SECTOR, buf, SECTOR) == 0, "drive holds other data");
-	CHECK(sim.now_us < 1000000, "recovery took %s", sim_summary());
+	for (int i = 0; i < 2; i++) {
+		if (i)
+			CHECK(USBStorage_Read_Sectors(40, 1, back), "read failed: %s", sim_summary());
+		fill(buf, SECTOR, 5 + i);
+		sim.stall_write_data = 1;
+		CHECK(USBStorage_Write_Sectors(9 + i, 1, buf), "write %d failed: %s", i, sim_summary());
+		CHECK(memcmp(sim.data + (9 + i) * SECTOR, buf, SECTOR) == 0, "drive holds other data");
+	}
+	CHECK(sim.clear_halts == 2, "%u clear-halts, expected 2: %s", sim.clear_halts, sim_summary());
+	CHECK(sim.toggle_losses == 0 && sim.port_resets == 0 && sim.bot_resets == 0, "%s",
+	      sim_summary());
+	CHECK(sim.now_us < 100000, "recovery took %s", sim_summary());
 }
 
 /*
  * The drive refuses every write (write-protected). USBStorage_Write_Sectors()
- * must give up and return false in bounded time, so the caller (FAT, the
- * loader) can report an error.
- *
- * Today its retry loop has `if(retry>12) retry=12; // infinite loop`.
+ * must give up and return false quickly, so the caller (FAT, the loader) can
+ * report an error: USBSTORAGE_SECTOR_TRIES (4) attempts, each a STALL, a
+ * clear-halt, the CSW and a REQUEST SENSE.
+ * (Before, its retry loop had `if(retry>12) retry=12; // infinite loop`.)
  */
 static void test_write_to_protected_drive_gives_up(void)
 {
@@ -139,10 +143,11 @@ static void test_write_to_protected_drive_gives_up(void)
 	CHECK_OK();
 	fill(buf, SECTOR, 6);
 	sim.stall_write_data = 1000000;
-	sim.limit_us = 600 * 1000000ull;
-	s32 ok = USBStorage_Write_Sectors(11, 1, buf);
-	CHECK(!ok, "write to a write-protected drive reported success: %s", sim_summary());
-	CHECK(sim.now_us < 30 * 1000000ull, "giving up took %s", sim_summary());
+	CHECK(!USBStorage_Write_Sectors(11, 1, buf), "write to a write-protected drive reported success: %s",
+	      sim_summary());
+	CHECK(sim.senses == 4 && sim.clear_halts == 4, "expected 4 attempts: %s", sim_summary());
+	CHECK(sim.port_resets == 0 && sim.toggle_losses == 0, "%s", sim_summary());
+	CHECK(sim.now_us < 100000, "giving up took %s", sim_summary());
 }
 
 /*
@@ -154,9 +159,8 @@ static void test_write_to_protected_drive_gives_up(void)
  *
  * Each READ flips the bulk-out toggle once (the CBW), so of two reads one
  * leaves it at DATA1 when the reset comes.
- *
- * Today USB_ClearHalt() (tinyehci/usb.c) sends the request but leaves the
- * host's toggle in ehci_device.toggles as it was.
+ * (Before, USB_ClearHalt() in tinyehci/usb.c left the host's toggle as it
+ * was: 4 reads cost 3 lost transfers and 4 port resets.)
  */
 static void test_reset_recovery_keeps_toggles_in_step(void)
 {
@@ -178,10 +182,10 @@ static const struct hc_test tests[] = {
 	{ "write_roundtrip", test_write_roundtrip, false },
 	{ "one_sector_write_is_fast", test_one_sector_write_is_fast, false },
 	{ "write_after_one_timeout", test_write_after_one_timeout, false },
-	{ "write_csw_failure_is_not_success", test_write_csw_failure_is_not_success, true },
-	{ "write_recovers_from_one_stall", test_write_recovers_from_one_stall, true },
-	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, true },
-	{ "reset_recovery_keeps_toggles_in_step", test_reset_recovery_keeps_toggles_in_step, true },
+	{ "write_csw_failure_is_retried", test_write_csw_failure_is_retried, false },
+	{ "write_recovers_from_one_stall", test_write_recovers_from_one_stall, false },
+	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, false },
+	{ "reset_recovery_keeps_toggles_in_step", test_reset_recovery_keeps_toggles_in_step, false },
 };
 
 static void setup(void)

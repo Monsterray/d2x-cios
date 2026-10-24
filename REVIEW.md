@@ -28,26 +28,28 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 | Fix | The module Makefiles tracked no dependencies: an edited header, or a `.c` file pulled in with `#include` (tinyehci builds `ehci.c`, `usb.c` and `usbstorage.c` as one unit), left the object stale, and the build reported success with the old code. Every Makefile now uses `-MMD -MP`, includes the `.d` files, and rebuilds objects when the Makefile changes. `maked2x.sh` keeps a preset `SOURCE_DATE_EPOCH`, so builds of different commits can be compared. | After editing `usbstorage.c`, an incremental build left `EHCI.app` unchanged. Clean builds before and after the Makefile change, date pinned, are byte-identical. |
 | Tools | Adopted wii-homebrew-kit: `tests/host/hostcheck.h` (the runner), `tools/wii_targets.py` (bench guards), `tools/dolphin_run.py`. | Host tests unchanged: 5 pass, 3 known. |
 
-### EHCI USB storage: write errors are not recovered
+### EHCI USB storage: write errors are not recovered (fixed in the host tests)
 
-Seen first in USB Loader GX on the bench Wii (2026-10-23): through cIOS a sector read takes 1 ms, but a single-sector write takes 20 s to several minutes. The causes below are from reading the code and running it in the host simulation; none is confirmed on hardware yet.
+Seen first in USB Loader GX on the bench Wii (2026-10-23): through cIOS a sector read takes 1 ms, but a single-sector write takes 20 s to several minutes. Items 1 to 3 and 6 are fixed and pass host tests against the simulated drive; none is confirmed on hardware yet.
 
-1. **A STALL at the data phase is retried forever.** `__cycle()` (`tinyehci/usbstorage.c`) sends the data in an inner `while(len > 0)` loop. On a short or failed transfer its `continue; //reset+retry` restarts that inner loop, not the command, so it resends to a halted endpoint with no reset and no CLEAR_FEATURE. A halted endpoint moves 0 bytes each time, so the loop never ends.
-   - Test: `write_recovers_from_one_stall` and `write_to_protected_drive_gives_up` (both hang today).
-   - Fix: leave the inner loop on any error; after a STALL, clear the halt and read the CSW (Bulk-Only Transport 6.7.2 and 6.7.3), and do a reset recovery only on a phase error or a bad CSW.
-2. **The CSW status is never checked.** `__USBStorage_Write()` and `__USBStorage_Read()` test `retval > 0 && status != 0`, but `__cycle()` returns 0 on success. A drive that answers "command failed" (status 1) or "phase error" (status 2) is treated as a success: the data is not on the drive, and FAT carries on.
-   - Test: `write_csw_failure_is_not_success`.
-   - Fix: `retval >= 0 && status != 0`. On status 1, REQUEST SENSE, then retry or fail; on status 2, reset recovery.
-3. **`USBStorage_Write_Sectors()` and `USBStorage_Read_Sectors()` never give up.** `if(retry>12) retry=12; // infinite loop`. Each failed round can cost a timeout (`usb_timeout`), a port reset, a new device setup, and `ehci_msleep(100)`.
-   - Test: `write_to_protected_drive_gives_up`.
-   - Fix: a bounded number of rounds, then return false so FAT reports `FR_DISK_ERR`.
-4. **A halted qTD writes through a NULL pointer.** In `qh_end_transfer()` (`tinyehci/ehci.c`), after `for(qtd = qh->qtd_head; qtd; qtd = qtd->next)` ends, `qtd` is NULL, and `if(error) qtd->urb->actual_length = error;` reads a pointer from near address 0 and writes -1 through it. The error itself is lost, so the caller sees the partial byte count of a short transfer.
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | **6. Clearing a halt left the host's data toggle as it was.** `USB_ClearHalt()` (`tinyehci/usb.c`) sent CLEAR_FEATURE(ENDPOINT_HALT), which resets the device's toggle to DATA0 (USB 2.0 9.4.5), but tinyehci starts each bulk transfer from the toggle in `ehci_device.toggles` (`ehci_do_urb()` in `ehci.c`), which only a port or device reset zeroes. After every Bulk-Only reset recovery, the next transfer on an endpoint at DATA1 was discarded by the device as a retransmission; the command then timed out (`usb_timeout`, about 4 s) into a port reset. `USB_ClearHalt()` now sets the host toggle to DATA0 too. This is the likeliest cause of the slow writes: every recovery, including a soft one, could cost a timeout and a port reset. | `reset_recovery_keeps_toggles_in_step`: before, 4 reads around two reset recoveries cost 3 lost transfers and 4 port resets; now none. Without this fix, `write_recovers_from_one_stall` also fails (a lost transfer and 2 port resets). |
+| Fix | **1. A STALL at the data phase was retried forever.** In `__cycle()` the `continue; //reset+retry` in the inner data loop restarted that loop, not the command, so it resent to a halted endpoint. Now any short transfer ends the data phase (tinyehci reports a STALL as a short count); after a short bulk-out transfer the halt is cleared; the CSW is read, and a STALLed CSW read is cleared and read once more (BOT 5.3.3, 6.7.2, 6.7.3). A phase error (status 2) or a bad CSW gets a reset recovery. | `write_recovers_from_one_stall` (twice, at both toggle parities): succeeds with 2 clear-halts, no reset, no lost transfer, in under 100 ms of simulated time. |
+| Fix | **2. The CSW status was never checked.** `__USBStorage_Write()` and `__USBStorage_Read()` tested `retval > 0 && status != 0`, but `__cycle()` returns 0 on success, so a failed command counted as done. Now `retval >= 0`; a failed command gets a REQUEST SENSE (which clears the condition) and returns `USBSTORAGE_ESTATUS`. | `write_csw_failure_is_retried`: one REQUEST SENSE, then a successful retry. |
+| Fix | **3. `USBStorage_Write_Sectors()` and `USBStorage_Read_Sectors()` never gave up** (`if(retry>12) retry=12; // infinite loop`), and after a non-timeout error they stopped calling the driver but kept looping. Now one loop serves both: it still waits without a limit while the device is gone (`unplug_device`, so a game survives a replug, as Hermes intended), but a device that answers and keeps failing gets `USBSTORAGE_SECTOR_TRIES` (4) attempts, then false, so FAT reports an error. | `write_to_protected_drive_gives_up`: 4 attempts, then false, in under 100 ms of simulated time. |
+
+The change is limited to `usb.c` and `usbstorage.c`. With the build date pinned, only `EHCI.app` changes (16820 to 16836 bytes; `.text` 0x3F70 of the 0x5000 the module may use). No new compiler warnings.
+
+Still open:
+
+4. **A halted qTD writes through a NULL pointer.** In `qh_end_transfer()` (`tinyehci/ehci.c`), after `for(qtd = qh->qtd_head; qtd; qtd = qtd->next)` ends, `qtd` is NULL, and `if(error) qtd->urb->actual_length = error;` reads a pointer from near address 0 and writes -1 through it. The error itself is lost, so the caller sees the partial byte count of a short transfer (which is what the fixes above rely on to detect a STALL).
    - Effect: memory corruption at an address taken from low memory, on every STALL or transaction error.
-   - Fix: keep the urb pointer before the loop (`qh->qtd_head->urb`) and return the error to the caller.
-   - Check: needs a test of `ehci.c` itself (not written yet), or hardware.
+   - Fix: keep the urb pointer before the loop (`qh->qtd_head->urb`). Returning the error instead of the short count would change what callers see; the STALL handling in `__cycle()` would have to treat both the same.
+   - Check: needs a host test of `ehci.c` itself (the simulation stops above it), or hardware.
 5. **`ata_protocol` is always 1.** `USBStorage_Open()` tests `subclass != SCSI || subclass != RBC`, which is always true, so every CBW carries a command length of 12. Most drives ignore it; it is recorded here, not changed.
 
-Trigger for the bench work: once fixes 1 to 3 pass their host tests, build a cIOS with them, install it to a spare slot on the bench Wii (with the user's OK), and time single-sector writes on the drive from the USB Loader GX finding, before and after.
+Trigger for the bench work: build a cIOS with these fixes, install it to a spare slot on the bench Wii (with the user's OK), and time single-sector writes on the drive from the USB Loader GX finding, before and after. USB Loader GX's unmount write skip (its `usbstorage2.c`) hides the problem there; time it with that skip turned off.
 
 ### Next
 

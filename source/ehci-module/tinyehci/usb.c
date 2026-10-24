@@ -228,6 +228,17 @@ s32 USB_SetAlternativeInterface(struct ehci_device *fd, u8 interface, u8 alterna
 }
 s32 USB_ClearHalt(struct ehci_device *fd, u8 endpoint)
 {
-	return __usb_control_message(fd, (USB_CTRLTYPE_DIR_HOST2DEVICE | USB_CTRLTYPE_TYPE_STANDARD | USB_CTRLTYPE_REC_ENDPOINT),
+	s32 retval;
+
+	retval = __usb_control_message(fd, (USB_CTRLTYPE_DIR_HOST2DEVICE | USB_CTRLTYPE_TYPE_STANDARD | USB_CTRLTYPE_REC_ENDPOINT),
                                      USB_REQ_CLEARFEATURE, USB_FEATURE_ENDPOINT_HALT, endpoint, 0, NULL, NULL, NULL);
+
+	// Clearing ENDPOINT_HALT sets the device's data toggle for the endpoint
+	// to DATA0 (USB 2.0 9.4.5). Do the same here: bulk transfers start from
+	// the toggle kept in fd->toggles, and with DATA1 the device would discard
+	// the next packet as a retransmission.
+	if(retval >= 0)
+		set_toggle(fd, endpoint, 0);
+
+	return retval;
 }
