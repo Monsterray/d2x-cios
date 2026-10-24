@@ -183,13 +183,17 @@ static void __DI_InitDriveEmulation(void)
 		/* Set mode */
 		config.mode = dipCfgState.mode;
 
+		/* If the device does not open again, drop the mode: reads would use a
+		   NULL fragment list or a closed WBFS device */
 		if (DI_ChkMode(MODE_WBFS)) {
 			/* Open wbfs device */
-			WBFS_Open(dipCfgState.device-1, (u8 *)0x00000000);
+			if (WBFS_Open(dipCfgState.device-1, (u8 *)0x00000000) < 0)
+				DI_DelMode(MODE_WBFS);
 		}
 		else if (DI_ChkMode(MODE_FRAG)) {
 			/* Open fraglist */
-			Frag_Init(dipCfgState.device, &fraglist_data, dipCfgState.frag_size);
+			if (Frag_Init(dipCfgState.device, &fraglist_data, dipCfgState.frag_size) < 0)
+				DI_DelMode(MODE_FRAG);
 		}
 	}
 

@@ -40,6 +40,10 @@ static u32    buffer[9] ATTRIBUTE_ALIGN(32);
 
 s32 WBFS_Open(u32 device, u8 *discid)
 {
+	/* The caller's device number (minus one) indexes devFs */
+	if (device >= sizeof(devFs) / sizeof(devFs[0]))
+		return -1;
+
 	/* Open device */
 	devFd = os_open(devFs[device], 1);
 	if (devFd < 0)

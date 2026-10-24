@@ -175,6 +175,10 @@ s32 DI_ReadDvd(u8 *outbuf, u32 len, u32 offset)
 			ret = __DI_ReadD0(outbuf + cnt, size, lba);
 		}
 
+		/* A failed chunk fails the read: later chunks must not hide it */
+		if (ret)
+			break;
+
 		/* Next LBA */
 		lba += (size + pos) >> 11;
 	}

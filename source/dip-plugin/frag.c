@@ -272,6 +272,14 @@ s32 Frag_Init(u32 device, void *fraglist, s32 size)
 		os_sync_after_write(fraglist, size);
 	}
 
+	/* The fragment count must fit the array and what was copied: lookups
+	   walk frag[0..num-1] */
+	if (frag_list->num > FRAG_MAX ||
+	    (u32)size < sizeof(FragList) - sizeof(frag_list->frag) + frag_list->num * sizeof(Fragment)) {
+		Frag_Close();
+		return -6;
+	}
+
 	/* Optimize fraglist access */
 	__Frag_OptimizeList();
 
