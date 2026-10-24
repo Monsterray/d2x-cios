@@ -70,9 +70,9 @@ From a read-only review (F1-F8); the fixed ones have host tests in `tests/host/f
 | Fix | **F7. A failed close leaked the FIL.** `FAT_Close()` returned before `Mem_Free()` when `f_close()` failed (a pulled card). | `close_failure_frees`. |
 
 Open (verified by reading, not yet fixed; `main.c` is an upstream CRLF file):
-- **F1.** `$`-prefixed opens build `path[256]` from the 192-byte NAND path plus `FAT_Escape()` output, which can grow each character to 4: about 260 bytes. Fix: a bounded escape that fails when the result does not fit.
-- **F5.** SETNANDPATH writes `emuNandPath[192]` when the path is 191 characters without a trailing `/`; its alignment guards use `!31` (always 0) where `~31` was meant.
+- **F1 and F5 (fixed, checked by reading and build):** the `$` open path buffer now holds the NAND path plus the worst-case escaped name, and names of 64 bytes or more are refused; SETNANDPATH no longer writes past `emuNandPath` and adds `/` only when the path lacks one. Its alignment guards still use `!31` (no check at all); fixing them could reject existing callers, so they stay until a caller is known.
 - **F6.** Read, write, seek and FILESTATS on the `/dev/fat` descriptor itself (fd 0) pass `(FIL *) 0` to FatFs.
+- **Recursion depth.** `FAT_DeleteDir()` and `FAT_GetUsage()` recurse with about 350 bytes of stack per level; a tree of one-letter directories within the 255-character path limit is about 125 levels, 44 KB, against a 12 KB thread stack. IOS's own NAND allows 8 levels; a depth cap matching it would bound the stack. Trigger: a host test with a deep tree.
 - **F8.** Some ioctls read vectors without checking `inlen`/`iolen`. The right check depends on the IPC split each caller uses; trigger: a host test of `main.c`'s ioctl dispatch.
 
 ### DIP plugin (dip-plugin)
