@@ -300,6 +300,12 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 			u32 len    = inbuf[1];
 			u32 offset = inbuf[2];
 
+			/* The read must fit the caller's buffer */
+			if (len > size) {
+				ret = DIP_EIO;
+				break;
+			}
+
 			/* Do unencrypted read */
 			ret = __DI_ReadUnencrypted(outbuf, len, offset);
 		} else
@@ -315,10 +321,20 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 		u32 len    = inbuf[1];
 		u32 offset = inbuf[2];
 
-		/* Change values unit */
+		/* Change values unit (D0 counts 2 KB sectors) */
 		if (cmd == IOCTL_DI_READ_D0) {
+			if (len > (size >> 11)) {
+				ret = DIP_EIO;
+				break;
+			}
 			len    <<= 11;
 			offset <<= 9;
+		}
+
+		/* The read must fit the caller's buffer */
+		if (len > size) {
+			ret = DIP_EIO;
+			break;
 		}
 
 		/* Unencrypted read */

@@ -89,7 +89,7 @@ static s32 __Frag_Get(FragList *ff, u32 offset, u32 count,
 	// optimize seek inside frag list
 	// jump to a precalculated index
 	idx_off = offset >> IDX_SHIFT;
-	if (idx_off > MAX_IDX)
+	if (idx_off >= MAX_IDX)
 		idx_off = MAX_IDX - 1;
 
 	start_idx = frag_idx[idx_off];

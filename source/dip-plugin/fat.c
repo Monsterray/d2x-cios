@@ -81,7 +81,7 @@ s32 FAT_Mount(u32 device, u32 partition)
 		iobuf->vector[0].len = sizeof(u32);
 
 		/* Flush cache */
-		//os_sync_after_write(iobuf, sizeof(*iobuf)); 
+		os_sync_after_write(iobuf, sizeof(*iobuf));
 
 		/* Mount device */
 		ret = os_ioctlv(fatFd, cmd, 1, 0, iobuf->vector);
@@ -122,13 +122,13 @@ s32 FAT_GetPartition(u32 device, u32 *partition)
 		iobuf->vector[1].len = sizeof(u32);
 
 		/* Flush cache */
-		//os_sync_after_write(iobuf, sizeof(*iobuf)); 
+		os_sync_after_write(iobuf, sizeof(*iobuf));
 
 		/* Retrieve  partition */
 		ret = os_ioctlv(fatFd, IOCTL_FAT_GETPARTITION, 1, 1, iobuf->vector);
 
 		/* Invalidate cache */
-		//os_sync_before_read(iobuf, sizeof(*iobuf)); 
+		os_sync_before_read(iobuf, sizeof(*iobuf));
 
 		/* Set partition */
 		*partition = iobuf->partition;
