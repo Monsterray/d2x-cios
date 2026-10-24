@@ -53,17 +53,18 @@ usbs/test_usbs: usbs/test_usbs.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h 
 		-c -o usbs/usbs_unit.o usbs/usbs_unit.c
 	$(CC) $(ALL_CFLAGS) -o $@ usbs/test_usbs.o usbs/sim.o usbs/glue_sim.o usbs/usbs_unit.o
 
-# The FAT module's fat_wrapper.c and FatFs on two RAM disks. -no-pie: file
-# descriptors are FIL pointers cast to u32 (fat/fat_unit.c).
+# The FAT module's main.c (its IPC handlers), fat_wrapper.c and FatFs on two
+# RAM disks. -no-pie: file descriptors are FIL pointers cast to u32
+# (fat/fat_unit.c).
 FATMOD := ../../source/fat-module
 fat/test_fat: fat/test_fat.c fat/fat_unit.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h \
-		fat/fat_types.h hostcheck.h usbs/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/ff.c \
+		fat/fat_types.h hostcheck.h fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c \
 		$(FATMOD)/ff.h $(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c
-	$(CC) $(ALL_CFLAGS) -I. -Ifat -c -o fat/test_fat.o fat/test_fat.c
+	$(CC) $(ALL_CFLAGS) -I. -Ifat -I$(FATMOD) -c -o fat/test_fat.o fat/test_fat.c
 	$(CC) $(ALL_CFLAGS) -Ifat -I$(FATMOD) -c -o fat/ramdisk.o fat/ramdisk.c
 	$(CC) $(ALL_CFLAGS) -Wno-implicit-fallthrough -Ifat -I$(FATMOD) -c -o fat/ff_unit.o fat/ff_unit.c
 	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast \
-		-Ifat -Iusbs/stub -I$(FATMOD) -I$(CIOSLIB) -c -o fat/fat_unit.o fat/fat_unit.c
+		-Ifat -Ifat/stub -I$(FATMOD) -I$(CIOSLIB) -c -o fat/fat_unit.o fat/fat_unit.c
 	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/test_fat.o fat/ramdisk.o fat/ff_unit.o fat/fat_unit.o
 
 clean:

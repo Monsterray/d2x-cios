@@ -43,6 +43,61 @@ char *moduleName = "FAT";
 static char emuNandPath[192] = "/";
 static u32  emuNandPathLen   = 1;
 
+/* A file descriptor from IOS_OPEN of a file is its FIL pointer, 32-byte
+   aligned; the module itself is fd 0 (see IOS_OPEN and IOS_CLOSE). */
+static inline int __FAT_IsFileFd(s32 fd)
+{
+	return fd != 0 && (fd % 32) == 0;
+}
+
+/* A path argument must end with a NUL inside its vector. */
+static int __FAT_IsPath(const ioctlv *v)
+{
+	return v->data && v->len && strnlen((const char *)v->data, v->len) < v->len;
+}
+
+/* The vectors an IOCTLV command reads must have been sent, its paths must
+   be terminated, and its outputs must be big enough for what is written. */
+static int __FAT_CheckVectors(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
+{
+	u32 count = inlen + iolen;
+
+	switch (cmd) {
+	case IOCTL_FAT_MKDIR:
+	case IOCTL_FAT_MKFILE:
+	case IOCTL_FAT_DELETE:
+	case IOCTL_FAT_DELETEDIR:
+		return count >= 1 && __FAT_IsPath(&vector[0]);
+
+	case IOCTL_FAT_READDIR_FS:
+	case IOCTL_FAT_READDIR:
+		if (iolen > 1)		/* path, entries, names, count */
+			return count >= 4 && __FAT_IsPath(&vector[0]) &&
+			       vector[1].len >= sizeof(u32) && vector[3].len >= sizeof(u32);
+		return count >= 2 && __FAT_IsPath(&vector[0]) && vector[1].len >= sizeof(u32);
+
+	case IOCTL_FAT_RENAME:
+		return count >= 2 && __FAT_IsPath(&vector[0]) && __FAT_IsPath(&vector[1]);
+
+	case IOCTL_FAT_STATS:
+		return count >= 2 && __FAT_IsPath(&vector[0]) && vector[1].len >= sizeof(struct stats);
+
+	case IOCTL_FAT_GETUSAGE_FS:
+	case IOCTL_FAT_GETUSAGE:	/* path, size, then files and dirs if sent */
+		return count >= 2 && __FAT_IsPath(&vector[0]) && vector[1].len >= sizeof(u64) &&
+		       (iolen < 2 || (count >= 3 && vector[2].len >= sizeof(u32))) &&
+		       (iolen < 3 || (count >= 4 && vector[3].len >= sizeof(u32)));
+
+	case IOCTL_FAT_MOUNT_SD:
+	case IOCTL_FAT_MOUNT_USB:
+		return inlen == 0 || vector[0].len >= sizeof(s32);
+
+	case IOCTL_FAT_GETPARTITION:
+		return count >= 2 && vector[0].len >= sizeof(u32) && vector[1].len >= sizeof(u32);
+	}
+	return 1;
+}
+
 s32 __FAT_Ioctl(s32 fd, u32 cmd, void *inbuf, u32 inlen, void *iobuf, u32 iolen)
 {
 	s32 ret = IPC_EINVAL;
@@ -58,6 +113,9 @@ s32 __FAT_Ioctl(s32 fd, u32 cmd, void *inbuf, u32 inlen, void *iobuf, u32 iolen)
 		void *stats = iobuf;
 		dbg_printf("FAT: IOCTL_FAT_FILESTATS: fd = %d\n", fd);
 
+		if (!__FAT_IsFileFd(fd) || !stats || iolen < sizeof(struct fstats))
+			break;
+
 		/* Get file stats */
 		ret = FAT_GetFileStats(fd, stats);
 		dbg_printf("FAT: IOCTL_FAT_FILESTATS: ret = %d, length = %d, pos = %d\n", ret, ((struct fstats *)stats)->length, ((struct fstats *)stats)->pos);
@@ -69,8 +127,9 @@ s32 __FAT_Ioctl(s32 fd, u32 cmd, void *inbuf, u32 inlen, void *iobuf, u32 iolen)
 		char *path = inbuf;
 		dbg_printf("FAT: IOCTL_FAT_SETNANDPATH: path = %d\n", path);
 		ret = -4;
-		if (path != NULL && ((u32)path & !31) == 0 && (inlen & !3) == 0) {
-			u32 len = strnlen(path, sizeof(emuNandPath));
+		/* The path must end with a NUL inside the caller's buffer */
+		if (path != NULL && inlen > 0 && strnlen(path, inlen) < inlen) {
+			u32 len = strnlen(path, inlen);
 			/* Leave room for a trailing '/' and the NUL */
 			if (len < sizeof(emuNandPath) - 1) {
 				strcpy(emuNandPath, path);
@@ -104,6 +163,10 @@ s32 __FAT_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 
 	/* Invalidate cache */
 	InvalidateVector(vector, inlen, iolen);
+
+	/* Missing vectors, unterminated paths, short outputs: IPC_EINVAL */
+	if (!__FAT_CheckVectors(cmd, vector, inlen, iolen))
+		goto out;
 
 	/* Parse command */
 	switch (cmd) {
@@ -256,15 +319,11 @@ s32 __FAT_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 	case IOCTL_FAT_GETUSAGE: {
 		char *path  = (char *)vector[0].data;
 		u64  *size  =  (u64 *)vector[1].data;
-		u32  *files =  (u32 *)vector[2].data;
-		u32  *dirs  =  (u32 *)vector[3].data;
 		u32  fakedirs, fakefiles, forFS;
 
-		/* Set default pointers */
-		if (iolen < 2)
-			files = &fakefiles;
-		if (iolen < 3)
-			dirs = &fakedirs;
+		/* The file and directory counts are optional outputs */
+		u32  *files = (iolen >= 2) ? (u32 *)vector[2].data : &fakefiles;
+		u32  *dirs  = (iolen >= 3) ? (u32 *)vector[3].data : &fakedirs;
 
 		/* Set initial values */
 		*size  = 0;
@@ -337,6 +396,10 @@ s32 __FAT_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		u32 device = *(u32 *)vector[0].data;
 		u32 *partition = (u32 *)vector[1].data;
 
+		/* Device 0 is the SD card, 1 is USB */
+		if (device > 1)
+			break;
+
 		/* Get partition */
 		ret = FAT_GetPartition(device, partition);
 
@@ -347,6 +410,7 @@ s32 __FAT_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		break;
 	}
 
+out:
 	/* Flush cache */
 	FlushVector(vector, inlen, iolen);
 
@@ -469,7 +533,7 @@ int main(void)
 			// see IOS_OPEN.
 			// Tipically a fd representing a module is far lower than 32, 
 			// while a fd representing a file is an address 32 byte aligned.
-			if(message->fd != 0 && (message->fd % 32) == 0) {
+			if (__FAT_IsFileFd(message->fd)) {
 				dbg_printf("FAT: IOS_CLOSE: Closing file... fd = %d\n", message->fd);
 				/* Close file */
 				ret = FAT_Close(message->fd);
@@ -492,7 +556,7 @@ int main(void)
 			dbg_printf("FAT: IOS_READ: fd = %d, buffer = %x, len = %d\n", message->fd, buffer, len);
 
 			/* Read file */
-			ret = FAT_Read(message->fd, buffer, len);
+			ret = __FAT_IsFileFd(message->fd) ? FAT_Read(message->fd, buffer, len) : IPC_EINVAL;
 
 			/* Flush cache */
 			os_sync_after_write(buffer, len);
@@ -515,7 +579,7 @@ int main(void)
 			Led_BlinkOn();
 
 			/* Write file */
-			ret = FAT_Write(message->fd, buffer, len);
+			ret = __FAT_IsFileFd(message->fd) ? FAT_Write(message->fd, buffer, len) : IPC_EINVAL;
 
 			dbg_printf("FAT: IOS_WRITE: ret = %d\n", ret);
 
@@ -532,7 +596,7 @@ int main(void)
 			dbg_printf("FAT: IOS_SEEK: fd = %d, where = %d, whence = %d\n", message->fd, where, whence);
       
 			/* Seek file */
-			ret = FAT_Seek(message->fd, where, whence);
+			ret = __FAT_IsFileFd(message->fd) ? FAT_Seek(message->fd, where, whence) : IPC_EINVAL;
 
 			dbg_printf("FAT: IOS_SEEK: ret = %d\n", ret);
 

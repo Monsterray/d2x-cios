@@ -181,6 +181,9 @@ s32 FAT_Unmount(u8 device)
 
 s32 FAT_GetPartition(u8 device, u32 *partition)
 {
+	if (device >= _VOLUMES)
+		return IPC_EINVAL;
+
 	if (VolToPart[device].pt >= 4)
 		return -1;
 

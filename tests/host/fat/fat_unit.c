@@ -42,6 +42,8 @@ void *Mem_Alloc(u32 size)
 	return p;
 }
 
+s32 Mem_Init(u32 *heapspace, u32 heapspaceSize) { (void)heapspace; (void)heapspaceSize; return 0; }
+
 void Mem_Free(void *ptr)
 {
 	if (!ptr)
@@ -60,6 +62,28 @@ void Mem_Free(void *ptr)
 
 #include "fat_tools.c"
 #include "fat_wrapper.c"
+
+/* The IOS services main.c calls: no-ops here (the message loop never runs). */
+void __os_sync_before_read(void *ptr, s32 size) { (void)ptr; (void)size; }
+void __os_sync_after_write(void *ptr, s32 size) { (void)ptr; (void)size; }
+s32 os_message_queue_create(void *ptr, u32 id) { (void)ptr; (void)id; return -1; }
+s32 os_message_queue_receive(s32 q, u32 *message, u32 flags) { (void)q; (void)message; (void)flags; return -1; }
+void os_message_queue_ack(void *message, s32 result) { (void)message; (void)result; }
+s32 os_device_register(const char *name, s32 q) { (void)name; (void)q; return -1; }
+void svc_write(const char *str) { (void)str; }
+void InvalidateVector(ioctlv *vector, u32 inlen, u32 iolen) { (void)vector; (void)inlen; (void)iolen; }
+void FlushVector(ioctlv *vector, u32 inlen, u32 iolen) { (void)vector; (void)inlen; (void)iolen; }
+bool sdio_Shutdown(void) { return true; }
+bool usbstorage_Shutdown(void) { return true; }
+void Led_BlinkOn(void) { }
+void Led_BlinkOff(void) { }
+void Led_CreateBlinkThread(void) { }
+s32 Timer_Init(void) { return 0; }
+
+/* main.c's ioctl handlers, without its main() */
+#define main fat_module_main
+#include "main.c"
+#undef main
 
 /* For test_fat.c, in plain C types. */
 void fatw_reset(void)
@@ -92,6 +116,28 @@ int fatw_readdir(const char *path, char *out, unsigned int buflen, unsigned int 
 }
 
 int fatw_deletedir(const char *path) { return FAT_DeleteDir(path); }
+
+/* The module's IPC handlers. vec holds (data, len) pairs, inlen + iolen of them. */
+int fatw_ioctlv(unsigned int cmd, void **data, unsigned int *len, unsigned int inlen,
+		unsigned int iolen)
+{
+	unsigned int n = inlen + iolen;
+	ioctlv *vector = malloc((n ? n : 1) * sizeof(ioctlv));    /* exactly n: ASan sees overreads */
+	for (unsigned int i = 0; i < n; i++) {
+		vector[i].data = data[i];
+		vector[i].len = len[i];
+	}
+	int r = __FAT_Ioctlv(0, cmd, vector, inlen, iolen);
+	free(vector);
+	return r;
+}
+
+int fatw_ioctl(long fd, unsigned int cmd, void *in, unsigned int inlen, void *io, unsigned int iolen)
+{
+	return __FAT_Ioctl((s32) fd, cmd, in, inlen, io, iolen);
+}
+
+const char *fatw_nandpath(void) { return emuNandPath; }
 
 int fatw_usage(const char *path, unsigned long long *size, unsigned int *files, unsigned int *dirs)
 {

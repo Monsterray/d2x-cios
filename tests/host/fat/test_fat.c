@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ramdisk.h"
+#include "module.h"
 #define HOSTCHECK_MAIN
 #include "hostcheck.h"
 
@@ -23,6 +24,10 @@ int fatw_close(long fd);
 int fatw_read(long fd, void *buf, unsigned int len);
 int fatw_write(long fd, const void *buf, unsigned int len);
 int fatw_corruptions(void);
+int fatw_ioctlv(unsigned int cmd, void **data, unsigned int *len, unsigned int inlen,
+		unsigned int iolen);
+int fatw_ioctl(long fd, unsigned int cmd, void *in, unsigned int inlen, void *io, unsigned int iolen);
+const char *fatw_nandpath(void);
 int fatw_deletedir(const char *path);
 int fatw_usage(const char *path, unsigned long long *size, unsigned int *files, unsigned int *dirs);
 int fatw_readdir(const char *path, char *out, unsigned int buflen, unsigned int *outlen,
@@ -256,6 +261,102 @@ static void test_getusage_tree_within_cap(void)
 	      "GETUSAGE returned %d: %u files, %u dirs, %llu bytes", r, files, dirs, size);
 }
 
+/* --- main.c's IPC handlers: what a caller can send ---------------------- */
+
+#define IPC_EINVAL -101
+
+/* A vector buffer of exactly len bytes (ASan sees any read past it). */
+static void *exact(const void *data, size_t len)
+{
+	void *p = malloc(len ? len : 1);
+	memcpy(p, data, len);
+	return p;
+}
+
+/*
+ * READDIR with one input and two outputs: the handler read vector[3] when
+ * iolen > 1 whatever inlen was, one past the three vectors sent.
+ */
+static void test_ioctlv_readdir_vector_count(void)
+{
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	unsigned int entries = 0, outlen = 0;
+	char out[64];
+	void *data[3] = { exact("0:/", 4), &entries, out };
+	unsigned int len[3] = { 4, 4, sizeof(out) };
+	(void) outlen;
+	int r = fatw_ioctlv(IOCTL_FAT_READDIR, data, len, 1, 2);
+	free(data[0]);
+	CHECK(r == IPC_EINVAL, "READDIR with 3 vectors returned %d, expected IPC_EINVAL", r);
+}
+
+/* GETUSAGE with only the size output reads no vector past the second. */
+static void test_ioctlv_getusage_size_only(void)
+{
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	put_file("0:/u.bin", "12345");
+	CHECK_OK();
+	unsigned long long size = 0;
+	void *data[2] = { exact("0:/", 4), &size };
+	unsigned int len[2] = { 4, sizeof(size) };
+	int r = fatw_ioctlv(IOCTL_FAT_GETUSAGE, data, len, 1, 1);
+	free(data[0]);
+	CHECK(r == 0 && size == 5, "GETUSAGE returned %d, size %llu", r, size);
+}
+
+/* A path with no NUL inside its vector is refused, not read past. */
+static void test_ioctlv_path_without_nul(void)
+{
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	void *data[1] = { exact("0:/abc", 6) };          /* no terminating NUL */
+	unsigned int len[1] = { 6 };
+	int r = fatw_ioctlv(IOCTL_FAT_MKDIR, data, len, 1, 0);
+	free(data[0]);
+	CHECK(r == IPC_EINVAL, "MKDIR with an unterminated path returned %d", r);
+}
+
+/* GETPARTITION of a device that does not exist (VolToPart has 2 entries). */
+static void test_ioctlv_getpartition_bad_device(void)
+{
+	unsigned int device = 7, partition = 0;
+	void *data[2] = { &device, &partition };
+	unsigned int len[2] = { 4, 4 };
+	int r = fatw_ioctlv(IOCTL_FAT_GETPARTITION, data, len, 1, 1);
+	CHECK(r == IPC_EINVAL, "GETPARTITION of device 7 returned %d", r);
+}
+
+/* FILESTATS on the module's own descriptor (0) is not a file. */
+static void test_ioctl_filestats_on_module_fd(void)
+{
+	unsigned char stats[64];
+	int r = fatw_ioctl(0, IOCTL_FAT_FILESTATS, NULL, 0, stats, sizeof(stats));
+	CHECK(r == IPC_EINVAL, "FILESTATS on fd 0 returned %d", r);
+}
+
+/* SETNANDPATH: one trailing '/', a NUL inside the buffer, room for the '/'. */
+static void test_ioctl_setnandpath(void)
+{
+	char *p;
+	p = exact("/nands/a", 9);
+	CHECK(fatw_ioctl(0, IOCTL_FAT_SETNANDPATH, p, 9, NULL, 0) == 0, "set /nands/a failed");
+	free(p);
+	CHECK(!strcmp(fatw_nandpath(), "/nands/a/"), "path is \"%s\"", fatw_nandpath());
+	p = exact("/nands/b/", 10);
+	CHECK(fatw_ioctl(0, IOCTL_FAT_SETNANDPATH, p, 10, NULL, 0) == 0, "set /nands/b/ failed");
+	free(p);
+	CHECK(!strcmp(fatw_nandpath(), "/nands/b/"), "path is \"%s\" (one '/' expected)", fatw_nandpath());
+	p = exact("/nands/c", 8);                      /* no NUL in the buffer */
+	int r = fatw_ioctl(0, IOCTL_FAT_SETNANDPATH, p, 8, NULL, 0);
+	free(p);
+	CHECK(r != 0 && !strcmp(fatw_nandpath(), "/nands/b/"), "an unterminated path was taken (%d)", r);
+	char longpath[200];
+	memset(longpath, 'x', 191);
+	longpath[0] = '/';
+	longpath[191] = 0;
+	r = fatw_ioctl(0, IOCTL_FAT_SETNANDPATH, longpath, 192, NULL, 0);
+	CHECK(r != 0, "a 191-character path was taken (no room for the '/')");
+}
+
 /* A close that fails (the card went away) still frees the file's FIL. */
 static void test_close_failure_frees(void)
 {
@@ -285,6 +386,12 @@ static const struct hc_test tests[] = {
 	{ "deletedir_tree_within_cap", test_deletedir_tree_within_cap, false },
 	{ "getusage_deep_tree_refused", test_getusage_deep_tree_refused, false },
 	{ "getusage_tree_within_cap", test_getusage_tree_within_cap, false },
+	{ "ioctlv_readdir_vector_count", test_ioctlv_readdir_vector_count, false },
+	{ "ioctlv_getusage_size_only", test_ioctlv_getusage_size_only, false },
+	{ "ioctlv_path_without_nul", test_ioctlv_path_without_nul, false },
+	{ "ioctlv_getpartition_bad_device", test_ioctlv_getpartition_bad_device, false },
+	{ "ioctl_filestats_on_module_fd", test_ioctl_filestats_on_module_fd, false },
+	{ "ioctl_setnandpath", test_ioctl_setnandpath, false },
 };
 
 int main(int argc, char **argv)
