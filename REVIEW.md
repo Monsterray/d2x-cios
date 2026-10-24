@@ -30,7 +30,7 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ### EHCI USB storage: write errors are not recovered (fixed in the host tests)
 
-Seen first in USB Loader GX on the bench Wii (2026-10-23): through cIOS a sector read takes 1 ms, but a single-sector write takes 20 s to several minutes. Items 1 to 3 and 6 are fixed and pass host tests against the simulated drive; none is confirmed on hardware yet.
+Seen first in USB Loader GX on the bench Wii (2026-10-23): through cIOS a sector read takes 1 ms, but a single-sector write takes 20 s to several minutes. Items 1 to 6 are fixed; all but 4 pass host tests against the simulated drive. None is confirmed on hardware yet.
 
 | Kind | Change | Check |
 | --- | --- | --- |
@@ -39,15 +39,13 @@ Seen first in USB Loader GX on the bench Wii (2026-10-23): through cIOS a sector
 | Fix | **2. The CSW status was never checked.** `__USBStorage_Write()` and `__USBStorage_Read()` tested `retval > 0 && status != 0`, but `__cycle()` returns 0 on success, so a failed command counted as done. Now `retval >= 0`; a failed command gets a REQUEST SENSE (which clears the condition) and returns `USBSTORAGE_ESTATUS`. | `write_csw_failure_is_retried`: one REQUEST SENSE, then a successful retry. |
 | Fix | **3. `USBStorage_Write_Sectors()` and `USBStorage_Read_Sectors()` never gave up** (`if(retry>12) retry=12; // infinite loop`), and after a non-timeout error they stopped calling the driver but kept looping. Now one loop serves both: it still waits without a limit while the device is gone (`unplug_device`, so a game survives a replug, as Hermes intended), but a device that answers and keeps failing gets `USBSTORAGE_SECTOR_TRIES` (4) attempts, then false, so FAT reports an error. | `write_to_protected_drive_gives_up`: 4 attempts, then false, in under 100 ms of simulated time. |
 | Fix | **5. The CBW never carried the command's length.** `USBStorage_Open()` set `ata_protocol` with `subclass != SCSI || subclass != RBC`, always true, so every CBW said 12; and the SCSI branch of `__send_cbw()` would have said 16 (`cbLen > 6 ? 0x10 : 6`) for any 10-byte command. Now `&&`, and SCSI and RBC devices get `cbLen`, the valid length (BOT 5.1, as Linux sends it). Other subclasses keep the padded 12. The comment on READ CAPACITY already noted that some drives require its 10-byte length. | `cbw_carries_command_length`: READ(10) carried 12 before, 10 now. |
+| Fix | **4. A halted qTD wrote through a NULL pointer.** In `qh_end_transfer()` (`tinyehci/ehci.c`), `if(error) qtd->urb->actual_length = error;` ran after `for(qtd = ...; qtd; ...)` had left `qtd` NULL: on every STALL or transaction error it read a pointer from low memory and wrote -1 through it. The store is gone; a halted transfer still reports the bytes it moved (a short transfer), which is what callers, and the STALL handling above, see today. | Build only: the host simulation stops above `ehci.c`. Bench check pending. |
 
-The change is limited to `usb.c` and `usbstorage.c`. With the build date pinned, only `EHCI.app` changes (16820 to 16836 bytes; `.text` 0x3F70 of the 0x5000 the module may use). No new compiler warnings.
+Items 1 to 3 and 6 change only `usb.c` and `usbstorage.c`. With the build date pinned, only `EHCI.app` changes (16820 to 16836 bytes; `.text` 0x3F70 of the 0x5000 the module may use). No new compiler warnings.
 
 Still open:
 
-4. **A halted qTD writes through a NULL pointer.** In `qh_end_transfer()` (`tinyehci/ehci.c`), after `for(qtd = qh->qtd_head; qtd; qtd = qtd->next)` ends, `qtd` is NULL, and `if(error) qtd->urb->actual_length = error;` reads a pointer from near address 0 and writes -1 through it. The error itself is lost, so the caller sees the partial byte count of a short transfer (which is what the fixes above rely on to detect a STALL).
-   - Effect: memory corruption at an address taken from low memory, on every STALL or transaction error.
-   - Fix: keep the urb pointer before the loop (`qh->qtd_head->urb`). Returning the error instead of the short count would change what callers see; the STALL handling in `__cycle()` would have to treat both the same.
-   - Check: needs a host test of `ehci.c` itself (the simulation stops above it), or hardware.
+- **Report a STALL as an error code.** With item 4 fixed, a halted transfer still looks like a short one, so a STALL and a short packet are told apart only by direction. Returning `-EPIPE` from `qh_end_transfer()` for a halt with no other error bits would let `__cycle()` follow BOT exactly, but every caller of the EHCI layer (control requests in `usb.c` and `ehci.c`, and the ioctls in `loop.c`) would see a new error. Trigger: a bench run that shows a drive whose short packets and STALLs are confused.
 
 Trigger for the bench work: build a cIOS with these fixes, install it to a spare slot on the bench Wii (with the user's OK), and time single-sector writes on the drive from the USB Loader GX finding, before and after. USB Loader GX's unmount write skip (its `usbstorage2.c`) hides the problem there; time it with that skip turned off.
 

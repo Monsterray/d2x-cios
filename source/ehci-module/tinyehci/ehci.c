@@ -343,7 +343,6 @@ static void qh_end_transfer (void)
         struct ehci_qtd	*qtd;
         struct ehci_qh	*qh = ehci->asyncqh;
         u32 token;
-        int error = 0;
         for(qtd = qh->qtd_head; qtd; qtd = qtd->next){
                 token = hc32_to_cpu( qtd->hw_token);
                 if (likely (QTD_PID (token) != 2))
@@ -367,13 +366,13 @@ static void qh_end_transfer (void)
                         if (QTD_CERR (token)==0)
                                 ehci_dbg(" toomany errors");
                         ehci_dbg("\n");
-                        error = -1;
                 }
         }
-        if(error){
-        //dump_qh(ehci->asyncqh);
-                qtd->urb->actual_length = error;
-        }
+        // A halted qTD (a STALL or a transaction error) ends the transfer
+        // early: urb->actual_length holds the bytes moved before the halt, so
+        // the caller sees a short transfer, and usbstorage.c relies on that.
+        // This used to store -1 through qtd->urb here, after the loop, where
+        // qtd is NULL: a write through a pointer read from low memory.
         ehci->qtd_used = 0;
 }
 
