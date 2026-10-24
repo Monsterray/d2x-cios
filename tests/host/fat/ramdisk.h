@@ -8,6 +8,7 @@ struct ramdisk {
 	unsigned int sectors;
 	int inited;
 	unsigned int reads, writes;
+	int fail_writes;        /* nonzero: every write fails (a pulled card) */
 };
 
 extern struct ramdisk ramdisk[2];

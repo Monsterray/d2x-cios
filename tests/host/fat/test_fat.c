@@ -23,6 +23,8 @@ int fatw_close(long fd);
 int fatw_read(long fd, void *buf, unsigned int len);
 int fatw_write(long fd, const void *buf, unsigned int len);
 int fatw_corruptions(void);
+int fatw_deletedir(const char *path);
+int fatw_usage(const char *path, unsigned long long *size, unsigned int *files, unsigned int *dirs);
 int fatw_readdir(const char *path, char *out, unsigned int buflen, unsigned int *outlen,
 		 unsigned int entries);
 
@@ -148,12 +150,71 @@ static void test_readdir_count_only_frees(void)
 	CHECK(fatw_live_blocks() == live, "%d blocks leaked", fatw_live_blocks() - live);
 }
 
+/* A directory path over 256 characters: FatFs allows it (255 per name). */
+static void make_long_tree(char *top, size_t toplen)
+{
+	char path[400];
+	snprintf(top, toplen, "0:/%0200d", 0);
+	CHECK(fatw_mkdir(top) >= 0, "mkdir top failed");
+	snprintf(path, sizeof(path), "%s/%0100d", top, 1);
+	CHECK(fatw_mkdir(path) >= 0, "mkdir inner failed");
+	snprintf(path, sizeof(path), "%s/%0100d/f.txt", top, 1);
+	CHECK(fatw_create(path) >= 0, "create in inner failed");
+}
+
+/*
+ * DELETEDIR and GETUSAGE build each entry's path in a 256-byte stack buffer.
+ * A path that does not fit must fail cleanly (FS_ENAMETOOLONG), not run
+ * past the buffer: before, strcpy/strcat overflowed it (ASan reports a
+ * stack-buffer-overflow).
+ */
+static void test_deletedir_long_path(void)
+{
+	char top[256];
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_long_tree(top, sizeof(top));
+	CHECK_OK();
+	int r = fatw_deletedir(top);
+	CHECK(r == -110, "DELETEDIR of a too-long tree returned %d, expected FS_ENAMETOOLONG", r);
+}
+
+static void test_getusage_long_path(void)
+{
+	char top[256];
+	unsigned long long size = 0;
+	unsigned int files = 0, dirs = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_long_tree(top, sizeof(top));
+	CHECK_OK();
+	int r = fatw_usage(top, &size, &files, &dirs);
+	CHECK(r == -110, "GETUSAGE of a too-long tree returned %d, expected FS_ENAMETOOLONG", r);
+}
+
+/* A close that fails (the card went away) still frees the file's FIL. */
+static void test_close_failure_frees(void)
+{
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	CHECK(fatw_create("0:/c.txt") >= 0, "create failed");
+	int live = fatw_live_blocks();
+	long fd = fatw_open("0:/c.txt", FA_WRITE);
+	CHECK(fd > 0, "open failed");
+	CHECK(fatw_write(fd, "data", 4) == 4, "write failed");
+	ramdisk[0].fail_writes = 1;
+	int r = fatw_close(fd);
+	ramdisk[0].fail_writes = 0;
+	CHECK(r < 0, "close returned %d with the disk failing", r);
+	CHECK(fatw_live_blocks() == live, "%d FIL block leaked", fatw_live_blocks() - live);
+}
+
 static const struct hc_test tests[] = {
 	{ "one_volume", test_one_volume, false },
 	{ "sd_and_usb_together", test_sd_and_usb_together, false },
 	{ "readdir_small_buffer", test_readdir_small_buffer, false },
 	{ "readdir_returns_names", test_readdir_returns_names, false },
 	{ "readdir_count_only_frees", test_readdir_count_only_frees, false },
+	{ "deletedir_long_path", test_deletedir_long_path, false },
+	{ "getusage_long_path", test_getusage_long_path, false },
+	{ "close_failure_frees", test_close_failure_frees, false },
 };
 
 int main(int argc, char **argv)

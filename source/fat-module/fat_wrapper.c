@@ -236,13 +236,11 @@ s32 FAT_Close(s32 fd)
 
 	/* Close file */
 	ret = f_close(fil);
-	if (ret)
-		return FS_EFATAL;
 
-	/* Free memory */
+	/* Free memory: the descriptor is gone even when the close failed */
 	Mem_Free(fil);
 
-	return FS_SUCCESS;
+	return ret ? FS_EFATAL : FS_SUCCESS;
 }
 
 s32 FAT_Read(s32 fd, void *buffer, u32 len)
@@ -536,6 +534,10 @@ s32 FAT_DeleteDir(const char *dirpath)
 		/* Get name */
 		name = (*fno.lfname) ? fno.lfname : fno.fname;
 
+		/* The entry's path must fit: a tree can be deeper than _MAX_LFN */
+		if (strlen(dirpath) + 1 + strlen(name) >= sizeof(path))
+			return FS_ENAMETOOLONG;
+
 		/* Generate path */
 		strcpy(path, dirpath);
 		strcat(path, "/");
@@ -683,9 +685,13 @@ s32 FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS
 		if (fno.fattrib & AM_DIR) {
 			char subdirpath[_MAX_LFN + 1];
 
+			/* The subdirectory's path must fit: a tree can be deeper than _MAX_LFN */
+			len = strlen(dirpath);
+			if (len + 1 + strlen(name) >= sizeof(subdirpath))
+				return FS_ENAMETOOLONG;
+
 			/* Generate path */
 			strcpy(subdirpath, dirpath);
-			len = strlen(dirpath);
 			subdirpath[len] = '/';
 			strcpy(subdirpath + len + 1, name);
 

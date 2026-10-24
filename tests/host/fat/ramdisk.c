@@ -43,6 +43,8 @@ DRESULT disk_write(BYTE drv, const BYTE *buf, DWORD sector, BYTE count)
 {
 	if (drv > 1 || sector + count > ramdisk[drv].sectors)
 		return RES_PARERR;
+	if (ramdisk[drv].fail_writes)
+		return RES_ERROR;
 	memcpy(ramdisk[drv].data + (size_t) sector * RAMDISK_SECTOR, buf, (size_t) count * RAMDISK_SECTOR);
 	ramdisk[drv].writes++;
 	return RES_OK;
