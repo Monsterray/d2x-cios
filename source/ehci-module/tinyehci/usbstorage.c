@@ -100,7 +100,7 @@ struct ums_event {
 	u16 len;
 	s32 ret;
 };
-#define UMS_LOG_SIZE 128
+#define UMS_LOG_SIZE 256
 static struct ums_event ums_log[UMS_LOG_SIZE];
 static u32 ums_log_count;
 

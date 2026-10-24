@@ -171,6 +171,14 @@ int unplug_device=0;
 int handshake_mode=0;
 
 #include "hollywood.h"
+
+/* The event log lives in usbstorage.c (included at the end of this file) */
+#ifdef EHCI_DEBUG_LOG
+static void ums_log_event(u8 what, u8 ep, u32 len, s32 ret);
+#define UMS_LOG(what, ep, len, ret) ums_log_event(what, ep, len, ret)
+#else
+#define UMS_LOG(what, ep, len, ret) do {} while (0)
+#endif
 #define get_timer()  (*(((vu32*)HW_TIMER)))
 
 static int handshake (void __iomem *pstatus, void __iomem *ptr,
@@ -345,6 +353,7 @@ static void qh_end_transfer (void)
         u32 token;
         for(qtd = qh->qtd_head; qtd; qtd = qtd->next){
                 token = hc32_to_cpu( qtd->hw_token);
+                UMS_LOG('Q', QTD_PID(token), qtd->length, token);
                 if (likely (QTD_PID (token) != 2))
                         qtd->urb->actual_length += qtd->length - QTD_LENGTH (token);
                 if (!(qtd->length ==0 && ((token & 0xff)==QTD_STS_HALT)) &&
@@ -606,6 +615,7 @@ u32 usb_timeout=1000*1000;
         ehci_dma_map_bidir(ehci->async,sizeof(struct ehci_qh));
 
         retval = handshake/*_interrupt*/(&ehci->regs->port_status[dev->port],&ehci->regs->status,STS_INT,STS_INT,usb_timeout);
+        UMS_LOG('h', urb->ep, urb->transfer_buffer_length, retval);
 		
         //print_hex_dump_bytes ("qh mem",0,(void*)qh,17*4);
         //retval = poll_transfer_end(1000*1000);
@@ -633,6 +643,7 @@ u32 usb_timeout=1000*1000;
         // wait hc really stopped
                 retval = handshake(&ehci->regs->port_status[dev->port],&ehci->regs->async_next,~0,ehci->async->qh_dma,20*1000);
         //release memory, and actualise urb->actual_length
+        UMS_LOG('a', urb->ep, 0, retval);
         qh_end_transfer();
 
 		//writel (0, &ehci->regs->intr_enable);  // try interrupt
@@ -649,6 +660,7 @@ u32 usb_timeout=1000*1000;
 
 		
 		
+        UMS_LOG('U', urb->ep, urb->transfer_buffer_length, retval == 0 ? (s32)urb->actual_length : retval);
         if(retval==0){
                 
                 return urb->actual_length;

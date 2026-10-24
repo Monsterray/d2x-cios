@@ -53,6 +53,15 @@ clean)
 test)
     run "$tag" sh -c 'make -C tests/host && python3 -m unittest discover -s tests -p "test_*.py"' ;;
 *)
+    # Objects depend on their sources and Makefile, not on EXTRA_CFLAGS: when
+    # the flags change (say -DEHCI_DEBUG_LOG on or off), build from clean.
+    stamp=build/.extra_cflags
+    if [ "$(cat "$stamp" 2>/dev/null)" != "${EXTRA_CFLAGS:-}" ]; then
+        echo "EXTRA_CFLAGS changed ('${EXTRA_CFLAGS:-}'): building from clean"
+        run "$tag" sh -c './maked2x.sh clean' >/dev/null
+        mkdir -p build
+        printf '%s' "${EXTRA_CFLAGS:-}" > "$stamp"
+    fi
     run "$tag" sh -c 'g++ -O2 -Wall -Wextra $EXTRA_CFLAGS stripios_src/main.cpp -o stripios && ./maked2x.sh "$@"' \
         build "$@" ;;
 esac

@@ -101,7 +101,7 @@ static s32 rw(s32 ioctl, u32 lba, u32 count, void *buf, u32 size)
 /* The EHCI module's event ring: u32 count, then 12-byte events. */
 static void print_log(void)
 {
-	static u8 raw[4 + 128 * 12] ATTRIBUTE_ALIGN(32);
+	static u8 raw[4 + 256 * 12] ATTRIBUTE_ALIGN(32);
 	s32 n = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_DEBUG_LOG, ":d", raw, sizeof(raw));
 	if (n < 4) {
 		say("umsbench: DEBUG_LOG = %d (not an EHCI_DEBUG_LOG build?)\n", n);
