@@ -36,8 +36,10 @@ if ! docker image inspect "$tag" >/dev/null 2>&1; then
     docker build -t "$tag" - < docker/Dockerfile
 fi
 
+# SOURCE_DATE_EPOCH, when set, fixes the build date stamped into the modules,
+# so two builds of different commits can be compared byte for byte.
 run() {
-    docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp "$@"
+    docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp         ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} "$@"
 }
 
 case "${1:-}" in

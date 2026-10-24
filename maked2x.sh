@@ -162,5 +162,6 @@ echo Building ${D2XBUILD}
 echo -----------------------------
 
 [ ! -d "build/${D2XBUILD}" ] && mkdir -p "build/${D2XBUILD}"
-export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+# The build date in the modules: the last commit's, unless set (to compare builds)
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --pretty=%ct)}
 make_modules

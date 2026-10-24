@@ -1,6 +1,7 @@
 # Build output (tools/build.sh, maked2x.sh)
 *.a
 *.o
+*.d
 *.elf
 *.orig
 *.map

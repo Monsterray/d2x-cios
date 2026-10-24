@@ -54,12 +54,17 @@ $(TARGET).elf: $(OBJS) $(LIBS)
 
 %.o: %.s
 	@echo -e " CC\t$@"
-	@$(CC) $(CFLAGS) -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
+	@$(CC) $(CFLAGS) -MMD -MP -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
 
 %.o: %.c
 	@echo -e " CC\t$@"
-	@$(CC) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 clean:
 	@echo -e "Cleaning..."
-	@rm -f $(OBJS) $(TARGET).elf $(TARGET).elf.orig $(TARGET).map
+	@rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET).elf $(TARGET).elf.orig $(TARGET).map
+
+# Rebuild an object when a header or an #included .c file changes (-MMD
+# writes each object's dependencies to a .d file), or when this Makefile does.
+$(OBJS): Makefile
+-include $(OBJS:.o=.d)

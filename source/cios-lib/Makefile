@@ -51,16 +51,21 @@ $(TARGET).a: $(OBJS) $(OBJS2)
 
 %.o: %.s
 	@echo -e " CC\t$@"
-	@$(CC) $(CFLAGS) -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
+	@$(CC) $(CFLAGS) -MMD -MP -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
 
 libwbfs/%.o: libwbfs/%.c
 	@echo -e " CC\t$@"
-	@$(CC) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 %.o: %.c
 	@echo -e " CC\t$@"
-	@$(CC) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 clean:
 	@echo -e "Cleaning..."
-	@rm -f $(OBJS) $(OBJS2) $(TARGET).a
+	@rm -f $(OBJS) $(OBJS2) $(OBJS:.o=.d) $(OBJS2:.o=.d) $(TARGET).a
+
+# Rebuild an object when a header or an #included .c file changes (-MMD
+# writes each object's dependencies to a .d file), or when this Makefile does.
+$(OBJS) $(OBJS2): Makefile
+-include $(OBJS:.o=.d) $(OBJS2:.o=.d)
