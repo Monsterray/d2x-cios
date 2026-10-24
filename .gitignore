@@ -3,6 +3,7 @@
 *.o
 *.d
 *.elf
+*.dol
 *.orig
 *.map
 *.exe
