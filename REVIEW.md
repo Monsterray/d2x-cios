@@ -49,6 +49,15 @@ Still open:
 
 Trigger for the bench work: build a cIOS with these fixes, install it to a spare slot on the bench Wii (with the user's OK), and time single-sector writes on the drive from the USB Loader GX finding, before and after. USB Loader GX's unmount write skip (its `usbstorage2.c`) hides the problem there; time it with that skip turned off.
 
+### USBS USB storage (IOS's USB stack)
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | **The CSW status was never checked**, as in the EHCI module (item 2 there): `USBStorage_Read()` and `USBStorage_Write()` in `usb-module/usbstorage.c` tested `retval > 0 && status != 0`, but `__cycle()` returns 0 on success. Now `>= 0`, so a failed command returns `USBSTORAGE_ESTATUS` and `usbstorage_WriteSectors()` reports false. | `tests/host/usbs`: `usbs_write_csw_failure_is_reported` (the write returned 0 before). |
+| Tools | `tests/host/usbs` builds the USBS driver against the same simulated drive, through IOS's USB API implemented on it. The USBS code assumes a big-endian CPU (native word loads of USB's little-endian fields with its own `Swap32()`), so the glue swaps the CBW, CSW and READ CAPACITY words at the boundary. | `usbs_roundtrip`. |
+
+Open question: USBS defines `USB_ClearHalt(id, ep)` as `USB_CancelEndpoint(id, ep)`, an IOS request that cancels an endpoint's pending transfers. Whether IOS also sends CLEAR_FEATURE(ENDPOINT_HALT) there is not visible in this code; if it does not, a STALLed endpoint stays halted after a USBS reset recovery. Trigger: a USBS drive that stops answering after a STALL on the bench.
+
 ### Next
 
 - **Bench test program.** A DOL, run from HBC through the bench queue, that reports which slots hold which cIOS (read only), then opens the cIOS's USB device and times sector reads and writes to a scratch file area, printing results to the HBC log. Trigger: before the first install of a fork build.

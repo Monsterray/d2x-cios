@@ -563,7 +563,8 @@ s32 USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u
 		return IPC_EINVAL;
 
 	retval = __cycle(dev, lun, buffer, n_sectors * dev->sector_size[lun], cmd, sizeof(cmd), 0, &status, NULL);
-	if(retval > 0 && status != 0)
+	// CSW status 1 or 2: the command failed (__cycle() returns 0 on success)
+	if(retval >= 0 && status != 0)
 		retval = USBSTORAGE_ESTATUS;
 
 	return retval;
@@ -589,7 +590,8 @@ s32 USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, 
 	if(lun >= dev->max_lun || dev->sector_size[lun] == 0)
 		return IPC_EINVAL;
 	retval = __cycle(dev, lun, (u8 *)buffer, n_sectors * dev->sector_size[lun], cmd, sizeof(cmd), 1, &status, NULL);
-	if(retval > 0 && status != 0)
+	// CSW status 1 or 2: the command failed (__cycle() returns 0 on success)
+	if(retval >= 0 && status != 0)
 		retval = USBSTORAGE_ESTATUS;
 	return retval;
 }
