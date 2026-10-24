@@ -3,27 +3,18 @@
  * (source/ehci-module/tinyehci/usbstorage.c) against the simulated drive in
  * sim.c. Run with `make -C tests/host`.
  *
- * A test marked KNOWN_BUG describes the behaviour the driver should have and
+ * A test marked known_bug describes the behaviour the driver should have and
  * is expected to fail until the bug is fixed. It is reported as "known" and
- * does not fail the run; once it passes, the run fails with "fixed?" so the
- * mark gets removed (like pytest's strict xfail).
+ * does not fail the run; once it passes, the run fails with "FIXED?" so the
+ * mark gets removed (hostcheck.h, from wii-homebrew-kit).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include "sim.h"
+#define HOSTCHECK_MAIN
+#include "hostcheck.h"
 
 #define SECTOR SIM_SECTOR_SIZE
-
-static const char *failure;
-static char failure_buf[512];
-
-#define CHECK(cond, ...) do { \
-	if (!(cond)) { \
-		snprintf(failure_buf, sizeof(failure_buf), __VA_ARGS__); \
-		failure = failure_buf; \
-		return; \
-	} \
-} while (0)
 
 static u8 buf[128 * SECTOR], back[128 * SECTOR];
 
@@ -45,16 +36,14 @@ static void mount(void)
 static void test_mount(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	CHECK(ums_sector_size() == SECTOR, "sector size %u", ums_sector_size());
 }
 
 static void test_read(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	CHECK(USBStorage_Read_Sectors(10, 1, buf), "read failed: %s", sim_summary());
 	CHECK(memcmp(buf, sim.data + 10 * SECTOR, SECTOR) == 0, "read returned other data");
 	CHECK(sim.cbws == 1 && sim.bot_resets == 0, "%s", sim_summary());
@@ -63,8 +52,7 @@ static void test_read(void)
 static void test_write_roundtrip(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, 100 * SECTOR, 1);
 	/* 100 sectors is 51200 bytes: the driver splits at 32 KB */
 	CHECK(USBStorage_Write_Sectors(200, 100, buf), "write failed: %s", sim_summary());
@@ -78,8 +66,7 @@ static void test_write_roundtrip(void)
 static void test_one_sector_write_is_fast(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, SECTOR, 2);
 	CHECK(USBStorage_Write_Sectors(1, 1, buf), "write failed: %s", sim_summary());
 	CHECK(sim.now_us < 10000, "one healthy sector write took %s", sim_summary());
@@ -89,8 +76,7 @@ static void test_one_sector_write_is_fast(void)
 static void test_write_after_one_timeout(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, SECTOR, 3);
 	sim.timeout_xfers = 1;
 	CHECK(USBStorage_Write_Sectors(5, 1, buf), "write failed: %s", sim_summary());
@@ -109,8 +95,7 @@ static void test_write_after_one_timeout(void)
 static void test_write_csw_failure_is_not_success(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, SECTOR, 4);
 	sim.fail_write_csw = 1;
 	s32 ok = USBStorage_Write_Sectors(7, 1, buf);
@@ -131,8 +116,7 @@ static void test_write_csw_failure_is_not_success(void)
 static void test_write_recovers_from_one_stall(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, SECTOR, 5);
 	sim.stall_write_data = 1;
 	sim.limit_us = 60 * 1000000ull;
@@ -152,8 +136,7 @@ static void test_write_recovers_from_one_stall(void)
 static void test_write_to_protected_drive_gives_up(void)
 {
 	mount();
-	if (failure)
-		return;
+	CHECK_OK();
 	fill(buf, SECTOR, 6);
 	sim.stall_write_data = 1000000;
 	sim.limit_us = 600 * 1000000ull;
@@ -162,13 +145,7 @@ static void test_write_to_protected_drive_gives_up(void)
 	CHECK(sim.now_us < 30 * 1000000ull, "giving up took %s", sim_summary());
 }
 
-struct test {
-	const char *name;
-	void (*fn)(void);
-	bool known_bug;
-};
-
-static const struct test tests[] = {
+static const struct hc_test tests[] = {
 	{ "mount", test_mount, false },
 	{ "read", test_read, false },
 	{ "write_roundtrip", test_write_roundtrip, false },
@@ -179,40 +156,14 @@ static const struct test tests[] = {
 	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, true },
 };
 
+static void setup(void)
+{
+	sim_reset();
+	ums_unplug();
+	sim.limit_us = 600 * 1000000ull;
+}
+
 int main(int argc, char **argv)
 {
-	/* static: setjmp/longjmp below */
-	static int bad, known, passed;
-	static size_t i;
-	for (i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
-		const struct test *t = &tests[i];
-		if (argc > 1 && !strstr(t->name, argv[1]))
-			continue;
-		sim_reset();
-		ums_unplug();
-		failure = NULL;
-		if (setjmp(sim_hang) == 0) {
-			if (!sim.limit_us)
-				sim.limit_us = 600 * 1000000ull;
-			t->fn();
-		} else {
-			snprintf(failure_buf, sizeof(failure_buf), "hung: %s", sim_summary());
-			failure = failure_buf;
-		}
-		if (!failure && !t->known_bug) {
-			printf("ok      %s\n", t->name);
-			passed++;
-		} else if (failure && t->known_bug) {
-			printf("known   %s: %s\n", t->name, failure);
-			known++;
-		} else if (!failure) {
-			printf("FIXED?  %s passes: remove its known_bug mark\n", t->name);
-			bad++;
-		} else {
-			printf("FAIL    %s: %s\n", t->name, failure);
-			bad++;
-		}
-	}
-	printf("%d passed, %d known bugs, %d failed\n", passed, known, bad);
-	return bad ? 1 : 0;
+	return hc_main(tests, HC_COUNT(tests), argc, argv, setup);
 }

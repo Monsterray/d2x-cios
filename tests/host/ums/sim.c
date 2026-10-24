@@ -1,14 +1,13 @@
 /* The simulated drive and EHCI layer; see sim.h. */
-#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "sim.h"
 #include "usb.h"
+#include "hostcheck.h"
 
 struct ehci_device;
 
 struct sim sim;
-jmp_buf sim_hang;
 int unplug_device, handshake_mode;
 u32 usb_timeout = 1000 * 1000;
 
@@ -21,7 +20,7 @@ static void tick(u64 us)
 	sim.now_us += us;
 	if (sim.limit_us && sim.now_us > sim.limit_us) {
 		sim.hung = true;
-		longjmp(sim_hang, 1);
+		hc_hang("hung: %s", sim_summary());
 	}
 }
 

@@ -24,6 +24,8 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 | Fix | `maked2x.sh` wrote empty `ciosmaps.xml`, `ciosmaps-vWii.xml`, `ReadMe.txt` and `d2x-beta.bat` when `awk` was mawk (no `rshift`), and still printed "Done!". It now uses gawk and stops if a replacement fails or comes out empty. | Under mawk the four files were 0 bytes; now they are 10793, 42837, 2973 bytes, and the `.bat`. |
 | Tools | Line endings: LF, with the 50 upstream CRLF files pinned `-text`; `tests/test_line_endings.py`, `tools/fix_line_endings.py`. | `git add --renormalize .` changes no content. |
 | Tools | `tests/host/ums`: `usbstorage.c` built unchanged for the host against a simulated Bulk-Only drive with fault injection and simulated time. | 5 pass, 3 `known_bug` (below). |
+| Tools | The image moved from bookworm to trixie: gcc 12's ASan hung at start-up (`DEADLYSIGNAL` loop) in 2 of 20 host-test runs on a Linux 6.18 kernel; gcc 14's in 0 of 40. devkitARM r32 runs unchanged (`libelf1t64`). | The seven `.app` files are byte-identical from both images. |
+| Tools | Adopted wii-homebrew-kit: `tests/host/hostcheck.h` (the runner), `tools/wii_targets.py` (bench guards), `tools/dolphin_run.py`. | Host tests unchanged: 5 pass, 3 known. |
 
 ### EHCI USB storage: write errors are not recovered
 

@@ -11,12 +11,12 @@
  *
  * Time is simulated: sim.now_us advances by a fixed cost per transfer, by
  * ehci_msleep()/ehci_usleep(), and by usb_timeout for each timeout. A test
- * that would hang the module stops at sim.limit_us with sim.hung set.
+ * that would hang the module stops at sim.limit_us: sim.hung is set and
+ * hc_hang() (hostcheck.h) ends the test as failed.
  */
 #ifndef SIM_H
 #define SIM_H
 
-#include <setjmp.h>
 #include "types.h"
 
 #define SIM_SECTOR_SIZE 512
@@ -51,7 +51,6 @@ struct sim {
 };
 
 extern struct sim sim;
-extern jmp_buf sim_hang;        /* longjmp target when sim.limit_us passes */
 
 void sim_reset(void);           /* a fresh drive, no faults, time 0 */
 const char *sim_summary(void);

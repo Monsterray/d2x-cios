@@ -40,6 +40,7 @@ make -C tests/host             # the same, with a local cc
 - To add a fault: add a countdown field to `struct sim` (`sim.h`), act on it in `sim.c` where the real device would misbehave, and write a test that sets it. Model the fault on what a real drive does (USB Mass Storage Class Bulk-Only Transport 1.0, sections 5 and 6), and say so in a comment.
 - Host builds are 64-bit and little-endian. Code that compares structs containing pointers, or that depends on endianness, can behave differently. The descriptor comparison in `USBStorage_Open()` is the known case; `sim.c` serves descriptors from static storage for it.
 - An unexpected `FIXED?` result means a `known_bug` test passes. Find out why before removing the mark.
+- The image is Debian trixie (gcc 14) on purpose: gcc 12's AddressSanitizer hung at start-up in 2 of 20 runs on this workstation's WSL 2 kernel (6.18, 32 bits of mmap randomization), looping on `AddressSanitizer:DEADLYSIGNAL`; gcc 14 hung in 0 of 40. Docker's default seccomp profile blocks `setarch -R`, so turning randomization off is not the fix. The Makefile also wraps the run in `timeout 300`.
 
 ## Dolphin
 

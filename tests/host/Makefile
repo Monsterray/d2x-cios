@@ -17,15 +17,20 @@ TINYEHCI := ../../source/ehci-module/tinyehci
 
 ALL_CFLAGS = $(CFLAGS) $(WARN) $(SAN) $(EXTRA_CFLAGS)
 
+# A wall-clock limit as well as the simulated one: a hang outside the
+# simulation (a sanitizer runtime, a loop that never calls the simulation)
+# must fail the run, not stall CI.
+RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
+
 .PHONY: all test clean
 all: test
 
 test: ums/test_ums
-	./ums/test_ums
+	$(RUN) ./ums/test_ums
 
-ums/test_ums: ums/test_ums.c ums/sim.c ums/ums_unit.c ums/sim.h ums/types.h \
+ums/test_ums: ums/test_ums.c ums/sim.c ums/ums_unit.c ums/sim.h ums/types.h hostcheck.h \
 		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h $(TINYEHCI)/usb.h
-	$(CC) $(ALL_CFLAGS) -Iums -I$(TINYEHCI) -o $@ ums/test_ums.c ums/sim.c ums/ums_unit.c
+	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -o $@ ums/test_ums.c ums/sim.c ums/ums_unit.c
 
 clean:
 	rm -f ums/test_ums ums/test_ums.exe
