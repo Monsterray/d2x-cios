@@ -28,8 +28,9 @@ all: test
 test: ums/test_ums
 	$(RUN) ./ums/test_ums
 
-ums/test_ums: ums/test_ums.c ums/sim.c ums/ums_unit.c ums/sim.h ums/types.h hostcheck.h \
-		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h $(TINYEHCI)/usb.h
+ums/test_ums: ums/test_ums.c ums/sim.c ums/ums_unit.c ums/sim.h ums/types.h ums/ehci_dev.h \
+		hostcheck.h $(TINYEHCI)/usb.c $(TINYEHCI)/usb.h \
+		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
 	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -o $@ ums/test_ums.c ums/sim.c ums/ums_unit.c
 
 clean:

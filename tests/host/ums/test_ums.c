@@ -145,6 +145,33 @@ static void test_write_to_protected_drive_gives_up(void)
 	CHECK(sim.now_us < 30 * 1000000ull, "giving up took %s", sim_summary());
 }
 
+/*
+ * A Bulk-Only reset recovery (BOT 5.3.4: the class reset, then
+ * CLEAR_FEATURE(ENDPOINT_HALT) on both bulk endpoints) puts the drive's data
+ * toggles back to DATA0 (USB 2.0 9.4.5). The host must do the same, or the
+ * next transfer on an endpoint whose toggle was DATA1 is discarded as a
+ * retransmission, and the command times out into a port reset.
+ *
+ * Each READ flips the bulk-out toggle once (the CBW), so of two reads one
+ * leaves it at DATA1 when the reset comes.
+ *
+ * Today USB_ClearHalt() (tinyehci/usb.c) sends the request but leaves the
+ * host's toggle in ehci_device.toggles as it was.
+ */
+static void test_reset_recovery_keeps_toggles_in_step(void)
+{
+	mount();
+	CHECK_OK();
+	for (int i = 0; i < 2; i++) {
+		CHECK(USBStorage_Read_Sectors(20 + i, 1, buf), "read %d failed: %s", i, sim_summary());
+		CHECK(ums_reset() >= 0, "reset recovery failed: %s", sim_summary());
+		CHECK(USBStorage_Read_Sectors(30 + i, 1, buf), "read after reset %d failed: %s", i,
+		      sim_summary());
+		CHECK(memcmp(buf, sim.data + (30 + i) * SECTOR, SECTOR) == 0, "read returned other data");
+	}
+	CHECK(sim.toggle_losses == 0 && sim.port_resets == 0, "%s", sim_summary());
+}
+
 static const struct hc_test tests[] = {
 	{ "mount", test_mount, false },
 	{ "read", test_read, false },
@@ -154,6 +181,7 @@ static const struct hc_test tests[] = {
 	{ "write_csw_failure_is_not_success", test_write_csw_failure_is_not_success, true },
 	{ "write_recovers_from_one_stall", test_write_recovers_from_one_stall, true },
 	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, true },
+	{ "reset_recovery_keeps_toggles_in_step", test_reset_recovery_keeps_toggles_in_step, true },
 };
 
 static void setup(void)

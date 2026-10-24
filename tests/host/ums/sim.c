@@ -2,10 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "sim.h"
-#include "usb.h"
+#include "ehci_dev.h"
 #include "hostcheck.h"
-
-struct ehci_device;
 
 struct sim sim;
 int unplug_device, handshake_mode;
@@ -27,10 +25,15 @@ static void tick(u64 us)
 void ehci_usleep(int us) { tick(us); }
 void ehci_msleep(int ms) { tick((u64)ms * 1000); }
 
+/* A bus reset: the drive forgets its state and its toggles; tinyehci zeroes
+ * the host's toggles when it resets the port or the device (ehci.c). */
 static void bus_reset(void)
 {
 	sim.phase = SIM_CBW;
 	sim.halt_in = sim.halt_out = false;
+	sim.toggle_in = sim.toggle_out = 0;
+	if (sim.dev)
+		sim.dev->toggles = 0;
 }
 
 int ehci_reset_port(int port) { (void)port; sim.port_resets++; tick(60000); bus_reset(); return 0; }
@@ -65,7 +68,7 @@ static usb_configurationdesc sim_conf;
 
 s32 USB_GetDescriptors(struct ehci_device *fd, usb_devdesc *udd)
 {
-	(void)fd;
+	sim.dev = fd;
 	memset(udd, 0, sizeof(*udd));
 	udd->bLength = USB_DT_DEVICE_SIZE;
 	udd->bDescriptorType = USB_DT_DEVICE;
@@ -87,10 +90,10 @@ s32 USB_GetDescriptors(struct ehci_device *fd, usb_devdesc *udd)
 	memset(sim_eps, 0, sizeof(sim_eps));
 	sim_eps[0].bEndpointAddress = EP_IN;
 	sim_eps[0].bmAttributes = 2;
-	sim_eps[0].wMaxPacketSize = 512;
+	sim_eps[0].wMaxPacketSize = SIM_MAXPACKET;
 	sim_eps[1].bEndpointAddress = EP_OUT;
 	sim_eps[1].bmAttributes = 2;
-	sim_eps[1].wMaxPacketSize = 512;
+	sim_eps[1].wMaxPacketSize = SIM_MAXPACKET;
 	return 0;
 }
 
@@ -99,33 +102,41 @@ void USB_FreeDescriptors(usb_devdesc *udd)
 	udd->configurations = NULL;
 }
 
-s32 USB_GetConfiguration(struct ehci_device *fd, u8 *conf) { (void)fd; *conf = 1; return 0; }
-s32 USB_SetConfiguration(struct ehci_device *fd, u8 conf) { (void)fd; (void)conf; return 0; }
-s32 USB_SetAlternativeInterface(struct ehci_device *fd, u8 i, u8 alt) { (void)fd; (void)i; (void)alt; return 0; }
-
-s32 USB_ClearHalt(struct ehci_device *fd, u8 ep)
+/* Control transfers on endpoint 0 (toggles there are not modelled). */
+s32 ehci_control_message(struct ehci_device *dev, u8 type, u8 req, u16 value, u16 index,
+			 u16 len, void *buf)
 {
-	(void)fd;
+	sim.dev = dev;
 	tick(XFER_US);
-	sim.clear_halts++;
-	if (ep & 0x80)
-		sim.halt_in = false;
-	else
-		sim.halt_out = false;
-	return 0;
-}
-
-s32 USB_WriteCtrlMsg(struct ehci_device *fd, u8 type, u8 req, u16 value, u16 index, u16 len, void *data)
-{
-	(void)fd; (void)type; (void)value; (void)index;
-	tick(XFER_US);
-	if (req == 0xFF) {              /* Bulk-Only Mass Storage Reset */
-		sim.bot_resets++;
-		sim.phase = SIM_CBW;    /* halts stay until CLEAR_FEATURE */
+	if (type == 0x02 && req == USB_REQ_CLEARFEATURE && value == USB_FEATURE_ENDPOINT_HALT) {
+		/* USB 2.0 9.4.5: the halt clears and the toggle goes to DATA0 */
+		sim.clear_halts++;
+		if (index & 0x80) {
+			sim.halt_in = false;
+			sim.toggle_in = 0;
+		} else {
+			sim.halt_out = false;
+			sim.toggle_out = 0;
+		}
 		return 0;
 	}
-	if (req == 0xFE && len >= 1) {  /* Get Max LUN */
-		*(u8 *)data = 0;
+	if (type == 0x80 && req == USB_REQ_GETCONFIG && len >= 1) {
+		*(u8 *)buf = 1;
+		return 1;
+	}
+	if (type == 0x00 && req == USB_REQ_SETCONFIG) {
+		/* USB 2.0 9.1.1.5: every endpoint back to DATA0 */
+		sim.toggle_in = sim.toggle_out = 0;
+		sim.halt_in = sim.halt_out = false;
+		return 0;
+	}
+	if (type == 0x21 && req == 0xFF) {      /* Bulk-Only Mass Storage Reset */
+		sim.bot_resets++;
+		sim.phase = SIM_CBW;            /* halts and toggles stay (BOT 3.1) */
+		return 0;
+	}
+	if (type == 0xA1 && req == 0xFE && len >= 1) {  /* Get Max LUN */
+		*(u8 *)buf = 0;
 		return 1;
 	}
 	return 0;
@@ -160,6 +171,7 @@ static void start_command(const u8 *cbw)
 		sim.in_buf[7] = 10;
 		sim.in_buf[12] = sim.asc;
 		set_sense(0, 0);
+		sim.senses++;
 		sim.phase = SIM_DATA_IN;
 		break;
 	case 0x12:                      /* INQUIRY */
@@ -183,7 +195,8 @@ static void start_command(const u8 *cbw)
 		sim.phase = SIM_DATA_OUT;
 		if (sim.stall_write_data > 0) {
 			/* Like a write-protected or failing drive: refuse the
-			 * data, STALL bulk-out, answer status 1 in the CSW. */
+			 * data, STALL bulk-out, answer status 1 in the CSW
+			 * (BOT 6.7.3, case Ho < Do). */
 			sim.stall_write_data--;
 			sim.halt_out = true;
 			sim.status = 1;
@@ -205,7 +218,7 @@ static void start_command(const u8 *cbw)
 	}
 }
 
-static s32 bulk_out(u16 len, const u8 *p)
+static s32 bulk_out(u32 len, const u8 *p)
 {
 	if (sim.halt_out)
 		return 0;       /* STALL: tinyehci returns the 0 bytes moved */
@@ -242,7 +255,17 @@ static s32 bulk_out(u16 len, const u8 *p)
 	return 0;
 }
 
-static s32 bulk_in(u16 len, u8 *p)
+/* What the drive has to send now: 0 when it would NAK. */
+static u32 in_pending(void)
+{
+	if (sim.phase == SIM_DATA_IN)
+		return sim.xfer_len - sim.xfer_done;
+	if (sim.phase == SIM_CSW)
+		return 13;
+	return 0;
+}
+
+static s32 bulk_in(u32 len, u8 *p)
 {
 	if (sim.halt_in)
 		return 0;
@@ -274,15 +297,63 @@ static s32 bulk_in(u16 len, u8 *p)
 	return no_answer();
 }
 
-s32 USB_WriteBlkMsg(struct ehci_device *fd, u8 ep, u16 len, void *data)
+static u32 packets(u32 bytes)
 {
-	(void)fd;
+	return bytes ? (bytes + SIM_MAXPACKET - 1) / SIM_MAXPACKET : 1;
+}
+
+s32 ehci_bulk_message(struct ehci_device *dev, u8 ep, u16 len, void *data)
+{
+	bool in = ep & 0x80;
+	u8 *drive_toggle = in ? &sim.toggle_in : &sim.toggle_out;
+	u8 *p = data;
+	sim.dev = dev;
 	if (sim.timeout_xfers > 0) {
 		sim.timeout_xfers--;
 		return no_answer();
 	}
 	tick(XFER_US + len / 64);       /* about 40 MB/s */
-	return (ep & 0x80) ? bulk_in(len, data) : bulk_out(len, data);
+	if (in ? sim.halt_in : sim.halt_out)
+		return 0;               /* STALL handshake: no toggle changes */
+
+	u8 host = get_toggle(dev, ep);
+	if (host != *drive_toggle) {
+		/* USB 2.0 8.6.4: the receiver acknowledges the first packet and
+		 * discards it as a retransmission. The sender flips its toggle;
+		 * the receiver does not. */
+		sim.toggle_losses++;
+		if (!in) {
+			u32 first = len < SIM_MAXPACKET ? len : SIM_MAXPACKET;
+			u32 n = packets(len);
+			set_toggle(dev, ep, host ^ (n & 1));
+			if (len > first) {      /* the rest arrives, in step again */
+				*drive_toggle ^= (n - 1) & 1;
+				bulk_out(len - first, p + first);
+			}
+			return len;     /* the host saw every packet acknowledged */
+		}
+		u32 avail = in_pending();
+		if (!avail)
+			return no_answer();
+		/* The drive sent its first packet and counts it delivered. */
+		*drive_toggle ^= 1;
+		if (sim.phase == SIM_CSW) {
+			sim.phase = SIM_CBW;
+		} else {
+			sim.xfer_done += avail < SIM_MAXPACKET ? avail : SIM_MAXPACKET;
+			if (sim.xfer_done == sim.xfer_len)
+				sim.phase = SIM_CSW;
+		}
+		return no_answer();     /* the host is still waiting for it */
+	}
+
+	s32 r = in ? bulk_in(len, p) : bulk_out(len, p);
+	if (r > 0 || (r == 0 && len == 0)) {
+		u32 n = packets(r);
+		set_toggle(dev, ep, host ^ (n & 1));
+		*drive_toggle ^= n & 1;
+	}
+	return r;
 }
 
 void sim_reset(void)
@@ -297,10 +368,10 @@ void sim_reset(void)
 
 const char *sim_summary(void)
 {
-	static char s[256];
+	static char s[320];
 	snprintf(s, sizeof(s), "%.3f s, %u CBWs, %u CSWs, %u BOT resets, %u clear-halts, "
-		 "%u port resets, %u device resets%s",
+		 "%u port resets, %u device resets, %u toggle losses%s",
 		 sim.now_us / 1e6, sim.cbws, sim.csws, sim.bot_resets, sim.clear_halts,
-		 sim.port_resets, sim.dev_resets, sim.hung ? ", HUNG" : "");
+		 sim.port_resets, sim.dev_resets, sim.toggle_losses, sim.hung ? ", HUNG" : "");
 	return s;
 }
