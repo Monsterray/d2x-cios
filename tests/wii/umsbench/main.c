@@ -2,11 +2,14 @@
  * umsbench: time USB mass-storage sector reads and writes through a cIOS.
  *
  *     hbc.py run umsbench.dol [--ios=249] [--write-back [--writes=N]]
- *                             [--timeout=N] [--log]
+ *                             [--big-writes=N] [--timeout=N] [--quirks=N] [--log]
  *
  * --timeout and --log need an EHCI module built with EHCI_DEBUG_LOG:
  * --timeout sets its sector I/O timeout (usb_timeout units; 1000000 is
- * about 1.05 s), --log prints its Bulk-Only event log after the writes.
+ * about 1.05 s), --quirks sets its UMS_QUIRK_* bits before UMS_INIT (1: pad
+ * every CBW to 12 bytes), --log prints its Bulk-Only event log after the
+ * writes. --big-writes is the number of 64-sector writes (default 5, at
+ * most --writes).
  *
  * Prints the cIOS in the slot (its TMD version), reloads to it, opens the
  * EHCI module's /dev/usb2, and times reads of 1 and 64 sectors in the middle
@@ -24,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "hbc_netlog.h"
 
 #define UMS_BASE                    (('U' << 24) | ('M' << 16) | ('S' << 8))
@@ -35,6 +39,7 @@
 /* EHCI_DEBUG_LOG builds of the EHCI module only */
 #define USB_IOCTL_UMS_DEBUG_LOG     (UMS_BASE + 0x90)
 #define USB_IOCTL_UMS_SET_TIMEOUT   (UMS_BASE + 0x91)
+#define USB_IOCTL_UMS_SET_QUIRKS    (UMS_BASE + 0x92)
 
 #define RUNS      20
 #define BIG       64            /* sectors: the EHCI module's 32 KB transfer */
@@ -160,8 +165,10 @@ static int bench(int argc, char **argv)
 	u32 ios = 249, sector_size = 0, sectors, lba;
 	bool write_back = false;
 	int writes = RUNS;
-	u32 io_timeout = 0;
+	int big_writes = 5;
+	u32 io_timeout = 0, quirks = 0;
 	bool log = false;
+	int dump = 0;
 	struct timing r1 = {0}, r64 = {0}, w1 = {0}, w64 = {0};
 	u32 changed = 0;
 
@@ -174,8 +181,14 @@ static int bench(int argc, char **argv)
 			writes = atoi(argv[i] + 9);
 		else if (!strncmp(argv[i], "--timeout=", 10))
 			io_timeout = strtoul(argv[i] + 10, NULL, 10);
+		else if (!strncmp(argv[i], "--big-writes=", 13))
+			big_writes = atoi(argv[i] + 13);
+		else if (!strncmp(argv[i], "--quirks=", 9))
+			quirks = strtoul(argv[i] + 9, NULL, 0);
 		else if (!strcmp(argv[i], "--log"))
 			log = true;
+		else if (!strncmp(argv[i], "--dump=", 7))
+			dump = atoi(argv[i] + 7);
 	}
 
 	console_setup();
@@ -187,6 +200,7 @@ static int bench(int argc, char **argv)
 	 * its network is gone, so a new hbc_netlog_init() starts it again. */
 	hbc_netlog_close();
 	net_deinit();
+	printf("umsbench: reloading to IOS%u...\n", ios);
 	s32 ret = IOS_ReloadIOS(ios);
 	hbc_netlog_init();
 	say("umsbench: IOS_ReloadIOS(%u) = %d; now IOS%d v%d\n", ios, ret,
@@ -207,6 +221,10 @@ static int bench(int argc, char **argv)
 	if (io_timeout)
 		say("umsbench: SET_TIMEOUT(%u) = %d\n", io_timeout,
 		    IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_SET_TIMEOUT, "i:", io_timeout));
+	if (quirks)
+		say("umsbench: SET_QUIRKS(%u) = %d\n", quirks,
+		    IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_SET_QUIRKS, "i:", quirks));
+	printf("umsbench: starting the USB drive...\n");
 	s64 t0 = gettime();
 	ret = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_INIT, ":");
 	u32 init_ms = ticks_to_millisecs(diff_ticks(t0, gettime()));
@@ -230,6 +248,20 @@ static int bench(int argc, char **argv)
 	}
 	lba = (sectors / 2) & ~63u;
 
+	/* --dump=N: print the first N sectors of the test area, read only */
+	for (int s = 0; s < dump && s < (int) big; s++) {
+		s32 r = rw(USB_IOCTL_UMS_READ_SECTORS, lba + s, 1, buf, sector_size);
+		say("umsbench: dump sector %u (read %d):\n", lba + s, r);
+		for (u32 o = 0; o < sector_size; o += 32) {
+			char line[96];
+			int n = 0;
+			for (int b = 0; b < 32; b++)
+				n += snprintf(line + n, sizeof(line) - n, "%02x", buf[o + b]);
+			say("  %03x %s\n", o, line);
+		}
+	}
+
+	printf("umsbench: timing %d reads of 1 and %u sectors at sector %u...\n", RUNS, big, lba);
 	for (int i = 0; i < RUNS; i++) {
 		s64 s = gettime();
 		add(&r1, s, rw(USB_IOCTL_UMS_READ_SECTORS, lba + i, 1, buf, sector_size));
@@ -251,13 +283,17 @@ static int bench(int argc, char **argv)
 			return 1;
 		}
 		for (int i = 0; i < writes; i++) {
+			printf("umsbench: writing sector %u (#%d of %d), waiting for the drive...\n",
+			       lba + (i % big), i + 1, writes);
 			s64 s = gettime();
 			add(&w1, s, rw(USB_IOCTL_UMS_WRITE_SECTORS, lba + (i % big), 1,
 				       orig + (i % big) * sector_size, sector_size));
 			say("umsbench: write 1 sector #%d: %llu us\n", i,
 			       ticks_to_microsecs(diff_ticks(s, gettime())));
 		}
-		for (int i = 0; i < (writes < 5 ? writes : 5); i++) {
+		for (int i = 0; i < (writes < big_writes ? writes : big_writes); i++) {
+			printf("umsbench: writing %u sectors at %u (#%d), waiting for the drive...\n",
+			       big, lba, i + 1);
 			s64 s = gettime();
 			add(&w64, s, rw(USB_IOCTL_UMS_WRITE_SECTORS, lba, big, orig, big * sector_size));
 		}
@@ -285,5 +321,8 @@ int main(int argc, char **argv)
 {
 	int rc = bench(argc, argv);
 	save_report();
+	/* Leave the result on the TV for a moment before HBC comes back */
+	printf("umsbench: done (report saved to sd:/umsbench.txt); back to HBC in 3 s\n");
+	sleep(3);
 	return rc;
 }
