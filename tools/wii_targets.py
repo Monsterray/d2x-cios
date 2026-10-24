@@ -149,7 +149,8 @@ def hbc(wii, *args, timeout=120, show=False, env=None):
     rc 124, never a hang of the queue lease."""
     try:
         r = subprocess.run([PY, HBC_TOOL, "--wii", wii, *map(str, args)],
-                           capture_output=True, text=True, timeout=timeout, env=env)
+                           capture_output=True, text=True, errors="replace",
+                           timeout=timeout, env=env)
         res = Result(r.returncode, r.stdout, r.stderr)
     except subprocess.TimeoutExpired:
         res = Result(124, "", f"timed out after {timeout} s")
