@@ -4,8 +4,9 @@
 
 Git for Windows' core.autocrlf=true checked text out with CRLF, and a few
 binary files got CRLF too. This rewrites CRLF to LF in every file Git treats
-as text, and restores a binary or -text file only where CRLF-to-LF alone turns
-it back into the committed bytes. Other changes, committed or not, are kept.
+as text (batch files stay CRLF, as .gitattributes asks), and restores a
+binary file only where CRLF-to-LF alone turns it back into the committed
+bytes. Other changes, committed or not, are kept.
 """
 
 import pathlib
@@ -33,6 +34,8 @@ def main():
             continue
         raw = file.read_bytes()
         if b"\r\n" not in raw:
+            continue
+        if "eol=crlf" in attr:     # batch files: CRLF in the checkout
             continue
         if attr.startswith("attr/text"):
             file.write_bytes(raw.replace(b"\r\n", b"\n"))

@@ -53,7 +53,7 @@ Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the m
 
 ## Conventions
 
-- **Line endings.** Text is LF everywhere (`.gitattributes` sets `* text=auto eol=lf`). The files that upstream has with CRLF stay CRLF, marked `-text`, so merges from upstream stay clean. Keep their endings when you edit them. A checkout made before this rule: run `python tools/fix_line_endings.py`.
+- **Line endings.** Every text file is LF, in the repository and in the checkout (`.gitattributes` sets `* text=auto eol=lf`, whatever `core.autocrlf` says). The one exception: `.bat` files are checked out with CRLF, which cmd.exe needs. Upstream has some files with CRLF; merge it with `git merge -X renormalize upstream/master` so the endings do not show up as conflicts. A checkout made before this rule: run `python tools/fix_line_endings.py`.
 - **Upstream-friendly changes.** Keep commits focused. Don't reformat or rename upstream files. A fix that suits upstream goes in its own commit with its test.
 - **Evidence.** Say what a change was checked with: a host test, a build, or a run on a Wii. Record findings and ideas in `REVIEW.md`.
 - **No keys or console data.** `keys/` is ignored; check `git status` before you commit.
