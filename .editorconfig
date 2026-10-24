@@ -1,0 +1,26 @@
+# https://editorconfig.org. Text is LF (.gitattributes); the upstream files
+# kept with CRLF are listed there as -text.
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+
+[*.bat]
+end_of_line = crlf
+
+[*.{c,h,s,S,ld,cpp}]
+indent_style = tab
+tab_width = 8
+
+[{Makefile,Makefile.*,*.mk}]
+indent_style = tab
+tab_width = 8
+
+[*.{py,sh}]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2

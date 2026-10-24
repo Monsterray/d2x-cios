@@ -1,0 +1,63 @@
+# Line endings: text is LF in the repository and in every checkout, on every
+# platform, whatever core.autocrlf says (Git for Windows sets it to true).
+* text=auto eol=lf
+
+# Files kept byte-for-byte as upstream (wiidev/d2x-cios) has them, CRLF
+# endings and all, so upstream merges stay clean. Git never converts them.
+# Edit them keeping their CRLF endings; tests/test_line_endings.py checks it.
+*.bat -text
+data/Changelog.txt -text
+data/ReadMe.txt -text
+data/ciosmaps-vWii.xml -text
+data/ciosmaps.xml -text
+replace.awk -text
+source/cios-lib/fat_tools.c -text
+source/cios-lib/hollywood.h -text
+source/cios-lib/swi_mload.c -text
+source/cios-lib/syscalls.h -text
+source/cios-lib/types.h -text
+source/cios-lib/vsprintf.c -text
+source/cios-lib/vsprintf.h -text
+source/dip-plugin/link.ld -text
+source/dip-plugin/main.c -text
+source/dip-plugin/start.s -text
+source/ehci-module/link.ld -text
+source/ehci-module/loop.c -text
+source/ehci-module/main.c -text
+source/ehci-module/start.s -text
+source/ehci-module/tinyehci.c -text
+source/es-plugin/link.ld -text
+source/es-plugin/main.c -text
+source/es-plugin/start.s -text
+source/fat-module/ccsbcs.c -text
+source/fat-module/diskio.c -text
+source/fat-module/diskio.h -text
+source/fat-module/ff.c -text
+source/fat-module/ff.h -text
+source/fat-module/ffconf.h -text
+source/fat-module/integer.h -text
+source/fat-module/led.c -text
+source/fat-module/led.h -text
+source/fat-module/link.ld -text
+source/fat-module/main.c -text
+source/fat-module/main.h -text
+source/fat-module/start.s -text
+source/fat-module/syscall.c -text
+source/ffs-plugin/link.ld -text
+source/ffs-plugin/main.c -text
+source/ffs-plugin/start.s -text
+source/mload-module/gecko.c -text
+source/mload-module/gecko.h -text
+source/mload-module/link.ld -text
+source/mload-module/main.c -text
+source/mload-module/start.s -text
+source/usb-module/link.ld -text
+source/usb-module/main.c -text
+source/usb-module/start.s -text
+
+# Images and other binary data.
+*.jpg binary
+*.png binary
+*.bin binary
+*.app binary
+*.wad binary

@@ -1,3 +1,4 @@
+# Build output (tools/build.sh, maked2x.sh)
 *.a
 *.o
 *.elf
@@ -5,4 +6,31 @@
 *.map
 *.exe
 build/
+dist/
 /stripios
+
+# Host test binaries (tests/host)
+tests/host/ums/test_ums
+
+# Wii keys and console data: never commit them
+/keys/*
+!/keys/.gitkeep
+*keys.bin
+otp.bin
+common-key
+sd-key
+*.pem
+
+# Local settings and run output
+.venv/
+.dev/
+.runs/
+__pycache__/
+*.pyc
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

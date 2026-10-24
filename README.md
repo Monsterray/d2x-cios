@@ -32,6 +32,13 @@ NO ONE BUT YOURSELF IS RESPONSIBLE FOR ANY DAMAGE TO YOUR WII CONSOLE BECAUSE OF
 
 
 
+#### DEVELOPMENT
+
+  To build, test or contribute, see [CONTRIBUTING.md](CONTRIBUTING.md). Builds run in a pinned
+  container (`tools/build.sh`); tests run with `tools/build.sh test`.
+
+
+
 #### KUDOS
 
  * *rodries*, for the help with EHCI improvements.

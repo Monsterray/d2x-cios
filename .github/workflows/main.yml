@@ -19,31 +19,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      # "MAJOR MINOR" for maked2x.sh. Set the repository variable D2X_VERSION
+      # (or the older VERSION secret) to name release builds.
+      D2X_VERSION: ${{ vars.D2X_VERSION || secrets.VERSION || '999 ci' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download devkitPPC r32
-        run: |
-          wget "https://github.com/Leseratte10/compile-devkitARM-r32/releases/download/2020-02-20/devkitARM-r32-linux_debian-buster.tar.gz"
-          tar -xf devkitARM-r32-linux_debian-buster.tar.gz -C /opt
-          rm devkitARM-r32-linux_debian-buster.tar.gz
-
-      - name: Compile stripios
-        run: |
-          cd stripios_src
-          g++ main.cpp -o stripios
-          cp stripios ..
-
+      # The same pinned image (docker/Dockerfile) as a local tools/build.sh.
       - name: Compile cIOS
         run: |
-          sudo apt-get install -y libfl2
-          chmod +x maked2x.sh
-          ./maked2x.sh ${{ secrets.VERSION }}
-          echo "upload_name=v${{ secrets.VERSION }}-$(git rev-parse --short=7 HEAD)" | tr ' ' '-' >> $GITHUB_ENV
+          tools/build.sh $D2X_VERSION
+          echo "upload_name=v${D2X_VERSION}-$(git rev-parse --short=7 HEAD)" | tr ' ' '-' >> "$GITHUB_ENV"
+
+      - name: Test
+        run: tools/build.sh test
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        with: 
+        with:
           name: d2x-${{ env.upload_name }}
           path: build

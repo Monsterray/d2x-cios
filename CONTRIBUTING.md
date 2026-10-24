@@ -1,0 +1,62 @@
+# Contributing to d2x cIOS
+
+This fork keeps [wiidev/d2x-cios](https://github.com/wiidev/d2x-cios) buildable, adds tests, and fixes module bugs in commits that can go back upstream.
+
+## Set up
+
+You need Git, Docker and Python 3.10 or newer. Nothing else is installed on your machine: the toolchain runs in a container.
+
+| OS | Docker |
+| --- | --- |
+| Linux | Docker Engine; add yourself to the `docker` group |
+| macOS | Docker Desktop, OrbStack or Colima |
+| Windows | Docker Engine inside WSL 2, or Docker Desktop. Run the commands below from Git Bash. If `docker` is not on PATH there, `tools/build.sh` uses `wsl -e docker`. |
+
+```sh
+git clone https://github.com/Monsterray/d2x-cios.git
+cd d2x-cios
+git remote add upstream https://github.com/wiidev/d2x-cios.git
+```
+
+## Build
+
+```sh
+tools/build.sh                 # modules in build/d2x-v999-unknown/
+tools/build.sh 11 beta4        # build/d2x-v11-beta4/
+tools/build.sh clean
+```
+
+The first run builds the image `d2x-build:<hash>` from `docker/Dockerfile`: Debian (pinned by digest) and devkitARM r32 (pinned by SHA-256). The modules are big-endian ARM, and devkitARM releases after r32 cannot build them, so please don't build with a locally installed devkitARM.
+
+Builds are reproducible: the date stamped into the modules comes from the last commit, so the same tree gives byte-identical `.app` files.
+
+`build/` holds one `.app` per module (EHCI, USBS, FAT, MLOAD, DIPP, ES, FFSP), plus `ciosmaps.xml`, `ciosmaps-vWii.xml` and `ReadMe.txt` for the d2x cIOS Installer and ModMii.
+
+## Test
+
+```sh
+tools/build.sh test
+```
+
+| Check | Where | Needs |
+| --- | --- | --- |
+| Line endings and `.gitattributes` coverage | `tests/test_line_endings.py` | Python |
+| EHCI USB storage driver (Bulk-Only Transport, retries, errors) against a simulated drive | `tests/host/ums/` | a C compiler (in the image) |
+| The modules build | `tools/build.sh` | Docker |
+| A cIOS on a real Wii | not automated yet; see REVIEW.md | a Wii you can recover |
+
+Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.
+
+Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the modules.
+
+## Conventions
+
+- **Line endings.** Text is LF everywhere (`.gitattributes` sets `* text=auto eol=lf`). The files that upstream has with CRLF stay CRLF, marked `-text`, so merges from upstream stay clean. Keep their endings when you edit them. A checkout made before this rule: run `python tools/fix_line_endings.py`.
+- **Upstream-friendly changes.** Keep commits focused. Don't reformat or rename upstream files. A fix that suits upstream goes in its own commit with its test.
+- **Evidence.** Say what a change was checked with: a host test, a build, or a run on a Wii. Record findings and ideas in `REVIEW.md`.
+- **No keys or console data.** `keys/` is ignored; check `git status` before you commit.
+- **AI agents** read `AGENTS.md` and `.agents/skills/d2x-build-and-test/SKILL.md`.
+
+## Safety
+
+A cIOS is installed to the Wii's NAND. Test on a console that has BootMii (or Priiloader) and a NAND backup, install to a spare slot (249 to 251 are the usual ones), and keep a known-good d2x WAD for that slot so you can put it back.

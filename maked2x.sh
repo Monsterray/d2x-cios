@@ -13,7 +13,12 @@ make_clean() {
 # Replace variables on certain files
 replace_vars() {
         echo -n Replacing variables in $1...
-        awk -v major_ver=${MAJOR_VERSION} -v minor_ver=${MINOR_VERSION} -f replace.awk "data/$1" > "$2/$1"
+        # replace.awk needs gawk (rshift); mawk fails and left an empty file.
+        if ! ${AWK:-gawk} -v major_ver=${MAJOR_VERSION} -v minor_ver=${MINOR_VERSION} -f replace.awk "data/$1" > "$2/$1" || [ ! -s "$2/$1" ]; then
+                echo
+                echo "Replacing variables in $1 failed (is gawk installed?)"
+                quit
+        fi
         echo done
 }
 
