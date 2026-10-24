@@ -190,6 +190,72 @@ static void test_getusage_long_path(void)
 	CHECK(r == -110, "GETUSAGE of a too-long tree returned %d, expected FS_ENAMETOOLONG", r);
 }
 
+/* A chain of one-letter directories, levels deep, with a 4-byte file at the bottom. */
+static void make_deep_tree(const char *top, int levels)
+{
+	char path[256];
+	snprintf(path, sizeof(path), "%s", top);
+	CHECK(fatw_mkdir(path) >= 0, "mkdir %s failed", path);
+	for (int i = 1; i < levels; i++) {
+		strcat(path, "/a");
+		CHECK(fatw_mkdir(path) >= 0, "mkdir level %d failed", i);
+	}
+	strcat(path, "/f.bin");
+	put_file(path, "data");
+}
+
+/*
+ * DELETEDIR and GETUSAGE recurse with about 350 bytes of stack per level on
+ * a 12 KB thread stack. Within the 255-character path limit a tree of
+ * one-letter directories can be over 100 levels deep, so the recursion is
+ * capped (IOS's own NAND allows 8 levels): a deeper tree is refused with
+ * FS_EINVAL, a tree within the cap works as before.
+ */
+static void test_deletedir_deep_tree_refused(void)
+{
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_deep_tree("0:/deep", 24);
+	CHECK_OK();
+	int r = fatw_deletedir("0:/deep");
+	CHECK(r == -4, "DELETEDIR of a 24-level tree returned %d, expected FS_EINVAL", r);
+}
+
+static void test_deletedir_tree_within_cap(void)
+{
+	char out[64];
+	unsigned int n = 99;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_deep_tree("0:/ten", 10);
+	CHECK_OK();
+	int r = fatw_deletedir("0:/ten");
+	CHECK(r == 0, "DELETEDIR of a 10-level tree returned %d", r);
+	CHECK(fatw_readdir("0:/ten", out, sizeof(out), &n, 0) == 0 && n == 0,
+	      "0:/ten still holds %u entries", n);
+}
+
+static void test_getusage_deep_tree_refused(void)
+{
+	unsigned long long size = 0;
+	unsigned int files = 0, dirs = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_deep_tree("0:/deep", 24);
+	CHECK_OK();
+	int r = fatw_usage("0:/deep", &size, &files, &dirs);
+	CHECK(r == -4, "GETUSAGE of a 24-level tree returned %d, expected FS_EINVAL", r);
+}
+
+static void test_getusage_tree_within_cap(void)
+{
+	unsigned long long size = 0;
+	unsigned int files = 0, dirs = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_deep_tree("0:/ten", 10);
+	CHECK_OK();
+	int r = fatw_usage("0:/ten", &size, &files, &dirs);
+	CHECK(r == 0 && files == 1 && dirs == 9 && size == 4,
+	      "GETUSAGE returned %d: %u files, %u dirs, %llu bytes", r, files, dirs, size);
+}
+
 /* A close that fails (the card went away) still frees the file's FIL. */
 static void test_close_failure_frees(void)
 {
@@ -215,6 +281,10 @@ static const struct hc_test tests[] = {
 	{ "deletedir_long_path", test_deletedir_long_path, false },
 	{ "getusage_long_path", test_getusage_long_path, false },
 	{ "close_failure_frees", test_close_failure_frees, false },
+	{ "deletedir_deep_tree_refused", test_deletedir_deep_tree_refused, false },
+	{ "deletedir_tree_within_cap", test_deletedir_tree_within_cap, false },
+	{ "getusage_deep_tree_refused", test_getusage_deep_tree_refused, false },
+	{ "getusage_tree_within_cap", test_getusage_tree_within_cap, false },
 };
 
 int main(int argc, char **argv)

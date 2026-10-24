@@ -505,12 +505,23 @@ s32 FAT_Delete(const char *path)
 	return FS_EFATAL;
 }
 
-s32 FAT_DeleteDir(const char *dirpath)
+/*
+ * DELETEDIR and GETUSAGE recurse with about 350 bytes of stack per level on
+ * a 12 KB thread stack, and a tree of short names can be over 100 levels
+ * deep within the path limit. IOS's NAND allows 8 levels; an emulated NAND
+ * folder adds a few: past FAT_MAX_DEPTH the walk refuses with FS_EINVAL.
+ */
+#define FAT_MAX_DEPTH	16
+
+static s32 __FAT_DeleteDir(const char *dirpath, u32 depth)
 {
 	DIR     dir;
 	FILINFO fno;
 
 	s32 ret;
+
+	if (depth > FAT_MAX_DEPTH)
+		return FS_EINVAL;
 
 	/* Open directory */
 	ret = __FAT_OpenDir(&dir, dirpath);
@@ -543,9 +554,12 @@ s32 FAT_DeleteDir(const char *dirpath)
 		strcat(path, "/");
 		strcat(path, name);
 
-		/* Entry is directory */
-		if (fno.fattrib & AM_DIR)
-			FAT_DeleteDir(path);
+		/* Entry is directory: empty it first, and stop if that fails */
+		if (fno.fattrib & AM_DIR) {
+			ret = __FAT_DeleteDir(path, depth + 1);
+			if (ret)
+				return ret;
+		}
 
 		/* Delete */
 		ret = FAT_Delete(path);
@@ -554,6 +568,11 @@ s32 FAT_DeleteDir(const char *dirpath)
 	}
 
 	return FS_SUCCESS;
+}
+
+s32 FAT_DeleteDir(const char *dirpath)
+{
+	return __FAT_DeleteDir(dirpath, 0);
 }
 
 s32 FAT_Rename(const char *oldname, const char *newname)
@@ -642,11 +661,15 @@ s32 FAT_GetFileStats(s32 fd, struct fstats *stats)
 	return FS_SUCCESS;
 }
 
-s32 FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS)
+static s32 __FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS, u32 depth)
 {
 	DIR     dir;
 	FILINFO fno;
 	s32 ret;
+
+	/* See FAT_MAX_DEPTH */
+	if (depth > FAT_MAX_DEPTH)
+		return FS_EINVAL;
 
 	/* Open directory */
 	ret = __FAT_OpenDir(&dir, dirpath);
@@ -699,7 +722,7 @@ s32 FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS
 			*dirs = *dirs + 1;
 
 			/* Get subdirectory usage */
-			ret = FAT_GetUsage(subdirpath, size, files, dirs, forFS);
+			ret = __FAT_GetUsage(subdirpath, size, files, dirs, forFS, depth + 1);
 			if (ret)
 				return ret;
 
@@ -711,5 +734,10 @@ s32 FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS
 	}
 
 	return FS_SUCCESS;
+}
+
+s32 FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS)
+{
+	return __FAT_GetUsage(dirpath, size, files, dirs, forFS, 0);
 }
 
