@@ -272,6 +272,10 @@ extern int ehci_release_ports(void);
 s32 USBStorage_Init(void);
 u32 USBStorage_Get_Capacity(u32*sector_size);
 s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer);
+#ifdef EHCI_DEBUG_LOG
+s32 USBStorage_CopyLog(void *out, u32 outlen);
+s32 USBStorage_SetTimeout(u32 timeout);
+#endif
 s32 USBStorage_Read_Stress(u32 sector, u32 numSectors, void *buffer);
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer);
 

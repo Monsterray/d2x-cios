@@ -83,6 +83,65 @@ distribution.
 
 #define DEVLIST_MAXSIZE    8
 
+/* The timeout for sector reads and writes, in usb_timeout units (handshake()
+   doubles it and counts Hollywood timer ticks of about 0.53 us, so 1000*1000
+   is about 1.05 s). */
+static u32 ums_io_timeout = 1000*1000;
+
+#ifdef EHCI_DEBUG_LOG
+/* A ring of the last Bulk-Only steps, read with USB_IOCTL_UMS_DEBUG_LOG:
+   'C' CBW (len = SCSI opcode), 'D' data, 'S' CSW (ep = status), 'H' clear
+   halt, 'R' reset recovery (len = retries left), 'P' port re-init,
+   'W'/'r' write/read start (ret = sector, len = sectors), 'E' end (len = tries). */
+struct ums_event {
+	u32 ticks;
+	u8  what;
+	u8  ep;
+	u16 len;
+	s32 ret;
+};
+#define UMS_LOG_SIZE 128
+static struct ums_event ums_log[UMS_LOG_SIZE];
+static u32 ums_log_count;
+
+static void ums_log_event(u8 what, u8 ep, u32 len, s32 ret)
+{
+	struct ums_event *e = &ums_log[ums_log_count % UMS_LOG_SIZE];
+	e->ticks = get_timer();
+	e->what  = what;
+	e->ep    = ep;
+	e->len   = len;
+	e->ret   = ret;
+	ums_log_count++;
+}
+#define UMS_LOG(what, ep, len, ret) ums_log_event(what, ep, len, ret)
+
+/* out: u32 count of events ever logged, then up to UMS_LOG_SIZE events, oldest first */
+s32 USBStorage_CopyLog(void *out, u32 outlen)
+{
+	u32 n = ums_log_count < UMS_LOG_SIZE ? ums_log_count : UMS_LOG_SIZE;
+	u32 first = ums_log_count - n, i;
+	u8 *p = out;
+	if (outlen < 4)
+		return -1;
+	memcpy(p, &ums_log_count, 4);
+	for (i = 0; i < n && 4 + (i + 1) * sizeof(struct ums_event) <= outlen; i++)
+		memcpy(p + 4 + i * sizeof(struct ums_event), &ums_log[(first + i) % UMS_LOG_SIZE],
+		       sizeof(struct ums_event));
+	return 4 + i * sizeof(struct ums_event);
+}
+
+s32 USBStorage_SetTimeout(u32 timeout)
+{
+	if (timeout < 100*1000 || timeout > 60*1000*1000)
+		return -1;
+	ums_io_timeout = timeout;
+	return 0;
+}
+#else
+#define UMS_LOG(what, ep, len, ret) do {} while (0)
+#endif
+
 static int ums_init_done = 0;
 
 extern int handshake_mode; // 0->timeout force -ENODEV 1->timeout return -ETIMEDOUT
@@ -307,6 +366,7 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
         //hexdump(dev->buffer,CBW_SIZE);
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_out, CBW_SIZE, (void *)dev->buffer);
 
+	UMS_LOG('C', dev->ep_out, cb[0], retval);
 	if(retval == CBW_SIZE) return USBSTORAGE_OK;
 	else if(retval >= 0) return USBSTORAGE_ESHORTWRITE;
 
@@ -373,6 +433,8 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
           retval=__usbstorage_reset(dev,retries < USBSTORAGE_CYCLE_RETRIES);
+    if(retval != USBSTORAGE_OK || retries <= USBSTORAGE_CYCLE_RETRIES)
+          UMS_LOG('R', 0, retries, retval);
 	
 	retries--;
 	if(retval<0) continue; // nuevo
@@ -392,6 +454,7 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		{
 			thisLen=len;
 			retval = __USB_BlkMsgTimeout(dev, write ? dev->ep_out : dev->ep_in, thisLen, buffer);
+			UMS_LOG('D', write ? dev->ep_out : dev->ep_in, thisLen, retval);
 			if(retval < 0)
 				break;
 
@@ -401,8 +464,10 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			if(retval != thisLen)
 			{
 				// a short bulk-out transfer: the device halted the endpoint
-				if(write)
+				if(write) {
 					USB_ClearHalt(dev->usb_fd, dev->ep_out);
+					UMS_LOG('H', dev->ep_out, 0, 0);
+				}
 				break;
 			}
 		}
@@ -417,8 +482,10 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			// The CSW read STALLed: clear the halt and read the CSW once
 			// more (BOT 5.3.3 and its figure 2)
 			USB_ClearHalt(dev->usb_fd, dev->ep_in);
+			UMS_LOG('H', dev->ep_in, 0, 0);
 			retval = __read_csw(dev, &status, &dataResidue);
 		}
+		UMS_LOG('S', status, 0, retval);
 
 		if(retval < 0)
 			continue;//reset+retry
@@ -1390,25 +1457,31 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 	if(__mounted != 1)
 		return false;
 
+	UMS_LOG(write ? 'W' : 'r', 0, numSectors, sector);
+
 	for(;;)
 	{
 		// The device went away: unplug_procedure() resets the port and
 		// sets it up again once it answers.
 		if(unplug_device!=0)
 		{
-			unplug_procedure();
+			int replugged = unplug_procedure();
+			UMS_LOG('P', 0, 0, replugged);
+			(void)replugged;
 			continue;
 		}
 
-		usb_timeout=1000*1000; // 4 seconds to wait
+		usb_timeout=ums_io_timeout;
 		if(write)
 			retval = USBStorage_Write(&__usbfd, __lun, sector, numSectors, buffer);
 		else
 			retval = USBStorage_Read(&__usbfd, __lun, sector, numSectors, buffer);
 		usb_timeout=1000*1000;
 
-		if(retval >= 0)
+		if(retval >= 0) {
+			UMS_LOG('E', 0, tries, retval);
 			return true;
+		}
 
 		// a timeout is handled as an unplug, as before
 		if(retval == USBSTORAGE_ETIMEDOUT)
@@ -1416,8 +1489,10 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 
 		// The device answers but the command fails (a write-protected or
 		// failing drive): give up, so the caller sees an error.
-		if(++tries >= USBSTORAGE_SECTOR_TRIES)
+		if(++tries >= USBSTORAGE_SECTOR_TRIES) {
+			UMS_LOG('E', 0, tries, retval);
 			return false;
+		}
 	}
 }
 

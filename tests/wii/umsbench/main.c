@@ -2,6 +2,11 @@
  * umsbench: time USB mass-storage sector reads and writes through a cIOS.
  *
  *     hbc.py run umsbench.dol [--ios=249] [--write-back [--writes=N]]
+ *                             [--timeout=N] [--log]
+ *
+ * --timeout and --log need an EHCI module built with EHCI_DEBUG_LOG:
+ * --timeout sets its sector I/O timeout (usb_timeout units; 1000000 is
+ * about 1.05 s), --log prints its Bulk-Only event log after the writes.
  *
  * Prints the cIOS in the slot (its TMD version), reloads to it, opens the
  * EHCI module's /dev/usb2, and times reads of 1 and 64 sectors in the middle
@@ -27,6 +32,9 @@
 #define USB_IOCTL_UMS_READ_SECTORS  (UMS_BASE + 0x3)
 #define USB_IOCTL_UMS_WRITE_SECTORS (UMS_BASE + 0x4)
 #define USB_IOCTL_SET_PORT          (UMS_BASE + 0x83)
+/* EHCI_DEBUG_LOG builds of the EHCI module only */
+#define USB_IOCTL_UMS_DEBUG_LOG     (UMS_BASE + 0x90)
+#define USB_IOCTL_UMS_SET_TIMEOUT   (UMS_BASE + 0x91)
 
 #define RUNS      20
 #define BIG       64            /* sectors: the EHCI module's 32 KB transfer */
@@ -90,6 +98,33 @@ static s32 rw(s32 ioctl, u32 lba, u32 count, void *buf, u32 size)
 	return IOS_IoctlvFormat(heap, fd, ioctl, "ii:d", lba, count, buf, size);
 }
 
+/* The EHCI module's event ring: u32 count, then 12-byte events. */
+static void print_log(void)
+{
+	static u8 raw[4 + 128 * 12] ATTRIBUTE_ALIGN(32);
+	s32 n = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_DEBUG_LOG, ":d", raw, sizeof(raw));
+	if (n < 4) {
+		say("umsbench: DEBUG_LOG = %d (not an EHCI_DEBUG_LOG build?)\n", n);
+		return;
+	}
+	u32 total, t0 = 0;
+	memcpy(&total, raw, 4);
+	say("umsbench: event log, %u events in all, last %d:\n", total, (n - 4) / 12);
+	for (s32 off = 4; off + 12 <= n; off += 12) {
+		u32 ticks;
+		s32 ret;
+		u16 len;
+		memcpy(&ticks, raw + off, 4);
+		memcpy(&len, raw + off + 6, 2);
+		memcpy(&ret, raw + off + 8, 4);
+		if (off == 4)
+			t0 = ticks;
+		/* Hollywood's timer: about 1898 ticks per ms */
+		say("  %8u ms  %c ep=%02x len=%u ret=%d\n", (ticks - t0) / 1898, raw[off + 4],
+		    raw[off + 5], len, ret);
+	}
+}
+
 static u16 slot_version(u32 slot)
 {
 	static u8 tmd_buf[MAX_SIGNED_TMD_SIZE] ATTRIBUTE_ALIGN(32);
@@ -107,6 +142,8 @@ static int bench(int argc, char **argv)
 	u32 ios = 249, sector_size = 0, sectors, lba;
 	bool write_back = false;
 	int writes = RUNS;
+	u32 io_timeout = 0;
+	bool log = false;
 	struct timing r1 = {0}, r64 = {0}, w1 = {0}, w64 = {0};
 	u32 changed = 0;
 
@@ -117,6 +154,10 @@ static int bench(int argc, char **argv)
 			write_back = true;
 		else if (!strncmp(argv[i], "--writes=", 9))
 			writes = atoi(argv[i] + 9);
+		else if (!strncmp(argv[i], "--timeout=", 10))
+			io_timeout = strtoul(argv[i] + 10, NULL, 10);
+		else if (!strcmp(argv[i], "--log"))
+			log = true;
 	}
 
 	hbc_netlog_init();
@@ -144,6 +185,9 @@ static int bench(int argc, char **argv)
 		return 1;
 	}
 	IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", 0);
+	if (io_timeout)
+		say("umsbench: SET_TIMEOUT(%u) = %d\n", io_timeout,
+		    IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_SET_TIMEOUT, "i:", io_timeout));
 	s64 t0 = gettime();
 	ret = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_INIT, ":");
 	u32 init_ms = ticks_to_millisecs(diff_ticks(t0, gettime()));
@@ -207,6 +251,8 @@ static int bench(int argc, char **argv)
 		       avg(&w64), w64.max_us, w64.failed);
 		say("umsbench: data after write-back %s\n", changed ? "DIFFERS" : "unchanged");
 	}
+	if (log)
+		print_log();
 
 	IOS_Close(fd);
 	say("RESULT ios=%u rev=%d init_ms=%u r1_us=%u r1_max=%llu r64_us=%u w1_us=%u "

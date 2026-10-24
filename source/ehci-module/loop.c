@@ -220,6 +220,22 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 		break;
 	}
 
+#ifdef EHCI_DEBUG_LOG
+	case USB_IOCTL_UMS_DEBUG_LOG: {
+		/* The Bulk-Only event log (tests/wii/umsbench) */
+		ret = (iolen >= 1) ? USBStorage_CopyLog(vector[inlen].data, vector[inlen].len) : -1;
+
+		break;
+	}
+
+	case USB_IOCTL_UMS_SET_TIMEOUT: {
+		/* The sector I/O timeout, in usb_timeout units */
+		ret = (inlen >= 1) ? USBStorage_SetTimeout(*(u32 *)vector[0].data) : -1;
+
+		break;
+	}
+#endif
+
 	case USB_IOCTL_WBFS_OPEN_DISC: {
 		u8 *discid = (u8 *)vector[0].data;
 
