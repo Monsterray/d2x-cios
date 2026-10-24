@@ -39,4 +39,5 @@ Thumbs.db
 tests/host/usbs/test_usbs
 tests/host/usbs/*.o
 tests/host/fat/test_fat
+tests/host/fat/test_diskio
 tests/host/fat/*.o

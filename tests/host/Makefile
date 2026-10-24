@@ -32,10 +32,11 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 .PHONY: all test clean
 all: test
 
-test: ums/test_ums usbs/test_usbs fat/test_fat
+test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio
 	$(RUN) ./ums/test_ums
 	$(RUN) ./usbs/test_usbs
 	$(RUN) ./fat/test_fat
+	$(RUN) ./fat/test_diskio
 
 ums/test_ums: ums/test_ums.c ums/ums_unit.c $(SIM_DEPS) $(TINYEHCI)/usb.c $(TINYEHCI)/usb.h \
 		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
@@ -67,6 +68,12 @@ fat/test_fat: fat/test_fat.c fat/fat_unit.c fat/ff_unit.c fat/ramdisk.c fat/ramd
 		-Ifat -Ifat/stub -I$(FATMOD) -I$(CIOSLIB) -c -o fat/fat_unit.o fat/fat_unit.c
 	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/test_fat.o fat/ramdisk.o fat/ff_unit.o fat/fat_unit.o
 
+# The FAT module's diskio.c with the SD and EHCI drivers stubbed on RAM.
+fat/test_diskio: fat/test_diskio.c fat/fat_types.h hostcheck.h fat/stub/mem.h $(FATMOD)/diskio.c \
+		$(FATMOD)/diskio.h
+	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -I. -Ifat -Ifat/stub -I$(FATMOD) -I$(CIOSLIB) \
+		-o $@ fat/test_diskio.c
+
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
-		fat/test_fat fat/*.o
+		fat/test_fat fat/test_diskio fat/*.o

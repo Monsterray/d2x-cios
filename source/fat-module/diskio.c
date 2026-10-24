@@ -22,6 +22,61 @@
 #define SECTOR_SZ(drv)		((drv)==DRIVE_SDHC ? 512 :	\
 	((drv)==DRIVE_EHCI ? usbstorage_GetSectorSize() : 0))
 
+/* Largest bounce buffer for an unaligned transfer (the heap is 112 KB) */
+#define BOUNCE_MAX		(16 * 1024)
+
+
+static s32 __disk_io(BYTE drv, DWORD sector, u32 count, void *buffer, int write)
+{
+	switch (drv) {
+	case DRIVE_SDHC:
+		return write ? sdio_WriteSectors(sector, count, buffer)
+			     : sdio_ReadSectors(sector, count, buffer);
+
+	case DRIVE_EHCI:
+		return write ? usbstorage_WriteSectors(sector, count, buffer)
+			     : usbstorage_ReadSectors(sector, count, buffer);
+	}
+
+	return 0;
+}
+
+/* Transfer sectors to or from an unaligned buffer, BOUNCE_MAX at a time */
+static s32 __disk_bounce(BYTE drv, BYTE *buff, DWORD sector, u32 count, u32 secsz, int write)
+{
+	u32 chunk = BOUNCE_MAX / secsz;
+	void *buffer;
+	s32 ret = 1;
+
+	if (!chunk)
+		chunk = 1;
+	if (chunk > count)
+		chunk = count;
+
+	buffer = Mem_Alloc(chunk * secsz);
+	if (!buffer)
+		return 0;
+
+	while (count && ret) {
+		u32 n = (count < chunk) ? count : chunk;
+		u32 len = n * secsz;
+
+		if (write)
+			memcpy(buffer, buff, len);
+		ret = __disk_io(drv, sector, n, buffer, write);
+		if (ret && !write)
+			memcpy(buff, buffer, len);
+
+		buff   += len;
+		sector += n;
+		count  -= n;
+	}
+
+	Mem_Free(buffer);
+
+	return ret;
+}
+
 
 DSTATUS disk_initialize(BYTE drv)
 {
@@ -60,47 +115,17 @@ DSTATUS disk_status(BYTE drv)
 
 DRESULT disk_read(BYTE drv, BYTE *buff, DWORD sector, BYTE count)
 {
-	void *buffer;
+	u32 secsz = SECTOR_SZ(drv);
+	s32 ret;
 
-	u32 len;
-	s32 ret = 0;
-
-	/* Buffer length */
-	len = count * SECTOR_SZ(drv);
-	if (!len)
+	if (!secsz || !count)
 		return RES_ERROR;
 
-	/* Check buffer alignment */
-	if ((u32)buff & 31) {
-		/* Allocate buffer */
-		buffer = Mem_Alloc(len);
-		if (!buffer)
-			return RES_ERROR;
-	}
+	/* An aligned buffer is read directly, an unaligned one bounced */
+	if ((u32)buff & 31)
+		ret = __disk_bounce(drv, buff, sector, count, secsz, 0);
 	else
-		buffer = buff;
-
-	/* Read sectors */
-	switch (drv) {
-	case DRIVE_SDHC:
-		/* Read SD sectors */
-		ret = sdio_ReadSectors(sector, count, buffer);
-		break;
-
-	case DRIVE_EHCI:
-		/* Read USB sectors */
-		ret = usbstorage_ReadSectors(sector, count, buffer);
-		break;
-	}
-
-	if (buffer != buff) {
-		/* Copy buffer */
-		if (ret)
-			memcpy(buff, buffer, len);
-
-		/* Free buffer */
-		Mem_Free(buffer);
-	}
+		ret = __disk_io(drv, sector, count, buff, 0);
 
 	return (ret) ? RES_OK : RES_ERROR;
 }
@@ -108,46 +133,17 @@ DRESULT disk_read(BYTE drv, BYTE *buff, DWORD sector, BYTE count)
 #if _READONLY == 0
 DRESULT disk_write(BYTE drv, const BYTE *buff, DWORD sector, BYTE count)
 {
-	void *buffer;
+	u32 secsz = SECTOR_SZ(drv);
+	s32 ret;
 
-	u32 len;
-	s32 ret = 0;
-
-	/* Buffer length */
-	len = count * SECTOR_SZ(drv);
-	if (!len)
+	if (!secsz || !count)
 		return RES_ERROR;
 
-	/* Check buffer alignment */
-	if ((u32)buff & 31) {
-		/* Allocate buffer */
-		buffer = Mem_Alloc(len);
-		if (!buffer)
-			return RES_ERROR;
-
-		/* Copy buffer */
-		memcpy(buffer, buff, len);
-	}
+	/* An aligned buffer is written directly, an unaligned one bounced */
+	if ((u32)buff & 31)
+		ret = __disk_bounce(drv, (BYTE *)buff, sector, count, secsz, 1);
 	else
-		buffer = (void *)buff;
-
-	/* Write sectors */
-	switch (drv) {
-	case DRIVE_SDHC:
-		/* Write SD sectors */
-		ret = sdio_WriteSectors(sector, count, buffer);
-		break;
-
-	case DRIVE_EHCI:
-		/* Write USB sectors */
-		ret = usbstorage_WriteSectors(sector, count, buffer);
-		break;
-	}
-
-	if (buffer != buff) {
-		/* Free buffer */
-		Mem_Free(buffer);
-	}
+		ret = __disk_io(drv, sector, count, (void *)buff, 1);
 
 	return (ret) ? RES_OK : RES_ERROR;
 }
