@@ -25,6 +25,7 @@
 
 #include "fat_tools.h"
 #include "fat_wrapper.h"
+#include "fs.h"
 #include "ipc.h"
 #include "led.h"
 #include "main.h"
@@ -69,11 +70,12 @@ s32 __FAT_Ioctl(s32 fd, u32 cmd, void *inbuf, u32 inlen, void *iobuf, u32 iolen)
 		dbg_printf("FAT: IOCTL_FAT_SETNANDPATH: path = %d\n", path);
 		ret = -4;
 		if (path != NULL && ((u32)path & !31) == 0 && (inlen & !3) == 0) {
-			u32 len = strnlen(path, 192);
-			if (len < 192) {
+			u32 len = strnlen(path, sizeof(emuNandPath));
+			/* Leave room for a trailing '/' and the NUL */
+			if (len < sizeof(emuNandPath) - 1) {
 				strcpy(emuNandPath, path);
 				emuNandPathLen = len;
-				if(emuNandPath[len] != '/') {
+				if (len == 0 || emuNandPath[len-1] != '/') {
 					emuNandPath[len]   = '/';
 					emuNandPath[len+1] = '\0';
 					emuNandPathLen++;
@@ -421,16 +423,22 @@ int main(void)
 			u32   mode    = message->open.mode;
 
 			if (*devpath == '$') {
-				char path[256];
+				/* The emu NAND path plus the escaped name: FAT_Escape() turns
+				   some characters into 4, and IOS paths are under 64 bytes */
+				char path[sizeof(emuNandPath) + 4 * 64];
 
-				/* Build absolute path to emu nand */
-				strcpy(path, emuNandPath);
-				FAT_Escape(path+emuNandPathLen, devpath+1);
+				if (strnlen(devpath + 1, 64) >= 64)
+					ret = FS_ENAMETOOLONG;
+				else {
+					/* Build absolute path to emu nand */
+					strcpy(path, emuNandPath);
+					FAT_Escape(path+emuNandPathLen, devpath+1);
 
-				dbg_printf("FAT: IOS_OPEN: Opening relative file %s\n", devpath);
-				/* Open file */
-				ret = FAT_Open(path, mode);
-				dbg_printf("FAT: IOS_OPEN: ret = %d\n", ret);
+					dbg_printf("FAT: IOS_OPEN: Opening relative file %s\n", devpath);
+					/* Open file */
+					ret = FAT_Open(path, mode);
+					dbg_printf("FAT: IOS_OPEN: ret = %d\n", ret);
+				}
 			}
 			else if (!strcmp(devpath, DEVICE_FAT)) {
 				/* Open module */
