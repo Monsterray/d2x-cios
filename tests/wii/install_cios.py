@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 import wii_targets as wt  # noqa: E402
@@ -40,31 +41,50 @@ def main():
     p.add_argument("--name", default="d2x-auto")
     p.add_argument("--video", type=int, default=240,
                    help="seconds of the TV to record with the capture card (0: none)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="run every step and check except the NAND writes")
+    p.add_argument("--timeout", type=int, default=1200)
     a = p.parse_args()
     group = check_package(a.package)
     wii = wt.bench_wii("install_cios.py")
     conf = (a.package / "ciosconf.cfg").read_text().strip()
-    print(f"install_cios: {conf} on {wii}", flush=True)
+    print(f"install_cios: {conf} on {wii}{' (dry run)' if a.dry_run else ''}", flush=True)
 
     dest = f"sd:/apps/{a.name}"
+    result = f"{dest}/auto-result.txt"
+    wt.hbc(wii, "rm", result, timeout=30)          # an old result must not count
     r = wt.hbc(wii, "put", "-r", str(a.package), dest, timeout=300, show=True)
     if r.rc:
         sys.exit("install_cios: copying the package failed")
 
-    # The installer draws its progress on the TV; hbc.py run gets its text only.
+    # The installer draws its progress on the TV and writes auto-result.txt;
+    # its network log does not reach the PC, so send it and wait for HBC.
     out = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
     cap = None
     if a.video and pathlib.Path(WIICAP).is_file():
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
                                 str(out / "install.mp4"), "--label", f"install {group}"])
-    r = wt.hbc(wii, "run", "--timeout", "1500", str(a.installer), "--auto", f"--dir={dest}",
-               timeout=1600)
-    print(ANSI.sub("", r.text), flush=True)
-    ok = "auto: slot" in r.text and "installed" in r.text and "FAILED" not in r.text
-    print(f"install_cios: {'OK' if ok else 'FAILED'} (hbc.py run exit {r.rc})", flush=True)
-    if not wt.hbc_ready(wii, 120):
-        print("install_cios: HBC did not come back within 120 s", flush=True)
-        ok = False
+    args = ["--auto", f"--dir={dest}"] + (["--dry-run"] if a.dry_run else [])
+    r = wt.hbc(wii, "send", str(a.installer), *args, timeout=120, show=True)
+    if r.rc:
+        sys.exit("install_cios: sending the installer failed")
+
+    end = time.monotonic() + a.timeout
+    time.sleep(10)
+    while not wt.in_hbc(wii):
+        if time.monotonic() > end:
+            print(f"install_cios: the Wii did not return to HBC in {a.timeout} s", flush=True)
+            return 1
+        time.sleep(5)
+
+    got = out / "auto-result.txt"
+    r = wt.hbc(wii, "get", result, str(got), timeout=60)
+    text = got.read_text(errors="replace") if r.rc == 0 and got.is_file() else ""
+    print(f"install_cios: auto-result.txt:\n{text or '(none: the installer stopped early)'}",
+          flush=True)
+    want = "DRYRUN" if a.dry_run else "OK"
+    ok = bool(text) and all(line.startswith(want) for line in text.splitlines())
+    print(f"install_cios: {'OK' if ok else 'FAILED'}", flush=True)
     if cap:
         cap.wait(timeout=a.video + 60)
         print(f"install_cios: TV recording in {out / 'install.mp4'}", flush=True)
