@@ -159,6 +159,8 @@ static void start_command(const u8 *cbw)
 	sim.xfer_len = len;
 	sim.xfer_done = 0;
 	sim.cbws++;
+	sim.last_cb_len = cbw[14];
+	sim.last_cb_op = cbw[15];
 	u8 *c = sim.cmd;
 	switch (c[0]) {
 	case 0x00:                      /* TEST UNIT READY */

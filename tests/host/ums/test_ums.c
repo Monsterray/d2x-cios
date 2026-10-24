@@ -176,6 +176,21 @@ static void test_reset_recovery_keeps_toggles_in_step(void)
 	CHECK(sim.toggle_losses == 0 && sim.port_resets == 0, "%s", sim_summary());
 }
 
+/*
+ * BOT 5.1: bCBWCBLength is the valid length of the command block. The
+ * simulated drive is SCSI (subclass 6), so READ(10) carries 10.
+ * (Before, USBStorage_Open() set ata_protocol with
+ * `subclass != SCSI || subclass != RBC`, always true, and every CBW said 12.)
+ */
+static void test_cbw_carries_command_length(void)
+{
+	mount();
+	CHECK_OK();
+	CHECK(USBStorage_Read_Sectors(3, 1, buf), "read failed: %s", sim_summary());
+	CHECK(sim.last_cb_op == 0x28 && sim.last_cb_len == 10,
+	      "READ(10) CBW length %u, expected 10", sim.last_cb_len);
+}
+
 static const struct hc_test tests[] = {
 	{ "mount", test_mount, false },
 	{ "read", test_read, false },
@@ -186,6 +201,7 @@ static const struct hc_test tests[] = {
 	{ "write_recovers_from_one_stall", test_write_recovers_from_one_stall, false },
 	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, false },
 	{ "reset_recovery_keeps_toggles_in_step", test_reset_recovery_keeps_toggles_in_step, false },
+	{ "cbw_carries_command_length", test_cbw_carries_command_length, false },
 };
 
 static void setup(void)

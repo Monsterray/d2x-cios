@@ -299,9 +299,9 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
 	// linux usb/storage/protocol.c seems to say only difference is padding
         // and fixed cw size
         if(dev->ata_protocol)
-                dev->buffer[14] = 12; 
+                dev->buffer[14] = 12;
         else
-                dev->buffer[14] = (cbLen > 6 ? 0x10 : 6);
+                dev->buffer[14] = cbLen; // the valid command length (BOT 5.1)
         //debug_printf("send cb of size %d\n",dev->buffer[14]);
 	memcpy(dev->buffer + 15, cb, cbLen);
         //hexdump(dev->buffer,CBW_SIZE);
@@ -721,7 +721,7 @@ s32 USBStorage_Open(usbstorage_handle *dev, struct ehci_device *fd)
 			{
 				
 				dev->ata_protocol = 0;
-                if(uid->bInterfaceSubClass != MASS_STORAGE_SCSI_COMMANDS || uid->bInterfaceSubClass != MASS_STORAGE_RBC_COMMANDS)
+                if(uid->bInterfaceSubClass != MASS_STORAGE_SCSI_COMMANDS && uid->bInterfaceSubClass != MASS_STORAGE_RBC_COMMANDS)
                                         dev->ata_protocol = 1;
 
 				#ifdef MEM_PRINT

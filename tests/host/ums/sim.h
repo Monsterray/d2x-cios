@@ -59,6 +59,7 @@ struct sim {
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;
 	u32 writes_ok, reads_ok, senses, toggle_losses;
+	u8 last_cb_len, last_cb_op;     /* bCBWCBLength and opcode of the last CBW */
 
 	/* time */
 	u64 now_us, limit_us;
