@@ -37,7 +37,8 @@
 #include "usbstorage.h"
 
 /* Variables */
-static FATFS fatFs ATTRIBUTE_ALIGN(32);
+/* One work area per volume: FatFs keeps a pointer to it for each drive. */
+static FATFS fatFs[_VOLUMES] ATTRIBUTE_ALIGN(32);
 
 PARTITION VolToPart[_VOLUMES]  ATTRIBUTE_ALIGN(32) = {
 	{0,4}, {1,4}
@@ -103,7 +104,7 @@ s32 __FAT_MountPartition(u8 device, u8 partition)
 	VolToPart[device].pt = partition;
 
 	/* Mount device */
-	ret = f_mount(device, &fatFs);
+	ret = f_mount(device, &fatFs[device]);
 	if (!ret) {
 		DIR d;
 		char *root = (device == 0) ? "0:/" : "1:/";

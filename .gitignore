@@ -38,3 +38,5 @@ __pycache__/
 Thumbs.db
 tests/host/usbs/test_usbs
 tests/host/usbs/*.o
+tests/host/fat/test_fat
+tests/host/fat/*.o
