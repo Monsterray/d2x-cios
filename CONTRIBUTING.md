@@ -41,9 +41,11 @@ tools/build.sh test
 | Check | Where | Needs |
 | --- | --- | --- |
 | Line endings and `.gitattributes` coverage | `tests/test_line_endings.py` | Python |
-| EHCI USB storage driver (Bulk-Only Transport, retries, errors) against a simulated drive | `tests/host/ums/` | a C compiler (in the image) |
-| The modules build | `tools/build.sh` | Docker |
-| A cIOS on a real Wii | not automated yet; see REVIEW.md | a Wii you can recover |
+| EHCI USB storage driver (Bulk-Only Transport, data toggles, retries, errors) against a simulated drive | `tests/host/ums/` | a C compiler (in the image) |
+| USBS USB storage driver against the same drive | `tests/host/usbs/` | a C compiler (in the image) |
+| The modules build, with no warnings | `EXTRA_CFLAGS=-Werror tools/build.sh` (CI does this) | Docker |
+| USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
+| Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
 Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.
 
