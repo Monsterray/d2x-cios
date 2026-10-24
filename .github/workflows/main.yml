@@ -24,6 +24,8 @@ jobs:
       # "MAJOR MINOR" for maked2x.sh. Set the repository variable D2X_VERSION
       # (or the older VERSION secret) to name release builds.
       D2X_VERSION: ${{ vars.D2X_VERSION || secrets.VERSION || '999 ci' }}
+      # A warning fails the build.
+      EXTRA_CFLAGS: -Werror
     steps:
       - uses: actions/checkout@v4
 

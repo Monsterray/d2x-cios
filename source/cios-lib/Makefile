@@ -11,6 +11,7 @@ AR	=	$(PREFIX)ar
 # Flags
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wstrict-prototypes
+CFLAGS	+=	$(EXTRA_CFLAGS)
 ARFLAGS	=	rcs
 
 # Libraries
@@ -46,23 +47,23 @@ OBJS2	=	libwbfs/libwbfs.o	\
 
 
 $(TARGET).a: $(OBJS) $(OBJS2)
-	@echo -e " AR\t$@"
+	@printf ' AR\t%s\n' $@
 	@$(AR) $(ARFLAGS) $@ $(OBJS) $(OBJS2)
 
 %.o: %.s
-	@echo -e " CC\t$@"
+	@printf ' CC\t%s\n' $@
 	@$(CC) $(CFLAGS) -MMD -MP -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
 
 libwbfs/%.o: libwbfs/%.c
-	@echo -e " CC\t$@"
+	@printf ' CC\t%s\n' $@
 	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 %.o: %.c
-	@echo -e " CC\t$@"
+	@printf ' CC\t%s\n' $@
 	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 clean:
-	@echo -e "Cleaning..."
+	@echo "Cleaning..."
 	@rm -f $(OBJS) $(OBJS2) $(OBJS:.o=.d) $(OBJS2:.o=.d) $(TARGET).a
 
 # Rebuild an object when a header or an #included .c file changes (-MMD

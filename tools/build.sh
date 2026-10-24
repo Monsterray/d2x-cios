@@ -38,8 +38,11 @@ fi
 
 # SOURCE_DATE_EPOCH, when set, fixes the build date stamped into the modules,
 # so two builds of different commits can be compared byte for byte.
+# EXTRA_CFLAGS reaches every module's CFLAGS (CI sets -Werror).
 run() {
-    docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp         ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} "$@"
+    docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp \
+        ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} \
+        ${EXTRA_CFLAGS:+-e EXTRA_CFLAGS="$EXTRA_CFLAGS"} "$@"
 }
 
 case "${1:-}" in
@@ -50,6 +53,6 @@ clean)
 test)
     run "$tag" sh -c 'make -C tests/host && python3 -m unittest discover -s tests -p "test_*.py"' ;;
 *)
-    run "$tag" sh -c 'g++ -O2 stripios_src/main.cpp -o stripios && ./maked2x.sh "$@"' \
+    run "$tag" sh -c 'g++ -O2 -Wall -Wextra $EXTRA_CFLAGS stripios_src/main.cpp -o stripios && ./maked2x.sh "$@"' \
         build "$@" ;;
 esac

@@ -22,6 +22,7 @@ endif
 # Flags
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wstrict-prototypes -ffunction-sections -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
+CFLAGS	+=	$(EXTRA_CFLAGS)
 LDFLAGS	=	$(ARCH) -nostartfiles -nostdlib -Wl,-T,link.ld,-Map,$(TARGET).map -Wl,--gc-sections -Wl,-static
 
 # Libraries
@@ -40,20 +41,20 @@ OBJS	= main.o				\
 
 
 $(TARGET).elf: $(OBJS) $(LIBS)
-	@echo -e " LD\t$@"
+	@printf ' LD\t%s\n' $@
 	@$(LD) $(LDFLAGS) $(OBJS) $(LIBS) -lgcc -o $@.orig
 	@$(STRIP) $@.orig $@
 
 %.o: %.s
-	@echo -e " CC\t$@"
+	@printf ' CC\t%s\n' $@
 	@$(CC) $(CFLAGS) -MMD -MP -D_LANGUAGE_ASSEMBLY -c -x assembler-with-cpp -o $@ $<
 
 %.o: %.c
-	@echo -e " CC\t$@"
+	@printf ' CC\t%s\n' $@
 	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 clean:
-	@echo -e "Cleaning..."
+	@echo "Cleaning..."
 	@rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET).elf $(TARGET).elf.orig $(TARGET).map
 
 # Rebuild an object when a header or an #included .c file changes (-MMD
