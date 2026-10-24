@@ -58,6 +58,41 @@ Trigger for the bench work: build a cIOS with these fixes, install it to a spare
 
 Open question: USBS defines `USB_ClearHalt(id, ep)` as `USB_CancelEndpoint(id, ep)`, an IOS request that cancels an endpoint's pending transfers. Whether IOS also sends CLEAR_FEATURE(ENDPOINT_HALT) there is not visible in this code; if it does not, a STALLed endpoint stays halted after a USBS reset recovery. Trigger: a USBS drive that stops answering after a STALL on the bench.
 
+### FAT module (fat-module)
+
+From a read-only review (F1-F8); the fixed ones have host tests in `tests/host/fat`, which builds `fat_wrapper.c`, FatFs and `fat_tools.c` against two RAM disks formatted by the same FatFs.
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | **F4. SD and USB shared one FatFs work area.** `f_mount()` got the same static `FATFS` for both volumes, so with both mounted the volume used last answered for either drive, and unmounting one cleared the other. Now `fatFs[_VOLUMES]` (4128 bytes more BSS; 4384 bytes of the RAM region stay free). | `sd_and_usb_together` (creating `1:/` failed before). |
+| Fix | **F2. READDIR overflowed the module heap.** `FAT_ReadDir()` copied names into `Mem_Alloc(buflen)` with no bound, copied all `buflen` bytes out (heap leftovers included), and never freed the buffer when there was no output buffer. | `readdir_small_buffer`, `readdir_returns_names`, `readdir_count_only_frees` (guard zones in the test heap). |
+| Fix | **F3. DELETEDIR and GETUSAGE overflowed a 256-byte stack buffer** with `strcpy`/`strcat` on trees whose paths pass 255 characters. Now `FS_ENAMETOOLONG`. | `deletedir_long_path`, `getusage_long_path` (ASan stack-buffer-overflow before). |
+| Fix | **F7. A failed close leaked the FIL.** `FAT_Close()` returned before `Mem_Free()` when `f_close()` failed (a pulled card). | `close_failure_frees`. |
+
+Open (verified by reading, not yet fixed; `main.c` is an upstream CRLF file):
+- **F1.** `$`-prefixed opens build `path[256]` from the 192-byte NAND path plus `FAT_Escape()` output, which can grow each character to 4: about 260 bytes. Fix: a bounded escape that fails when the result does not fit.
+- **F5.** SETNANDPATH writes `emuNandPath[192]` when the path is 191 characters without a trailing `/`; its alignment guards use `!31` (always 0) where `~31` was meant.
+- **F6.** Read, write, seek and FILESTATS on the `/dev/fat` descriptor itself (fd 0) pass `(FIL *) 0` to FatFs.
+- **F8.** Some ioctls read vectors without checking `inlen`/`iolen`. The right check depends on the IPC split each caller uses; trigger: a host test of `main.c`'s ioctl dispatch.
+
+### DIP plugin (dip-plugin)
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | **D2.** `Frag_Init()` did not check the fragment count against `FRAG_MAX` or the bytes copied; lookups walk `frag[0..num-1]`. | Reading and a `-Werror` build. |
+| Fix | **D4.** `DI_ReadDvd()` returned only the last chunk's result, so an early failure followed by a good chunk returned success with bad data. | Reading and build. |
+| Fix | **D1.** After an IOS reload the saved WBFS/frag mode was restored even when the device did not open, and reads then used a NULL fragment list. The mode is now dropped. | Reading and build. |
+| Fix | **D5.** `WBFS_Open()` indexed `devFs[]` with an unchecked device number. | Reading and build. |
+
+Open: **D3** (read lengths not checked against the output buffer; depends on whether IOS's DI front end checks first), **D6** (an off-by-one in the fragment index cache, harmless), and the commented-out cache flush and invalidate around the plugin's IPC to the FAT module (`dip-plugin/fat.c`). Trigger for all three: a host harness for `frag.c` and the plugin's ioctl handlers.
+
+### Bench results (dev Wii, 2026-10-23)
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Measurement | The slot 249 cIOS that was installed before (an unknown d2x build, v65535): 1-sector read 653 us, 64-sector read 1.5 ms; **the first 1-sector write after reads took 192 s**, the next two 1.3 ms; 64-sector writes 3.3 ms. Data unchanged after the write-back. | `tests/wii/umsbench.py -- --ios=249 --write-back --writes=3` |
+| Tools | Installed `d2x-v11-beta3-mr1` (this branch at fa5d8d8, base 56) to slot 249 with the d2x installer's `--auto` mode (local patched installer). Read back: slot 249 holds v21011, boots, mounts the drive, reads at the same speed. | `tests/wii/install_cios.py` (TV recorded), then `umsbench.py` read-only. |
+
 ### Next
 
 - **Bench test program.** A DOL, run from HBC through the bench queue, that reports which slots hold which cIOS (read only), then opens the cIOS's USB device and times sector reads and writes to a scratch file area, printing results to the HBC log. Trigger: before the first install of a fork build.
