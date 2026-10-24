@@ -137,6 +137,24 @@ static u16 slot_version(u32 slot)
 	return ((tmd *) SIGNATURE_PAYLOAD((signed_blob *) tmd_buf))->title_version;
 }
 
+/* A text console on the TV, so the bench capture shows the run. The VI
+   belongs to the PPC, so it stays up across the IOS reload. */
+static void console_setup(void)
+{
+	VIDEO_Init();
+	GXRModeObj *rmode = VIDEO_GetPreferredMode(NULL);
+	void *xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+	console_init(xfb, 20, 20, rmode->fbWidth, rmode->xfbHeight,
+		     rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+	VIDEO_Configure(rmode);
+	VIDEO_SetNextFramebuffer(xfb);
+	VIDEO_SetBlack(false);
+	VIDEO_Flush();
+	VIDEO_WaitVSync();
+	if (rmode->viTVMode & VI_NON_INTERLACE)
+		VIDEO_WaitVSync();
+}
+
 static int bench(int argc, char **argv)
 {
 	u32 ios = 249, sector_size = 0, sectors, lba;
@@ -160,6 +178,7 @@ static int bench(int argc, char **argv)
 			log = true;
 	}
 
+	console_setup();
 	hbc_netlog_init();
 	say("umsbench: running on IOS%d v%d; slot %u holds v%u\n",
 	       IOS_GetVersion(), IOS_GetRevision(), ios, slot_version(ios));
