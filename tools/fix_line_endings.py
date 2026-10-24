@@ -41,7 +41,7 @@ def main():
             file.write_bytes(raw.replace(b"\r\n", b"\n"))
             fixed += 1
             continue
-        # A binary or -text file: only undo an old autocrlf conversion.
+        # A binary file: only undo an old autocrlf conversion.
         staged = git("ls-files", "-s", "--", path).split()
         if len(staged) < 2:
             continue

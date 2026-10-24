@@ -38,11 +38,16 @@ class LineEndings(unittest.TestCase):
                ("eol=crlf" not in a or w in ("w/lf", "w/mixed"))]
         self.assertEqual(bad, [], "a .bat file without CRLF in the checkout")
 
+    def test_every_file_has_a_rule(self):
+        bad = [p for _, _, a, p in eol_listing() if a == "attr/"]
+        self.assertEqual(bad, [], "no .gitattributes rule applies")
+
     def test_only_binary_data_is_not_text(self):
-        bad = [p for _, _, a, p in eol_listing() if a in ("attr/", "attr/-text")
-               and not p.endswith((".jpg", ".png", ".bin", ".app", ".wad"))]
-        self.assertEqual(bad, [], "no line-ending rule, or marked -text: "
-                                  "every text file is LF now")
+        # Git shows i/-text for content it finds binary; a text file
+        # marked -text or binary shows i/lf or i/crlf instead.
+        bad = [p for i, _, a, p in eol_listing()
+               if a == "attr/-text" and i not in ("i/-text", "i/none")]
+        self.assertEqual(bad, [], "a text file marked -text or binary: every text file is LF")
 
 
 if __name__ == "__main__":
