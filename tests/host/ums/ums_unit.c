@@ -31,6 +31,9 @@ void USB_FreeDescriptors(usb_devdesc *udd);
 s32 USB_GetDescriptors(struct ehci_device *fd, usb_devdesc *udd);
 void USB_FreeDescriptors(usb_devdesc *udd);
 
+/* Hollywood's timer, from the simulated clock (ehci.c defines it on the Wii) */
+#define get_timer() ((u32)(sim.now_us * 1898 / 1000))
+
 #include "usbstorage.h"
 #include "usbstorage.c"
 
@@ -78,3 +81,6 @@ s32 ums_reset(void)
 {
 	return USBStorage_Reset(&__usbfd);
 }
+
+/* For test_ums.c: the driver's limit on recovering a failing drive. */
+const unsigned ums_request_ms = USBSTORAGE_REQUEST_MS;

@@ -55,6 +55,10 @@ struct sim {
 	int stall_write_data;   /* WRITE(10): STALL bulk-out at the data phase */
 	int fail_write_csw;     /* WRITE(10): data accepted, CSW status 1 */
 	int timeout_xfers;      /* next bulk transfers get no answer */
+	int lose_write_csw;     /* WRITE(10): data taken, the CSW read STALLs, and
+	                           after the clear-halt the CSW never comes, until
+	                           a reset (the SanDisk on the bench, 2026-10-24) */
+	bool csw_lost;          /* the drive is in that state now */
 
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;
@@ -75,6 +79,7 @@ const char *sim_summary(void);
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
 void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
+extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */
 s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer);
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer);

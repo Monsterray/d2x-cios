@@ -50,12 +50,16 @@ tools/build.sh test
 | EHCI USB storage driver (Bulk-Only Transport, data toggles, retries, errors) against a simulated drive | `tests/host/ums/` | a C compiler (in the image) |
 | USBS USB storage driver against the same drive | `tests/host/usbs/` | a C compiler (in the image) |
 | The modules build, with no warnings | `EXTRA_CFLAGS=-Werror tools/build.sh` (CI does this) | Docker |
-| USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
+| FAT module (`fat_wrapper.c`, its IPC handlers, `diskio.c`) on RAM disks | `tests/host/fat/` | a C compiler (in the image) |
+| `VERSION` is a valid release number | `tests/test_version.py` | Python |
+| USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read; `--pattern=N` writes and verifies known data, **scratch drives only**; `--log` prints the debug build's event log) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
 | Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
 Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.
 
 Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the modules.
+
+Changing how the USB driver retries or gives up? Read [docs/usb-storage.md](docs/usb-storage.md) first: the layers, the error codes and the limits, in one page.
 
 ## Conventions
 

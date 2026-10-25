@@ -83,6 +83,37 @@ distribution.
 
 #define DEVLIST_MAXSIZE    8
 
+/* How long one sector read or write may go on recovering a drive that answers
+   but keeps failing, in ms. After that no new attempt or reset recovery
+   starts, and the caller gets an error instead of a wait that looks like a
+   hang. A drive that is gone (unplugged) is still waited for without limit
+   (see __USBStorage_Sectors), so a game survives a replug. */
+#define USBSTORAGE_REQUEST_MS		8000
+
+/* The deadline of the sector request in progress, in Hollywood timer ticks
+   (get_timer(), about 1898 per ms; it wraps after about 37 minutes, which
+   the signed difference below allows for). Off outside a sector request, so
+   mounting and set-up keep their own limits. */
+#define UMS_TICKS_PER_MS		1898
+static u32 ums_deadline;
+static int ums_deadline_on;
+
+static void ums_deadline_start(void)
+{
+	ums_deadline = get_timer() + USBSTORAGE_REQUEST_MS * UMS_TICKS_PER_MS;
+	ums_deadline_on = 1;
+}
+
+static void ums_deadline_stop(void)
+{
+	ums_deadline_on = 0;
+}
+
+static int ums_deadline_passed(void)
+{
+	return ums_deadline_on && (s32)(get_timer() - ums_deadline) >= 0;
+}
+
 /* The timeout for sector reads and writes, in usb_timeout units (handshake()
    doubles it and counts Hollywood timer ticks of about 0.53 us, so 1000*1000
    is about 1.05 s). */
@@ -437,6 +468,11 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 	if(retval==-ENODEV) {unplug_device=1;return -ENODEV;}
 	
 	
+
+    // The sector request's time is used up: no more reset recoveries, the
+    // caller gives up (__USBStorage_Sectors, rule 2)
+    if(retval < 0 && ums_deadline_passed())
+          break;
 
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
@@ -1489,15 +1525,30 @@ int unplug_procedure(void)
 // game can survive the drive being plugged in again.
 #define USBSTORAGE_SECTOR_TRIES	4
 
+/*
+ * One sector read or write gives up on a failing drive after
+ * USBSTORAGE_SECTOR_TRIES attempts or USBSTORAGE_REQUEST_MS, whichever comes
+ * first. The rules, in order:
+ *
+ *  1. The drive is gone (unplug_procedure() cannot set it up again): wait
+ *     for it without limit, so a game survives a replug. Once it is back
+ *     the request starts afresh: new tries, new deadline.
+ *  2. The drive answers but this request has failed and its time is used
+ *     up: no new attempt and no new reset recovery (__cycle() checks the
+ *     same deadline), return false.
+ *  3. Otherwise try again.
+ */
 static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buffer)
 {
 	s32 retval;
 	int tries=0;
+	int gone=0;     // unplug_procedure() found no drive during this request
 
 	if(__mounted != 1)
 		return false;
 
 	UMS_LOG(write ? 'W' : 'r', 0, numSectors, sector);
+	ums_deadline_start();
 
 	for(;;)
 	{
@@ -1507,7 +1558,20 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		{
 			int replugged = unplug_procedure();
 			UMS_LOG('P', 0, 0, replugged);
-			(void)replugged;
+			if(replugged != 0) {
+				gone = 1;               // rule 1: still gone, keep waiting
+				continue;
+			}
+			if(gone) {
+				// It was really gone and is back: this request starts afresh
+				gone = 0;
+				tries = 0;
+				ums_deadline_start();
+			} else if(tries && ums_deadline_passed()) {
+				UMS_LOG('E', 0, tries, -1);
+				ums_deadline_stop();
+				return false;           // rule 2
+			}
 			continue;
 		}
 
@@ -1520,6 +1584,7 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 
 		if(retval >= 0) {
 			UMS_LOG('E', 0, tries, retval);
+			ums_deadline_stop();
 			return true;
 		}
 
@@ -1528,9 +1593,10 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 			unplug_device=1;
 
 		// The device answers but the command fails (a write-protected or
-		// failing drive): give up, so the caller sees an error.
-		if(++tries >= USBSTORAGE_SECTOR_TRIES) {
+		// failing drive): give up, so the caller sees an error (rule 2).
+		if(++tries >= USBSTORAGE_SECTOR_TRIES || ums_deadline_passed()) {
 			UMS_LOG('E', 0, tries, retval);
+			ums_deadline_stop();
 			return false;
 		}
 	}

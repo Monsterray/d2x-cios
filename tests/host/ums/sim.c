@@ -27,8 +27,18 @@ void ehci_msleep(int ms) { tick((u64)ms * 1000); }
 
 /* A bus reset: the drive forgets its state and its toggles; tinyehci zeroes
  * the host's toggles when it resets the port or the device (ehci.c). */
+/* A reset ends a lost-CSW command (see lose_write_csw) */
+static void end_lost_csw(void)
+{
+	if (sim.csw_lost) {
+		sim.csw_lost = false;
+		sim.lose_write_csw--;
+	}
+}
+
 static void bus_reset(void)
 {
+	end_lost_csw();
 	sim.phase = SIM_CBW;
 	sim.halt_in = sim.halt_out = false;
 	sim.toggle_in = sim.toggle_out = 0;
@@ -132,6 +142,7 @@ s32 ehci_control_message(struct ehci_device *dev, u8 type, u8 req, u16 value, u1
 	}
 	if (type == 0x21 && req == 0xFF) {      /* Bulk-Only Mass Storage Reset */
 		sim.bot_resets++;
+		end_lost_csw();
 		sim.phase = SIM_CBW;            /* halts and toggles stay (BOT 3.1) */
 		return 0;
 	}
@@ -283,6 +294,15 @@ static s32 bulk_in(u32 len, u8 *p)
 				sim.reads_ok++;
 		}
 		return n;
+	}
+	if (sim.phase == SIM_CSW && len == 13 && sim.cmd[0] == 0x2A && sim.lose_write_csw > 0) {
+		/* the first CSW read STALLs; after the clear-halt nothing comes */
+		if (!sim.csw_lost) {
+			sim.csw_lost = true;
+			sim.halt_in = true;
+			return 0;
+		}
+		return no_answer();
 	}
 	if (sim.phase == SIM_CSW && len == 13) {
 		memset(p, 0, 13);

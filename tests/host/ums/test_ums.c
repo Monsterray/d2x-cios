@@ -191,6 +191,45 @@ static void test_cbw_carries_command_length(void)
 	      "READ(10) CBW length %u, expected 10", sim.last_cb_len);
 }
 
+/*
+ * A drive that takes a WRITE's data, STALLs the CSW and, after the
+ * clear-halt, never sends it (the SanDisk "USB 3.2Gen1" on the bench Wii).
+ * The write cannot be known to have landed, so it must fail, and fail within
+ * USBSTORAGE_REQUEST_MS: a caller (USB Loader GX's libfat, a game) must get
+ * an error, not a wait that looks like a hang. (Before, about 4 attempts of
+ * up to 3 reset recoveries each, every one waiting out a 1 s timeout: tens
+ * of seconds on the bench.)
+ */
+static void test_write_with_lost_status_fails_in_time(void)
+{
+	mount();
+	CHECK_OK();
+	fill(buf, SECTOR, 7);
+	u64 start = sim.now_us;
+	sim.lose_write_csw = 1000000;
+	CHECK(!USBStorage_Write_Sectors(12, 1, buf), "a write whose status never came reported success: %s",
+	      sim_summary());
+	CHECK(sim.now_us - start <= (ums_request_ms + 2000) * 1000ull,
+	      "giving up took %.1f s (limit %d ms): %s", (sim.now_us - start) / 1e6,
+	      ums_request_ms, sim_summary());
+	sim.lose_write_csw = 0;
+	CHECK(USBStorage_Read_Sectors(3, 1, buf), "the drive does not read after the failed write: %s",
+	      sim_summary());
+}
+
+/* The same drive loses one write's status, then behaves: the reset recovery
+ * clears it and the retried write succeeds. */
+static void test_write_with_one_lost_status_recovers(void)
+{
+	mount();
+	CHECK_OK();
+	fill(buf, SECTOR, 8);
+	sim.lose_write_csw = 1;
+	CHECK(USBStorage_Write_Sectors(13, 1, buf), "write failed: %s", sim_summary());
+	CHECK(memcmp(sim.data + 13 * SECTOR, buf, SECTOR) == 0, "drive holds other data");
+	CHECK(sim.port_resets == 0, "a lost status cost a port reset (a remount): %s", sim_summary());
+}
+
 static const struct hc_test tests[] = {
 	{ "mount", test_mount, false },
 	{ "read", test_read, false },
@@ -202,6 +241,8 @@ static const struct hc_test tests[] = {
 	{ "write_to_protected_drive_gives_up", test_write_to_protected_drive_gives_up, false },
 	{ "reset_recovery_keeps_toggles_in_step", test_reset_recovery_keeps_toggles_in_step, false },
 	{ "cbw_carries_command_length", test_cbw_carries_command_length, false },
+	{ "write_with_lost_status_fails_in_time", test_write_with_lost_status_fails_in_time, false },
+	{ "write_with_one_lost_status_recovers", test_write_with_one_lost_status_recovers, false },
 };
 
 static void setup(void)
