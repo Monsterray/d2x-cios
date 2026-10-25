@@ -113,7 +113,7 @@ static void print_log(void)
 		say("umsbench: DEBUG_LOG = %d (not an EHCI_DEBUG_LOG build?)\n", n);
 		return;
 	}
-	u32 total, t0 = 0;
+	u32 total, t0 = 0, prev = 0;
 	memcpy(&total, raw, 4);
 	say("umsbench: event log, %u events in all, last %d:\n", total, (n - 4) / 12);
 	for (s32 off = 4; off + 12 <= n; off += 12) {
@@ -124,10 +124,13 @@ static void print_log(void)
 		memcpy(&len, raw + off + 6, 2);
 		memcpy(&ret, raw + off + 8, 4);
 		if (off == 4)
-			t0 = ticks;
-		/* Hollywood's timer: about 1898 ticks per ms */
-		say("  %8u ms  %c ep=%02x len=%u ret=%d\n", (ticks - t0) / 1898, raw[off + 4],
-		    raw[off + 5], len, ret);
+			t0 = prev = ticks;
+		/* Hollywood's timer: about 1898 ticks per ms; +us is the time since
+		   the previous event */
+		say("  %8llu us +%6llu  %c ep=%02x len=%u ret=%d\n",
+		    (u64) (ticks - t0) * 1000 / 1898, (u64) (ticks - prev) * 1000 / 1898,
+		    raw[off + 4], raw[off + 5], len, ret);
+		prev = ticks;
 	}
 }
 
