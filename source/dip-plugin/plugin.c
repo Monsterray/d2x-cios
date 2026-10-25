@@ -32,6 +32,7 @@
 #include "wbfs.h"
 #include "frag.h"
 #include "string.h"
+#include "trace.h"
 
 
 /* Global config */
@@ -71,7 +72,7 @@ static s32 __DI_CheckOffset(u32 offset)
 	return 0;
 }
 
-static s32 __DI_ReadUnencrypted(void *outbuf, u32 len, u32 offset)
+static s32 __DI_ReadUnencryptedRaw(void *outbuf, u32 len, u32 offset)
 {
 	s32 ret;
 
@@ -97,6 +98,17 @@ static s32 __DI_ReadUnencrypted(void *outbuf, u32 len, u32 offset)
 
 	/* WOD read */
 	return DI_ReadWod(outbuf, len, offset);
+}
+
+/* Every emulated read, traced in DIP_DEBUG_TRACE builds (trace.h) */
+static s32 __DI_ReadUnencrypted(void *outbuf, u32 len, u32 offset)
+{
+	s32 ret;
+
+	DIP_TRACE(DIP_T_READ, 0, len, offset);
+	ret = __DI_ReadUnencryptedRaw(outbuf, len, offset);
+	DIP_TRACE(DIP_T_READ_END, 0, ret, 0);
+	return ret;
 }
 
 static s32 __DI_ReadDiscId(u32 *outbuf, u32 len)
@@ -230,6 +242,7 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 	s32 ret = 0;
 
 	DI_Printf("DIP: DI_EmulateCmd(0x%x)\n", cmd);
+	DIP_TRACE(DIP_T_CMD, cmd, inbuf[1], inbuf[2]);
 
 	/* Reset error */
 	if (cmd != IOCTL_DI_REQERROR)
@@ -680,6 +693,14 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 		break;
 	}
 
+#ifdef DIP_DEBUG_TRACE
+	/** Trace buffer (debug builds, trace.h) **/
+	case IOCTL_DI_TRACE_SET:
+		Trace_Set(inbuf[1]);
+		ret = 0;
+		break;
+#endif
+
 	default:
 		handle_cmd:
 
@@ -688,6 +709,7 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 	}
 
 	DI_Printf("DIP: DI_EmulateCmd: ret = 0x%x\n", ret);
+	DIP_TRACE(DIP_T_CMD_END, cmd, ret, 0);
 
 	return ret;
 }
@@ -701,6 +723,7 @@ s32 DI_EmulateIoctl(ioctl *buffer, s32 fd)
 	s32 ret = 1;
 
 	DI_Printf("DIP: DI_EmulateIoctl(0x%x)\n", cmd);
+	DIP_TRACE(DIP_T_IOCTL, cmd, fd, 0);
 
 	/* Parse command */
 	switch (cmd) {
@@ -778,6 +801,7 @@ s32 DI_EmulateIoctl(ioctl *buffer, s32 fd)
 	}
 
 	DI_Printf("DIP: DI_EmulateIoctl: ret = 0x%x\n", ret);
+	DIP_TRACE(DIP_T_IOCTL_END, cmd, ret, 0);
 
 	return ret;
 }
@@ -808,3 +832,11 @@ void DI_EmulateInitDrive(void)
 	/* Init DIP and FFS after the cIOS has been reloaded */
 	__DI_InitDriveEmulation();
 }
+
+#ifdef DIP_DEBUG_TRACE
+/* trace.c: the emulation mode bits, for each record */
+u32 DI_TraceMode(void)
+{
+	return config.mode;
+}
+#endif

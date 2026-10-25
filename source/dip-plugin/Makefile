@@ -43,6 +43,7 @@ OBJS	=	config.o		\
 		plugin.o		\
 		sdhc.o			\
 		start.o			\
+		trace.o			\
 		wbfs.o
 
 

@@ -20,6 +20,15 @@
 
 
 /*
+ * Trace builds (-DDIP_DEBUG_TRACE): trace.c wraps these two with logging
+ * under their usual names, so they are renamed here.
+ */
+#ifdef DIP_DEBUG_TRACE
+#define DI_HandleIoctl __DI_HandleIoctl_raw
+#define DI_HandleCmd   __DI_HandleCmd_raw
+#endif
+
+/*
  * Macros
  */
 .macro jump addr
