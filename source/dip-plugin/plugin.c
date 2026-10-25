@@ -38,6 +38,9 @@
 /* Global config */
 static struct dipConfig config = { 0 };
 static struct dipConfigState dipCfgState = { 0 };
+
+/* Set while Nintendo's DI module serves a decrypted read (0x71); see frag.c */
+int dip_decrypted_read = 0;
 static struct ffsConfigState ffsCfgState = { 0 };
 
 static s32 __DI_CheckOffset(u32 offset)
@@ -321,8 +324,14 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 
 			/* Do unencrypted read */
 			ret = __DI_ReadUnencrypted(outbuf, len, offset);
-		} else
+		} else {
+			/* Nintendo's DI module decrypts: it reads the clusters
+			   back through this plugin (0xA8). Frag_Read() needs to
+			   know, for clusters the image does not store. */
+			dip_decrypted_read = 1;
 			ret = DI_HandleCmd(inbuf, outbuf, size);
+			dip_decrypted_read = 0;
+		}
 
 		break;
 	}

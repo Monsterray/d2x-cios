@@ -50,6 +50,8 @@
 #define DIP_T_DIIO_END	'o'	/* it returned: arg = ret */
 #define DIP_T_READ	'R'	/* emulated read: arg = length, arg2 = offset (words) */
 #define DIP_T_READ_END	'r'	/* emulated read returns: arg = ret */
+#define DIP_T_SPARSE	'Z'	/* frag read: not stored (WBFS gap), zero-filled: arg = sector, arg2 = count */
+#define DIP_T_FRAG_ERR	'X'	/* frag read failed: cmd = where, arg = ret or sector, arg2 = count */
 
 #ifdef DIP_DEBUG_TRACE
 void Trace_Set(u32 addr);

@@ -24,6 +24,7 @@
 #include "usbstorage.h"
 #include "sdhc.h"
 #include "frag.h"
+#include "trace.h"
 
 #define DEV_NONE 0
 #define DEV_USB  1
@@ -123,11 +124,24 @@ static s32 __Frag_Get(FragList *ff, u32 offset, u32 count,
 	/* Not found */
 	if (offset + count > ff->size) {
 		/* Error: out of range! */
+		DIP_TRACE(DIP_T_FRAG_ERR, 2, offset, count);
 		return -2;
 	}
 
 	// if inside range, then it must be just sparse, zero filled
 	// return empty block at the end of requested
+	DIP_TRACE(DIP_T_SPARSE, 0, offset, count);
+#ifdef DIP_GAP_ERROR
+	/* Experiment (bench, 2026-10-25): zeros in a cluster the image does
+	   not store fail the DI module's hash check during a decrypted read,
+	   and the DI module then hung IOS on a Wii with a dead drive. A read
+	   error instead, only while it serves a 0x71; unencrypted reads keep
+	   the zero fill WBFS loaders expect. */
+	if (dip_decrypted_read) {
+		DIP_TRACE(DIP_T_FRAG_ERR, 4, offset, count);
+		return -4;
+	}
+#endif
 	*poffset = offset + count;
 	*psector = 0;
 	*pcount  = 0;
@@ -171,8 +185,10 @@ static s32 __Frag_ReadSect(u32 offset, u8 *data, u32 len)
 				ret = sdhc_Read(sector, count, data);
 
 			/* Read error */
-			if (!ret)
+			if (!ret) {
+				DIP_TRACE(DIP_T_FRAG_ERR, 3, sector, count);
 				return -3;
+			}
 
 			offset += count;
 			data   += count << ss_num_bits;

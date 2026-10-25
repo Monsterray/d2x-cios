@@ -39,6 +39,7 @@ typedef struct
 
 extern FragList fraglist_data;
 extern FragList *frag_list;
+extern int dip_decrypted_read;	/* plugin.c: a 0x71 is being served */
 
 /* Prototypes */
 s32  Frag_Init(u32 device, void *fraglist, s32 size);
