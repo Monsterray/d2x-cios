@@ -61,6 +61,8 @@ Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the m
 
 Changing how the USB driver retries or gives up? Read [docs/usb-storage.md](docs/usb-storage.md) first: the layers, the error codes and the limits, in one page.
 
+Chasing a hang inside IOS, where nothing on the Wii can report? Build with `EXTRA_CFLAGS=-DDIP_DEBUG_TRACE`: the DIP plugin then logs each DI command, each call into Nintendo's DI module and each emulated read into a buffer a loader registers and shows on the TV ([source/dip-plugin/trace.h](source/dip-plugin/trace.h) has the layout and the loader side; USB Loader GX's bench build shows it with `--dip-trace`).
+
 ## Conventions
 
 - **Line endings.** Every text file is LF, in the repository and in the checkout (`.gitattributes` sets `* text=auto eol=lf`, whatever `core.autocrlf` says). The one exception: `.bat` files are checked out with CRLF, which cmd.exe needs. Upstream has some files with CRLF; merge it with `git merge -X renormalize upstream/master` so the endings do not show up as conflicts. A checkout made before this rule: run `python tools/fix_line_endings.py`.
