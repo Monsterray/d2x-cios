@@ -15,6 +15,8 @@ BEGIN {
     vars["${HEX_MAJOR_VER}"] = hex_major_ver;
     vars["${HEX_MINOR_VER}"] = hex_minor_ver;
     vars["${IOS_REV}"]       = 21000 + major_ver;
+    vars["${RELEASE_NAME}"]  = release_name;              # d2x-v11.1.0
+    vars["${RELEASE_TEXT}"]  = substr(release_name, 6);   # 11.1.0
 
 }
  

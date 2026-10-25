@@ -21,10 +21,16 @@ git remote add upstream https://github.com/wiidev/d2x-cios.git
 ## Build
 
 ```sh
-tools/build.sh                 # modules in build/d2x-v999-unknown/
-tools/build.sh 11 beta4        # build/d2x-v11-beta4/
+tools/build.sh                 # the release in VERSION: build/d2x-v11.1.0/
+tools/build.sh 11 beta4-test   # an upstream-style name for experiments: build/d2x-v11-beta4-test/
 tools/build.sh clean
 ```
+
+### Versions
+
+`VERSION` holds the release number, `major.minor.patch` (optionally `-rc1` and the like), and a release is tagged `d2x-v11.1.0`. The major follows upstream d2x (11): loaders compare it, so it changes only with upstream or for a change loaders must know about. The minor counts feature and fix releases, the patch counts fix-only releases.
+
+Inside the cIOS the version is stored the way loaders and ModMii read it: the major as a number (and the TMD revision, 21000 + major), the rest as the version string `-1-0`, since ModMii allows no dots there. USB Loader GX shows `d2x v11-1-0 base56`; upstream builds show `d2x v11beta3`. `tests/test_version.py` checks `VERSION` stays within those limits.
 
 The first run builds the image `d2x-build:<hash>` from `docker/Dockerfile`: Debian (pinned by digest) and devkitARM r32 (pinned by SHA-256). The modules are big-endian ARM, and devkitARM releases after r32 cannot build them, so please don't build with a locally installed devkitARM.
 

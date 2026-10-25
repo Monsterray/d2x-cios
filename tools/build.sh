@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build d2x in the pinned container (docker/Dockerfile).
 #
-#     tools/build.sh [MAJOR [MINOR]]     build build/d2x-vMAJOR-MINOR/*.app
+#     tools/build.sh                     build the release in VERSION: build/d2x-v11.1.0/*.app
+#     tools/build.sh MAJOR [MINOR]       an upstream-style build/d2x-vMAJOR-MINOR (experiments)
 #     tools/build.sh test                host tests (tests/host) and Python tests
 #     tools/build.sh clean               remove build/ and object files
 #     tools/build.sh shell               a shell in the build container
@@ -42,7 +43,8 @@ fi
 run() {
     docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp \
         ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} \
-        ${EXTRA_CFLAGS:+-e EXTRA_CFLAGS="$EXTRA_CFLAGS"} "$@"
+        ${EXTRA_CFLAGS:+-e EXTRA_CFLAGS="$EXTRA_CFLAGS"} \
+        ${D2XNAME:+-e D2XNAME="$D2XNAME"} "$@"
 }
 
 case "${1:-}" in
@@ -61,6 +63,18 @@ test)
         run "$tag" sh -c './maked2x.sh clean' >/dev/null
         mkdir -p build
         printf '%s' "${EXTRA_CFLAGS:-}" > "$stamp"
+    fi
+    # With no version given, build the release in VERSION (major.minor.patch
+    # or major.minor.patch-pre): named d2x-v11.1.0; inside the cIOS the major
+    # stays a number (11) and the rest is the version string "-1-0", since
+    # ModMii allows no dots there (data/d2x-beta.bat). Loaders show
+    # "d2x v11-1-0". Explicit arguments (11 beta3-mr10) build an
+    # upstream-style name, for experiments.
+    if [ $# -eq 0 ]; then
+        v=$(tr -d ' \r\n' < VERSION)
+        D2XNAME="d2x-v$v"
+        set -- "${v%%.*}" "-$(printf '%s' "${v#*.}" | tr . -)"
+        echo "Release $D2XNAME (from VERSION): version $1, version string $2"
     fi
     run "$tag" sh -c 'g++ -O2 -Wall -Wextra $EXTRA_CFLAGS stripios_src/main.cpp -o stripios && ./maked2x.sh "$@"' \
         build "$@" ;;
