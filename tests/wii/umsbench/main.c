@@ -174,6 +174,7 @@ static int bench(int argc, char **argv)
 	bool log = false;
 	int dump = 0;
 	int pattern = 0;
+	bool list_slots = false;
 	struct timing r1 = {0}, r64 = {0}, w1 = {0}, w64 = {0};
 	u32 changed = 0;
 
@@ -196,10 +197,24 @@ static int bench(int argc, char **argv)
 			dump = atoi(argv[i] + 7);
 		else if (!strncmp(argv[i], "--pattern=", 10))
 			pattern = atoi(argv[i] + 10);
+		else if (!strcmp(argv[i], "--slots"))
+			list_slots = true;
 	}
 
 	console_setup();
 	hbc_netlog_init();
+	/* --slots: list the installed IOS 200-255 (TMD versions), read only,
+	 * no IOS reload, no USB, to pick a free slot for a test cIOS */
+	if (list_slots) {
+		say("umsbench: installed IOS 200-255 (slot: TMD version; others empty):\n");
+		for (u32 s = 200; s <= 255; s++) {
+			u16 v = slot_version(s);
+			if (v)
+				say("  IOS%u: v%u\n", s, v);
+		}
+		say("RESULT slots listed\n");
+		return 0;
+	}
 	say("umsbench: running on IOS%d v%d; slot %u holds v%u\n",
 	       IOS_GetVersion(), IOS_GetRevision(), ios, slot_version(ios));
 
