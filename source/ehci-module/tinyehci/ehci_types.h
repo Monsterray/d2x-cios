@@ -25,6 +25,7 @@ enum{
         ETIMEDOUT,
         EINVAL,
         ENOMEM,
+        EPIPE,          /* the endpoint halted: a STALL */
         
 };
 #define jiffies 0

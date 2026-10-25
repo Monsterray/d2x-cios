@@ -179,7 +179,14 @@ static void ums_log_event(u8 what, u8 ep, u32 len, s32 ret);
 #else
 #define UMS_LOG(what, ep, len, ret) do {} while (0)
 #endif
+#include "ums_quirks.h"
 #define get_timer()  (*(((vu32*)HW_TIMER)))
+
+/* handshake() polls this long (Hollywood timer ticks, about 0.53 us each)
+   before it sleeps between checks: most transfers finish within it, and an
+   IOS sleep (a timer and a message queue round trip) costs far more than
+   the 10 us it asks for. */
+#define HANDSHAKE_SPIN_TICKS 100
 
 static int handshake (void __iomem *pstatus, void __iomem *ptr,
 		      u32 mask, u32 done, int usec)
@@ -192,6 +199,9 @@ static int handshake (void __iomem *pstatus, void __iomem *ptr,
 	usec<<=1;
     
 	do {
+		/* Check first, poll briefly, then sleep between checks so other
+		   threads run during a long transfer */
+		if (get_timer() - tmr > HANDSHAKE_SPIN_TICKS)
 		ehci_usleep (10); /* Hermes:  100 microseconds is a good time to response and better for multithread (i think).
 						the new timer uses syscalls and queues to release the thread focus */
 		//usec-=100;
@@ -217,9 +227,12 @@ static int handshake (void __iomem *pstatus, void __iomem *ptr,
 		result &= mask;
 		
 		
+		/* USBERRINT: a qTD halted, on a port that is still connected (checked
+		   above). Usually a STALL, which Bulk-Only uses to refuse data or end
+		   a phase; ehci_do_urb() reports it, it is not an unplug. */
 		if(g_status & STS_ERR) 
 			{
-			if(handshake_mode) ret=-ETIMEDOUT; else {unplug_device=1;ret=-ENODEV;}
+			ret = handshake_mode ? -ETIMEDOUT : -EPIPE;
 			goto handshake_exit;
 
 			}
@@ -531,6 +544,7 @@ u32 usb_timeout=1000*1000;
 		int			is_input;
 		int			maxp = 0;
         int retval=0;
+        int halted;
 
 		//writel (INTR_MASK, &ehci->regs->intr_enable); // try interrupt
 
@@ -543,6 +557,11 @@ u32 usb_timeout=1000*1000;
                         urb->transfer_dma = ehci_dma_map_to(urb->transfer_buffer,urb->transfer_buffer_length);
                 else
                         urb->transfer_dma = ehci_dma_map_from(urb->transfer_buffer,urb->transfer_buffer_length);
+        }
+        // 'B': a bulk-out transfer's DMA address, 'b': the first word there
+        if(urb->ep!=0 && !urb->input && urb->transfer_buffer_length) {
+                UMS_LOG('B', urb->ep, urb->transfer_buffer_length, (s32)urb->transfer_dma);
+                UMS_LOG('b', urb->ep, 0, *(s32 *)urb->transfer_buffer);
         }
         qh = ehci->asyncqh;
         memset(qh,0,12*4);
@@ -597,6 +616,8 @@ u32 usb_timeout=1000*1000;
         }
 
 	qh->hw_token &= cpu_to_hc32( QTD_TOGGLE | QTD_STS_PING);
+        if((ums_quirks & UMS_QUIRK_PING) && urb->ep!=0 && !urb->input)
+                qh->hw_token |= cpu_to_hc32(QTD_STS_PING);
 
         qh->hw_next = QH_NEXT(ehci->async->qh_dma);
 
@@ -616,6 +637,13 @@ u32 usb_timeout=1000*1000;
 
         retval = handshake/*_interrupt*/(&ehci->regs->port_status[dev->port],&ehci->regs->status,STS_INT,STS_INT,usb_timeout);
         UMS_LOG('h', urb->ep, urb->transfer_buffer_length, retval);
+#ifdef EHCI_DEBUG_LOG
+        // 'O': where the controller's overlay buffer pointer ended
+        if(urb->ep!=0) {
+                ehci_dma_unmap_bidir(qh->qh_dma,sizeof(struct ehci_qh));
+                UMS_LOG('O', urb->ep, 0, (s32)hc32_to_cpu(qh->hw_buf[0]));
+        }
+#endif
 		
         //print_hex_dump_bytes ("qh mem",0,(void*)qh,17*4);
         //retval = poll_transfer_end(1000*1000);
@@ -639,6 +667,11 @@ u32 usb_timeout=1000*1000;
                 //ehci_dbg("toggle for ep %x: %d %d %x %X\n",urb->ep,get_toggle(dev,urb->ep),(qh->hw_token & cpu_to_hc32(QTD_TOGGLE)),qh->hw_token,dev->toggles);
 			}
 
+        // A halted transfer completed: the qTDs say how far it got
+        halted = (retval == -EPIPE);
+        if(halted)
+                retval = 0;
+
         if(retval>=0)
         // wait hc really stopped
                 retval = handshake(&ehci->regs->port_status[dev->port],&ehci->regs->async_next,~0,ehci->async->qh_dma,20*1000);
@@ -661,6 +694,11 @@ u32 usb_timeout=1000*1000;
 		
 		
         UMS_LOG('U', urb->ep, urb->transfer_buffer_length, retval == 0 ? (s32)urb->actual_length : retval);
+        // A halted bulk transfer is a short one (usbstorage.c clears the
+        // halt and reads the CSW); a halted control request failed.
+        if(retval==0 && halted && urb->ep==0)
+                retval = -EPIPE;
+
         if(retval==0){
                 
                 return urb->actual_length;

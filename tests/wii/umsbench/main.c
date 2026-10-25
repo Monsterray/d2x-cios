@@ -3,6 +3,7 @@
  *
  *     hbc.py run umsbench.dol [--ios=249] [--write-back [--writes=N]]
  *                             [--big-writes=N] [--timeout=N] [--quirks=N] [--log]
+ *                             [--pattern=N]   (SCRATCH drives only: overwrites)
  *
  * --timeout and --log need an EHCI module built with EHCI_DEBUG_LOG:
  * --timeout sets its sector I/O timeout (usb_timeout units; 1000000 is
@@ -169,6 +170,7 @@ static int bench(int argc, char **argv)
 	u32 io_timeout = 0, quirks = 0;
 	bool log = false;
 	int dump = 0;
+	int pattern = 0;
 	struct timing r1 = {0}, r64 = {0}, w1 = {0}, w64 = {0};
 	u32 changed = 0;
 
@@ -189,6 +191,8 @@ static int bench(int argc, char **argv)
 			log = true;
 		else if (!strncmp(argv[i], "--dump=", 7))
 			dump = atoi(argv[i] + 7);
+		else if (!strncmp(argv[i], "--pattern=", 10))
+			pattern = atoi(argv[i] + 10);
 	}
 
 	console_setup();
@@ -274,6 +278,66 @@ static int bench(int argc, char **argv)
 	       r1.max_us, r1.failed);
 	say("umsbench: read %u sectors: avg %u us, max %llu us, %u failed\n", big, avg(&r64),
 	       r64.max_us, r64.failed);
+
+	/* --pattern=N, for a SCRATCH drive only (it overwrites sectors): write
+	 * known data that differs from what is there, read it back, compare.
+	 * N single-sector writes at lba..lba+N-1, then N/4 (at least 1)
+	 * 64-sector writes after them. A write that reports success but lands
+	 * stale data (a CBW, an earlier buffer) shows up as a mismatch. */
+	if (pattern > 0) {
+		struct timing p1 = {0}, p64 = {0};
+		u32 bad = 0, cbw = 0, seed = (u32) gettime();
+		int nbig = pattern / 4 ? pattern / 4 : 1;
+		u32 big_lba = lba + ((pattern + 63) & ~63);
+		say("umsbench: PATTERN test at sector %u (seed %08x): writes data that differs\n",
+		    lba, seed);
+		for (int i = 0; i < pattern; i++) {
+			u32 *w = (u32 *) buf;
+			for (u32 k = 0; k < sector_size / 4; k++)
+				w[k] = seed ^ ((lba + i) * 0x9E3779B1u) ^ (k * 0x85EBCA77u);
+			printf("umsbench: pattern write sector %u (#%d of %d)...\n", lba + i, i + 1, pattern);
+			s64 s = gettime();
+			add(&p1, s, rw(USB_IOCTL_UMS_WRITE_SECTORS, lba + i, 1, buf, sector_size));
+		}
+		for (int j = 0; j < nbig; j++) {
+			u32 *w = (u32 *) buf;
+			u32 base = big_lba + j * big;
+			for (u32 k = 0; k < big * sector_size / 4; k++)
+				w[k] = seed ^ ((base + k / (sector_size / 4)) * 0x9E3779B1u) ^
+				       ((k % (sector_size / 4)) * 0x85EBCA77u);
+			printf("umsbench: pattern write %u sectors at %u (#%d of %d)...\n", big, base, j + 1, nbig);
+			s64 s = gettime();
+			add(&p64, s, rw(USB_IOCTL_UMS_WRITE_SECTORS, base, big, buf, big * sector_size));
+		}
+		/* read everything back, one sector at a time, and compare */
+		printf("umsbench: reading the pattern back...\n");
+		u32 total = pattern + nbig * big;
+		for (u32 n = 0; n < total; n++) {
+			u32 sec = n < (u32) pattern ? lba + n : big_lba + (n - pattern);
+			if (rw(USB_IOCTL_UMS_READ_SECTORS, sec, 1, buf, sector_size) != 0) {
+				bad++;
+				continue;
+			}
+			u32 *w = (u32 *) buf;
+			bool ok = true;
+			for (u32 k = 0; k < sector_size / 4 && ok; k++)
+				ok = w[k] == (seed ^ (sec * 0x9E3779B1u) ^ (k * 0x85EBCA77u));
+			if (!ok) {
+				if (!memcmp(buf, "USBC", 4))
+					cbw++;
+				if (bad++ < 4)
+					say("umsbench: MISMATCH at sector %u: %08x %08x %08x %08x\n", sec,
+					    (unsigned) w[0], (unsigned) w[1], (unsigned) w[2], (unsigned) w[3]);
+			}
+		}
+		say("umsbench: pattern 1-sector writes: avg %u us, max %llu us, %u failed\n",
+		    avg(&p1), p1.max_us, p1.failed);
+		say("umsbench: pattern %u-sector writes: avg %u us, max %llu us, %u failed\n",
+		    big, avg(&p64), p64.max_us, p64.failed);
+		say("PATTERN ios=%u sectors=%u w1_us=%u w1_failed=%u w64_us=%u w64_failed=%u "
+		    "mismatched=%u cbw=%u\n", ios, total, avg(&p1), p1.failed, avg(&p64), p64.failed,
+		    bad, cbw);
+	}
 
 	if (write_back) {
 		/* Put back exactly what is there: read, write the same bytes. */

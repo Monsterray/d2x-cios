@@ -226,6 +226,8 @@ s32 USB_SetAlternativeInterface(struct ehci_device *fd, u8 interface, u8 alterna
                                      USB_REQ_SETINTERFACE, alternateSetting, interface, 0, NULL, NULL, NULL);
 
 }
+#include "ums_quirks.h"
+
 s32 USB_ClearHalt(struct ehci_device *fd, u8 endpoint)
 {
 	s32 retval;
@@ -237,7 +239,7 @@ s32 USB_ClearHalt(struct ehci_device *fd, u8 endpoint)
 	// to DATA0 (USB 2.0 9.4.5). Do the same here: bulk transfers start from
 	// the toggle kept in fd->toggles, and with DATA1 the device would discard
 	// the next packet as a retransmission.
-	if(retval >= 0)
+	if(retval >= 0 && !(ums_quirks & UMS_QUIRK_KEEP_TOGGLE))
 		set_toggle(fd, endpoint, 0);
 
 	return retval;

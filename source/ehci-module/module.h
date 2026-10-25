@@ -27,6 +27,7 @@
 /* EHCI_DEBUG_LOG builds only */
 #define USB_IOCTL_UMS_DEBUG_LOG			(UMS_BASE+0x90)
 #define USB_IOCTL_UMS_SET_TIMEOUT		(UMS_BASE+0x91)
+#define USB_IOCTL_UMS_SET_QUIRKS		(UMS_BASE+0x92)
 
 /* WBFS IOCTL commands */
 #define WBFS_BASE				(('W'<<24)|('F'<<16)|('S'<<8))

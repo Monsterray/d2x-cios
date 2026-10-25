@@ -234,6 +234,13 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 
 		break;
 	}
+
+	case USB_IOCTL_UMS_SET_QUIRKS: {
+		/* Bulk-Only behaviour switches for bench experiments */
+		ret = (inlen >= 1) ? USBStorage_SetQuirks(*(u32 *)vector[0].data) : -1;
+
+		break;
+	}
 #endif
 
 	case USB_IOCTL_WBFS_OPEN_DISC: {

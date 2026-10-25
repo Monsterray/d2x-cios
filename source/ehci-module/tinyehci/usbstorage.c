@@ -92,7 +92,8 @@ static u32 ums_io_timeout = 1000*1000;
 /* A ring of the last Bulk-Only steps, read with USB_IOCTL_UMS_DEBUG_LOG:
    'C' CBW (len = SCSI opcode), 'D' data, 'S' CSW (ep = status), 'H' clear
    halt, 'R' reset recovery (len = retries left), 'P' port re-init,
-   'W'/'r' write/read start (ret = sector, len = sectors), 'E' end (len = tries). */
+   'W'/'r' write/read start (ret = sector, len = sectors), 'E' end (len = tries),
+   'K' sense data (ep = key, len = ASC << 8 | ASCQ). */
 struct ums_event {
 	u32 ticks;
 	u8  what;
@@ -136,6 +137,13 @@ s32 USBStorage_SetTimeout(u32 timeout)
 	if (timeout < 100*1000 || timeout > 60*1000*1000)
 		return -1;
 	ums_io_timeout = timeout;
+	return 0;
+}
+
+/* ums_quirks and the UMS_QUIRK_* bits are in usb.c */
+s32 USBStorage_SetQuirks(u32 quirks)
+{
+	ums_quirks = quirks;
 	return 0;
 }
 #else
@@ -357,7 +365,7 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
 	dev->buffer[13] = lun;
 	// linux usb/storage/protocol.c seems to say only difference is padding
         // and fixed cw size
-        if(dev->ata_protocol)
+        if(dev->ata_protocol || (ums_quirks & UMS_QUIRK_CBW12))
                 dev->buffer[14] = 12;
         else
                 dev->buffer[14] = cbLen; // the valid command length (BOT 5.1)
@@ -450,6 +458,8 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		// device may end a read early with a short packet. Either way the
 		// data phase is over and the CSW says what happened (BOT 6.7.2,
 		// 6.7.3). Only a transfer error needs a reset recovery.
+		if(write && len > 0 && (ums_quirks & UMS_QUIRK_FLIP_DATA))
+			set_toggle(dev->usb_fd, dev->ep_out, !get_toggle(dev->usb_fd, dev->ep_out));
 		while(len > 0)
 		{
 			thisLen=len;
@@ -483,7 +493,15 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			// more (BOT 5.3.3 and its figure 2)
 			USB_ClearHalt(dev->usb_fd, dev->ep_in);
 			UMS_LOG('H', dev->ep_in, 0, 0);
-			retval = __read_csw(dev, &status, &dataResidue);
+			// A device that still sends no CSW needs a reset recovery
+			// (BOT 5.3.4), not a remount: time out with -ETIMEDOUT, not
+			// the unplug that handshake_mode 0 reports.
+			{
+				int f = handshake_mode;
+				handshake_mode = 1;
+				retval = __read_csw(dev, &status, &dataResidue);
+				handshake_mode = f;
+			}
 		}
 		UMS_LOG('S', status, 0, retval);
 
@@ -585,6 +603,7 @@ static s32 __usbstorage_clearerrors(usbstorage_handle *dev, u8 lun)
 		cmd[5] = 0;
 		memset(sense, 0, SCSI_SENSE_REPLY_SIZE);
 		retval = __cycle(dev, lun, sense, SCSI_SENSE_REPLY_SIZE, cmd, 6, 0, NULL, NULL);
+		UMS_LOG('K', sense[2] & 0x0F, (sense[12] << 8) | sense[13], retval);
 
 		#ifdef MEM_PRINT
 		s_printf("    SCSI_REQUEST_SENSE ret %i\n", retval);
@@ -1030,6 +1049,15 @@ s32 USBStorage_Inquiry(usbstorage_handle *dev, u8 lun)
 
 	retval = __cycle(dev, lun, response, 36, cmd, 6, 0, NULL, NULL);
         //print_hex_dump_bytes("inquiry result:",DUMP_PREFIX_OFFSET,response,36);
+#ifdef EHCI_DEBUG_LOG
+	// 'I': peripheral type and RMB bit, then vendor and product, 4 bytes each
+	{
+		int i;
+		UMS_LOG('I', response[0], response[1], retval);
+		for (i = 8; i < 32; i += 4)
+			UMS_LOG('I', i, 0, (response[i] << 24) | (response[i+1] << 16) | (response[i+2] << 8) | response[i+3]);
+	}
+#endif
         USB_Free(response);
 	return retval;
 }
@@ -1077,6 +1105,8 @@ static s32 __usbstorage_sense(usbstorage_handle *dev, u8 lun)
 		return -ENOMEM;
 	memset(sense, 0, SCSI_SENSE_REPLY_SIZE);
 	retval = __cycle(dev, lun, sense, SCSI_SENSE_REPLY_SIZE, cmd, sizeof(cmd), 0, NULL, NULL);
+	// 'K': ep = sense key, len = ASC << 8 | ASCQ
+	UMS_LOG('K', sense[2] & 0x0F, (sense[12] << 8) | sense[13], retval);
 	if(retval >= 0)
 		retval = sense[2] & 0x0F;
 	USB_Free(sense);
@@ -1109,6 +1139,11 @@ static s32 __USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_s
 		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
 	}
+#ifdef EHCI_DEBUG_LOG
+	// Why the drive refused: its sense data, into the event log ('K')
+	else if(retval < 0 && retval != -ENODEV)
+		__usbstorage_sense(dev, lun);
+#endif
 	return retval;
 }
 
@@ -1137,6 +1172,11 @@ static s32 __USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_
 		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
 	}
+#ifdef EHCI_DEBUG_LOG
+	// Why the drive refused: its sense data, into the event log ('K')
+	else if(retval < 0 && retval != -ENODEV)
+		__usbstorage_sense(dev, lun);
+#endif
 	return retval;
 }
 
