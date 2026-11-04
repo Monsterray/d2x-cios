@@ -105,6 +105,15 @@ The DIP plugin has no host harness yet. Trigger: the next DIP change, or a bench
 | Measurement | **A full disc dump through USB Loader GX (2026-10-25), lrwii, its new 8 GB FAT32 scratch drive.** The old r65535 cIOS (slot 249) froze at 16.53 MB and GX's exit then hung on the unmount. `d2x-v11.1.0-rc1` (3a570be, slot 247) dumped New Super Mario Bros. Wii (SMNE01, 350 MB) in 223.8 s: 11275 USB writes, 369 MB, 0 failed, longest 521 ms; 11275 reads (GX's libfat reads each cache page before writing it), longest 4962 ms, the only request over 2 s, which looks like one recovered stall (a 1 s transfer timeout plus recovery); worth a debug-log run. | Main USBLoaderGX session job 20261025-000218-3cb697 (GX `-ios=247`, IoGuard on). |
 | Tools | Installed `d2x-v11-beta3-mr1` (this branch at fa5d8d8, base 56) to slot 249 with the d2x installer's `--auto` mode (local patched installer). Read back: slot 249 holds v21011, boots, mounts the drive, reads at the same speed. | `tests/wii/install_cios.py` (TV recorded), then `umsbench.py` read-only. |
 
+### SD high speed (opt-in, `SDIO_HIGH_SPEED`)
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Measurement | **What IOS does with the SD clock (ironic, running the real IOS from the dev Wii's NAND, 2026-11-04).** d2x's SD path (`cios-lib/sdio.c`) uses IOS's `/dev/sdio/slot0` ioctls: WRITEHCREG 1, READHCREG 2, SETCLK 6, SENDCMD 7. `SETCLK(n)` writes the clock control (0x2c) divisor field: clock = base / 2n, n = 0 the undivided base. d2x calls `SETCLK(1)`: base / 2. With the base at 48 MHz (bootmii-reborn's notes) the SD runs at 24 MHz, 4-bit, default speed. IOS never sets host control (0x28) bit 2 (high speed enable). SETCLK and SENDCMD touch only 0x2c and the command registers, never 0x28; ResetCard (ioctl 4) and a host soft reset clear 0x28 and set the divisor 0x80, so high speed has to be set after every reset or re-init. | ironic trace; the 48 MHz base is from bootmii-reborn, not measured here. |
+| Fix | Opt-in high speed (`docs/sd-high-speed.md`): CMD6 check and switch, then 0x28 bit 2 and `SETCLK(0)`; on a failed transfer at high speed, back to default speed for the session. Reference: bootmii-reborn `starlet/sdmmc.c`, `starlet/sdhc.c`, `docs/mini-plan.md`. | Host tests (`tests/host/sdio`, 12 tests, 3 mutations caught). Not run on a Wii. ironic has no CMD6, so it cannot show the switch. |
+
+Trigger to make it the default: an attended run on 2-3 cards with no errors and a measured gain.
+
 ### Next
 
 - **Bench test program.** A DOL, run from HBC through the bench queue, that reports which slots hold which cIOS (read only), then opens the cIOS's USB device and times sector reads and writes to a scratch file area, printing results to the HBC log. Trigger: before the first install of a fork build.
