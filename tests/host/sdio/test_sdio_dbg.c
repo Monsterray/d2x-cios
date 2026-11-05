@@ -239,9 +239,10 @@ static void test_real_failure_is_counted_like_a_fault(void)
 	CHECK(DBG_HEAD->sd_hs == 2, "fallback traced");
 }
 
-/* Upstream bug (sdio.c, sdio_ReadSectors and sdio_WriteSectors): on a byte
- * addressed (not SDHC) card `sector *= PAGE_SIZE512` is inside the retry loop,
- * so a retry multiplies the address again and reads or writes the wrong place. */
+/* Upstream bug, fixed (sdio.c, sdio_ReadSectors and sdio_WriteSectors): on a
+ * byte addressed (not SDHC) card `sector *= PAGE_SIZE512` was inside the retry
+ * loop, so a retry multiplied the address again and read or wrote the wrong
+ * place. A retry must send the same address. */
 static void test_nonsdhc_read_retry_keeps_address(void)
 {
 	u32 want;
@@ -279,8 +280,8 @@ static const struct hc_test tests[] = {
 	{ "sd_dbg_error_fault_every_time_fails", test_error_fault_every_time_fails, false },
 	{ "sd_dbg_error_fault_nine_times_succeeds", test_error_fault_nine_times_succeeds, false },
 	{ "sd_dbg_real_failure_counted_like_a_fault", test_real_failure_is_counted_like_a_fault, false },
-	{ "sd_dbg_nonsdhc_read_retry_keeps_address", test_nonsdhc_read_retry_keeps_address, true },
-	{ "sd_dbg_nonsdhc_write_retry_keeps_address", test_nonsdhc_write_retry_keeps_address, true },
+	{ "sd_dbg_nonsdhc_read_retry_keeps_address", test_nonsdhc_read_retry_keeps_address, false },
+	{ "sd_dbg_nonsdhc_write_retry_keeps_address", test_nonsdhc_write_retry_keeps_address, false },
 };
 
 int main(int argc, char **argv)

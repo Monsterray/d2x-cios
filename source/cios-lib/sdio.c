@@ -777,6 +777,11 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 
 	SD_EV(D2XDBG_E_BEGIN, 0x28, sector, numSectors);
 
+	/* SDSC cards take a byte address. Once, outside the retry loop: inside it,
+	   every retry multiplied the address again. */
+	if (!__sd0_sdhc)
+		sector *= PAGE_SIZE512;
+
 	/* Read loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
@@ -787,10 +792,6 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 #endif
 			continue;
 		}
-
-		/* Check if SDHC */
-		if (!__sd0_sdhc)
-			sector *= PAGE_SIZE512;
 
 		/* Send command */
 #ifdef D2X_DEBUG
@@ -828,6 +829,11 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 
 	SD_EV(D2XDBG_E_BEGIN, 0x2A, sector, numSectors);
 
+	/* SDSC cards take a byte address. Once, outside the retry loop: inside it,
+	   every retry multiplied the address again. */
+	if (!__sd0_sdhc)
+		sector *= PAGE_SIZE512;
+
 	/* Write loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
@@ -838,10 +844,6 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 #endif
 			continue;
 		}
-
-		/* Check if SDHC */
-		if (!__sd0_sdhc)
-			sector *= PAGE_SIZE512;
 
 		/* Send command */
 #ifdef D2X_DEBUG
