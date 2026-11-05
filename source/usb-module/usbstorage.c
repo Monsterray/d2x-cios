@@ -69,7 +69,14 @@ distribution.
 
 #define USBSTORAGE_CYCLE_RETRIES	3
 
-#define MAX_TRANSFER_SIZE			4096
+/* Bytes per bulk transfer. IOS's /dev/usb/ven takes about 1 ms per transfer
+   whatever its size (base 58 on a Wii: 3 ms for a 1-sector read, 10 ms for
+   64 sectors in 4 KB pieces), so bigger pieces are faster. libogc uses 16 KB
+   on USBv5; the bounce buffer comes from the 32 KB module heap. */
+#ifndef USBS_MAX_TRANSFER
+#define USBS_MAX_TRANSFER			4096
+#endif
+#define MAX_TRANSFER_SIZE			USBS_MAX_TRANSFER
 
 /* IOS's USB driver reports a STALLed transfer as -7003 or -7004 (WiiBrew,
    /dev/usb/oh0, from gc-linux; not checked on a Wii). Any other negative
