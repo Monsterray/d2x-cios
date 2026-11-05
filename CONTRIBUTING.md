@@ -79,6 +79,8 @@ tools/build.sh test
 | `VERSION` is a valid release number; variant names fit the 15-character version string | `tests/test_version.py` | Python, sh |
 | USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read; `--pattern=N` writes and verifies known data, **scratch drives only**; `--log` prints the debug build's event log) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
 | SD sector read timing through `/dev/sdio/sdhc` and the SD high-speed state (`0x20`; `0x21` forces the fallback and re-reads to compare a CRC32). Read only: it never writes a sector of the card | `make -C tests/wii/sdbench`, then `python tests/wii/sdbench.py -- --ios=249 [--mb=32]` as a wii-bench job | devkitPPC, a Wii with HBC and an SD card |
+| The debug build's area, counters, watchdog decision and fault points, and each module's hooks, against simulated drives (`-DD2X_DEBUG`) | `tests/host/dbg`, `tests/host/*/test_*_dbg.c` | a C compiler (in the image) |
+| A `+dbg` build on a Wii: identity, counters, trace, last words, fault scenarios, and (attended) a deliberate IOS hang the ARM watchdog recovers from | `make -C tests/wii/d2xdiag`, then `python tests/wii/d2xdiag.py [--attended] -- --ios=N [--wd=S] --scenario=...` as a wii-bench job ([docs/debug-build.md](docs/debug-build.md)) | devkitPPC, a Wii with HBC and the `+dbg` cIOS in a spare slot |
 | Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
 Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.
@@ -86,6 +88,8 @@ Host tests build module source unchanged for your PC and run it against simulate
 Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the modules.
 
 Changing how the USB driver retries or gives up? Read [docs/usb-storage.md](docs/usb-storage.md) first: the layers, the error codes and the limits, in one page.
+
+Chasing a problem inside IOS? Build the debug variant: `D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG -DSDIO_HIGH_SPEED" tools/build.sh`. It keeps counters and one trace ring for EHCI, USBS, SD, FAT and DIP in a fixed MEM2 area the PowerPC can read live, keeps the previous IOS run's "last words", has an ARM watchdog that resets the console when a test app stops checking in, and takes injected faults through `/dev/d2xdbg`. The release build is byte-identical without it. See [docs/debug-build.md](docs/debug-build.md).
 
 Chasing a hang inside IOS, where nothing on the Wii can report? Build with `EXTRA_CFLAGS=-DDIP_DEBUG_TRACE`: the DIP plugin then logs each DI command, each call into Nintendo's DI module and each emulated read into a buffer a loader registers and shows on the TV ([source/dip-plugin/trace.h](source/dip-plugin/trace.h) has the layout and the loader side; USB Loader GX's bench build shows it with `--dip-trace`).
 

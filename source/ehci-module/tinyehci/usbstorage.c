@@ -119,6 +119,12 @@ static int ums_deadline_passed(void)
    is about 1.05 s). */
 static u32 ums_io_timeout = 1000*1000;
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#else
+#define D2XDBG_EV(mod, ev, x, a, b)	do {} while (0)
+#endif
+
 #ifdef EHCI_DEBUG_LOG
 /* A ring of the last Bulk-Only steps, read with USB_IOCTL_UMS_DEBUG_LOG:
    'C' CBW (len = SCSI opcode), 'D' data, 'S' CSW (ep = status), 'H' clear
@@ -177,8 +183,33 @@ s32 USBStorage_SetQuirks(u32 quirks)
 	ums_quirks = quirks;
 	return 0;
 }
+#elif defined(D2X_DEBUG)
+/* Debug builds: each Bulk-Only step goes to the d2x trace ring (d2xdbg.h)
+   as event 'u', x = the letter above << 8 | ep, a = len, b = ret. ehci.c's
+   own steps (above this file in the unit) stay out: the ring is short. */
+#undef UMS_LOG
+#define UMS_LOG(what, ep, len, ret) D2XDBG_EV(D2XDBG_M_EHCI, 'u', ((what) << 8) | (ep), len, ret)
 #else
 #define UMS_LOG(what, ep, len, ret) do {} while (0)
+#endif
+
+#ifdef D2X_DEBUG
+/* A fault set through /dev/d2xdbg for this point (d2xdbg.h): the transfer's
+   result in its place, or 1 to run the transfer. A STALL moves nothing (a
+   short transfer, as tinyehci reports one); a timeout or a lost CSW is
+   -ETIMEDOUT; an error is -ENODEV, the device gone. Delays and hangs happen
+   in Dbg_Point() itself. */
+static s32 __ums_fault(u32 point, u32 arg)
+{
+	u32 f = D2XDBG_POINT(D2XDBG_M_EHCI, point, arg);
+
+	switch (D2XDBG_FAULT_ACTION(f)) {
+	case 0:			return 1;
+	case D2XDBG_F_STALL:	return 0;
+	case D2XDBG_F_ERROR:	return -ENODEV;
+	default:		return USBSTORAGE_ETIMEDOUT;
+	}
+}
 #endif
 
 static int ums_init_done = 0;
@@ -403,6 +434,10 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
         //debug_printf("send cb of size %d\n",dev->buffer[14]);
 	memcpy(dev->buffer + 15, cb, cbLen);
         //hexdump(dev->buffer,CBW_SIZE);
+#ifdef D2X_DEBUG
+	retval = __ums_fault(D2XDBG_P_CMD, cb[0]);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_out, CBW_SIZE, (void *)dev->buffer);
 
 	UMS_LOG('C', dev->ep_out, cb[0], retval);
@@ -419,6 +454,10 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 
 	memset(dev->buffer, 0xff, CSW_SIZE);
 
+#ifdef D2X_DEBUG
+	retval = __ums_fault(D2XDBG_P_CSW, 0);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_in, CSW_SIZE, dev->buffer);
         //print_hex_dump_bytes("csv resp:",DUMP_PREFIX_OFFSET,dev->buffer,CSW_SIZE);
 
@@ -476,7 +515,10 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
+    {
+          D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'b', retval, retries);
           retval=__usbstorage_reset(dev,retries < USBSTORAGE_CYCLE_RETRIES);
+    }
     if(retval != USBSTORAGE_OK || retries <= USBSTORAGE_CYCLE_RETRIES)
           UMS_LOG('R', 0, retries, retval);
 	
@@ -499,6 +541,10 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		while(len > 0)
 		{
 			thisLen=len;
+#ifdef D2X_DEBUG
+			retval = __ums_fault(D2XDBG_P_DATA, thisLen);
+			if(retval == 1)
+#endif
 			retval = __USB_BlkMsgTimeout(dev, write ? dev->ep_out : dev->ep_in, thisLen, buffer);
 			UMS_LOG('D', write ? dev->ep_out : dev->ep_in, thisLen, retval);
 			if(retval < 0)
@@ -1548,6 +1594,7 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		return false;
 
 	UMS_LOG(write ? 'W' : 'r', 0, numSectors, sector);
+	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_BEGIN, write ? 0x2A : 0x28, sector, numSectors);
 	ums_deadline_start();
 
 	for(;;)
@@ -1558,6 +1605,7 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		{
 			int replugged = unplug_procedure();
 			UMS_LOG('P', 0, 0, replugged);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'p', replugged, tries);
 			if(replugged != 0) {
 				gone = 1;               // rule 1: still gone, keep waiting
 				continue;
@@ -1569,6 +1617,7 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 				ums_deadline_start();
 			} else if(tries && ums_deadline_passed()) {
 				UMS_LOG('E', 0, tries, -1);
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, -1, tries);
 				ums_deadline_stop();
 				return false;           // rule 2
 			}
@@ -1584,21 +1633,27 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 
 		if(retval >= 0) {
 			UMS_LOG('E', 0, tries, retval);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, 0, tries);
 			ums_deadline_stop();
 			return true;
 		}
 
 		// a timeout is handled as an unplug, as before
 		if(retval == USBSTORAGE_ETIMEDOUT)
+		{
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_TIMEOUT, 0, sector, tries);
 			unplug_device=1;
+		}
 
 		// The device answers but the command fails (a write-protected or
 		// failing drive): give up, so the caller sees an error (rule 2).
 		if(++tries >= USBSTORAGE_SECTOR_TRIES || ums_deadline_passed()) {
 			UMS_LOG('E', 0, tries, retval);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, retval, tries);
 			ums_deadline_stop();
 			return false;
 		}
+		D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RETRY, 0, tries, retval);
 	}
 }
 

@@ -39,6 +39,13 @@
 #include "sdio_hs.h"
 #endif
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#define SD_EV(ev, x, a, b)	D2XDBG_EV(D2XDBG_M_SD, ev, x, a, b)
+#else
+#define SD_EV(ev, x, a, b)	do {} while (0)
+#endif
+
 
 /* Page size */
 #define PAGE_SIZE512			512
@@ -430,6 +437,7 @@ static void __sd0_hs_fallback(void)
 	if (__sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc) >= 0)
 		__sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc));
 	__sdio_setclock(1);
+	SD_EV(D2XDBG_E_SDHS, 0, 2, 0);
 }
 
 /* Card selected, 4-bit mode on. Any failure leaves default speed, silently;
@@ -658,6 +666,7 @@ static	bool __sd0_initio(void)
 
 #ifdef SDIO_HIGH_SPEED
 	__sd0_hs_try();
+	SD_EV(D2XDBG_E_SDHS, 0, (__sd0_hs_on ? 1 : 0) | (__sd0_hs_dead ? 2 : 0), 0);
 #endif
 
 	/* Deselect card */
@@ -735,6 +744,28 @@ bool sdio_Shutdown(void)
 	return true;
 }
  
+#ifdef D2X_DEBUG
+/* A fault set for an SD request through /dev/d2xdbg (d2xdbg.h): -1 fails
+   this attempt; D2XDBG_F_SDLOW falls back from high speed first, as a
+   failed transfer would. Delays and hangs happen in Dbg_Point(). */
+static s32 __sd0_fault(u32 sector)
+{
+	u32 f = D2XDBG_POINT(D2XDBG_M_SD, D2XDBG_P_REQ, sector);
+
+	switch (D2XDBG_FAULT_ACTION(f)) {
+	case 0:
+		return 0;
+#ifdef SDIO_HIGH_SPEED
+	case D2XDBG_F_SDLOW:
+		__sd0_hs_fallback();
+		return 0;
+#endif
+	default:
+		return -1;
+	}
+}
+#endif
+
 bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 {
 	u32 i;
@@ -743,6 +774,8 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 	/* No buffer */
 	if (!buffer)
 		return false;
+
+	SD_EV(D2XDBG_E_BEGIN, 0x28, sector, numSectors);
 
 	/* Read loop */
 	for (i = 0; i < 10; i++) {
@@ -760,18 +793,26 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 			sector *= PAGE_SIZE512;
 
 		/* Send command */
+#ifdef D2X_DEBUG
+		ret = __sd0_fault(sector);
+		if (ret >= 0)
+#endif
 		ret = __sdio_sendcommand(SDIO_CMD_READMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, buffer, NULL, 0);
 
 		/* Deselect card */
 		__sd0_deselect();
 
-		if (ret >= 0)
+		if (ret >= 0) {
+			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
+		}
+		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
 		__sd0_hs_fallback();
 #endif
 	}
+	SD_EV(D2XDBG_E_END, 0, -1, i);
 
 	return false;
 }
@@ -784,6 +825,8 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 	/* No buffer */
 	if (!buffer)
 		return false;
+
+	SD_EV(D2XDBG_E_BEGIN, 0x2A, sector, numSectors);
 
 	/* Write loop */
 	for (i = 0; i < 10; i++) {
@@ -801,18 +844,26 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 			sector *= PAGE_SIZE512;
 
 		/* Send command */
+#ifdef D2X_DEBUG
+		ret = __sd0_fault(sector);
+		if (ret >= 0)
+#endif
 		ret = __sdio_sendcommand(SDIO_CMD_WRITEMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, (char *)buffer, NULL, 0);
 
 		/* Deselect card */
 		__sd0_deselect();
 
-		if (ret >= 0)
+		if (ret >= 0) {
+			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
+		}
+		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
 		__sd0_hs_fallback();
 #endif
 	}
+	SD_EV(D2XDBG_E_END, 0, -1, i);
  
 	return false;
 }

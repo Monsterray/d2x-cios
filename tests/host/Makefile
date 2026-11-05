@@ -32,12 +32,44 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 .PHONY: all test clean
 all: test
 
-test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio sdio/test_sdio
+test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio sdio/test_sdio dbg/test_dbg \
+		ums/test_ums_dbg usbs/test_usbs_dbg sdio/test_sdio_dbg  fat/test_fat_dbg
 	$(RUN) ./ums/test_ums
 	$(RUN) ./usbs/test_usbs
 	$(RUN) ./fat/test_fat
 	$(RUN) ./fat/test_diskio
 	$(RUN) ./sdio/test_sdio
+	$(RUN) ./dbg/test_dbg
+	$(RUN) ./ums/test_ums_dbg
+	$(RUN) ./usbs/test_usbs_dbg
+	$(RUN) ./sdio/test_sdio_dbg
+	$(RUN) ./fat/test_fat_dbg
+
+# The debug area's logic (mload-module/dbg_core.c, -DD2X_DEBUG builds).
+MLOADMOD := ../../source/mload-module
+dbg/test_dbg: dbg/test_dbg.c hostcheck.h $(MLOADMOD)/dbg_core.c $(CIOSLIB)/d2xdbg.h
+	$(CC) $(ALL_CFLAGS) -I. -I$(CIOSLIB) -I$(MLOADMOD) -o $@ dbg/test_dbg.c
+
+# Modules built as the +dbg variant (-DD2X_DEBUG): the debug area runs on the
+# PC (dbg/swi_host.c), with each test's own types (D2XDBG_HAVE_TYPES).
+DBG_FLAGS := -DD2X_DEBUG -DD2XDBG_HAVE_TYPES
+DBG_DEPS  := dbg/swi_host.c dbg/dbg_host.h $(MLOADMOD)/dbg_core.c $(CIOSLIB)/d2xdbg.h
+
+ums/test_ums_dbg: ums/test_ums_dbg.c ums/ums_unit.c $(SIM_DEPS) $(DBG_DEPS) $(TINYEHCI)/usb.c \
+		$(TINYEHCI)/usb.h $(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(TINYEHCI) -I$(MLOADMOD) -I$(CIOSLIB) -o $@ \
+		ums/test_ums_dbg.c ums/sim.c ums/ums_unit.c dbg/swi_host.c
+
+usbs/test_usbs_dbg: usbs/test_usbs_dbg.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h $(SIM_DEPS) \
+		$(DBG_DEPS) $(USBS)/usbstorage.c $(USBS)/usbstorage.h $(USBS)/usb2.h
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(MLOADMOD) -I$(CIOSLIB) -c \
+		-o usbs/dbg_test.o usbs/test_usbs_dbg.c
+	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -c -o usbs/dbg_sim.o ums/sim.c
+	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -c -o usbs/dbg_glue.o usbs/glue_sim.c
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(MLOADMOD) -I$(CIOSLIB) -c -o usbs/dbg_swi.o dbg/swi_host.c
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -Wno-pointer-to-int-cast -Iusbs/stub -I$(USBS) -I$(CIOSLIB) \
+		-c -o usbs/dbg_unit.o usbs/usbs_unit.c
+	$(CC) $(ALL_CFLAGS) -o $@ usbs/dbg_test.o usbs/dbg_sim.o usbs/dbg_glue.o usbs/dbg_swi.o usbs/dbg_unit.o
 
 ums/test_ums: ums/test_ums.c ums/ums_unit.c $(SIM_DEPS) $(TINYEHCI)/usb.c $(TINYEHCI)/usb.h \
 		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
@@ -81,6 +113,22 @@ sdio/test_sdio: sdio/test_sdio.c hostcheck.h $(CIOSLIB)/sdio.c $(CIOSLIB)/sdio.h
 	$(CC) $(ALL_CFLAGS) -DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG -Wno-pointer-to-int-cast -I. -I$(CIOSLIB) \
 		-o $@ sdio/test_sdio.c
 
+sdio/test_sdio_dbg: sdio/test_sdio_dbg.c hostcheck.h $(DBG_DEPS) $(CIOSLIB)/sdio.c $(CIOSLIB)/sdio.h \
+		$(CIOSLIB)/sdio_hs.h
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG -Wno-pointer-to-int-cast -I. -Idbg \
+		-I$(MLOADMOD) -I$(CIOSLIB) -o $@ sdio/test_sdio_dbg.c dbg/swi_host.c
+
+fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h fat/fat_types.h hostcheck.h \
+		$(DBG_DEPS) fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c $(FATMOD)/ff.h \
+		$(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c
+	$(CC) $(ALL_CFLAGS) -Ifat -I$(FATMOD) -c -o fat/dbg_ramdisk.o fat/ramdisk.c
+	$(CC) $(ALL_CFLAGS) -Wno-implicit-fallthrough -Ifat -I$(FATMOD) -c -o fat/dbg_ff.o fat/ff_unit.c
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -I. -Ifat -Ifat/stub \
+		-Idbg -I$(FATMOD) -I$(MLOADMOD) -I$(CIOSLIB) -c -o fat/dbg_test.o fat/test_fat_dbg.c
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Idbg -I$(MLOADMOD) -I$(CIOSLIB) -c -o fat/dbg_swi.o dbg/swi_host.c
+	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/dbg_test.o fat/dbg_swi.o fat/dbg_ramdisk.o fat/dbg_ff.o
+
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
-		fat/test_fat fat/test_diskio fat/*.o sdio/test_sdio
+		fat/test_fat fat/test_diskio fat/*.o sdio/test_sdio dbg/test_dbg ums/test_ums_dbg \
+		usbs/test_usbs_dbg sdio/test_sdio_dbg fat/test_fat_dbg
