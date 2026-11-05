@@ -94,3 +94,15 @@ s32 WBFS_Read(void *buffer, u32 len, u32 offset)
 	/* Disc read */
 	return wbfs_disc_read(disc, offset, buffer, len);
 }
+
+/* This module links libgcc's divide routines for its own code, so libwbfs
+   uses them too (cios-lib's wbfs_div.c is the smaller software division). */
+u32 wbfs_udiv(u32 n, u32 d)
+{
+	return n / d;
+}
+
+int wbfs_sdiv(int n, int d)
+{
+	return n / d;
+}

@@ -42,6 +42,7 @@ OBJS	=	direct_syscalls.o	\
 		vsprintf.o
 
 OBJS2	=	libwbfs/libwbfs.o	\
+		libwbfs/wbfs_div.o	\
 		libwbfs/rijndael.o	\
 		libwbfs/wiidisc.o
 

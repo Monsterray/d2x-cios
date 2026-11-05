@@ -4,6 +4,14 @@
 #include "libwbfs_os.h" // this file is provided by the project wanting to compile libwbfs
 #include "wiidisc.h"
 
+/* Division used by wbfs_open_partition (cold: once per disc open). The default
+   in cios-lib (wbfs_div.c) is shift-and-subtract, which keeps libgcc's divide
+   routines (about 620 bytes in Thumb) out of a module that has no other use
+   for them. A module that links them anyway (EHCI) defines these two itself
+   with the / operator. Divide by zero gives 0 in the default. */
+u32 wbfs_udiv(u32 n, u32 d);
+int wbfs_sdiv(int n, int d);
+
 #ifdef __cplusplus
    extern "C" {
 #endif /* __cplusplus */

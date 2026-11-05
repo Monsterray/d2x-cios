@@ -110,7 +110,7 @@ wbfs_t*wbfs_open_partition(rw_sector_callback_t read_hdsector,
         p->hd_sec_sz_s = head->hd_sec_sz_s;
         p->n_hd_sec = wbfs_ntohl(head->n_hd_sec);
 		
-        hd_sec_sz_ratio=(p->hd_sec_sz)/(hd_sector_size?hd_sector_size:512);
+        hd_sec_sz_ratio=wbfs_udiv(p->hd_sec_sz, hd_sector_size?hd_sector_size:512);
         if (!reset)
         {
                 wbfs_free(head);
@@ -119,9 +119,9 @@ wbfs_t*wbfs_open_partition(rw_sector_callback_t read_hdsector,
         }
         if(!force_mode && hd_sector_size && head->hd_sec_sz_s != size_to_shift(hd_sector_size*hd_sec_sz_ratio))
                 ERROR("hd sector size doesn't match");
-        if(!force_mode && num_hd_sector && head->n_hd_sec != wbfs_htonl(num_hd_sector/hd_sec_sz_ratio))
+        if(!force_mode && num_hd_sector && head->n_hd_sec != wbfs_htonl(wbfs_sdiv(num_hd_sector, hd_sec_sz_ratio)))
                 ERROR("hd num sector doesn't match");
-        p->n_wii_sec = (p->n_hd_sec/p->wii_sec_sz)*(p->hd_sec_sz);
+        p->n_wii_sec = (p->n_hd_sec>>p->wii_sec_sz_s)*(p->hd_sec_sz); /* wii_sec_sz is 1<<wii_sec_sz_s */
         
         p->wbfs_sec_sz_s = head->wbfs_sec_sz_s;
         p->wbfs_sec_sz = 1<<p->wbfs_sec_sz_s;
@@ -144,7 +144,7 @@ wbfs_t*wbfs_open_partition(rw_sector_callback_t read_hdsector,
                 p->freeblks = wbfs_ioalloc(ALIGN_LBA(p->n_wbfs_sec/8));
                 wbfs_memset(p->freeblks,0xff,p->n_wbfs_sec/8);
         }
-        p->max_disc = (p->freeblks_lba-1)/(p->disc_info_sz>>p->hd_sec_sz_s);
+        p->max_disc = wbfs_udiv(p->freeblks_lba-1, p->disc_info_sz>>p->hd_sec_sz_s);
         if(p->max_disc > p->hd_sec_sz - sizeof(wbfs_head_t))
                 p->max_disc = p->hd_sec_sz - sizeof(wbfs_head_t);
 
