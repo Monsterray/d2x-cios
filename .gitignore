@@ -46,6 +46,7 @@ tests/host/usbs/test_usbs
 tests/host/usbs/*.o
 tests/host/fat/test_fat
 tests/host/fat/test_diskio
+tests/host/sdio/test_sdio
 tests/host/fat/*.o
 
 # Packages and scratch copies staged for a Wii; console dumps: never commit them

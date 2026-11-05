@@ -78,6 +78,7 @@ tools/build.sh test
 | FAT module (`fat_wrapper.c`, its IPC handlers, `diskio.c`) on RAM disks | `tests/host/fat/` | a C compiler (in the image) |
 | `VERSION` is a valid release number; variant names fit the 15-character version string | `tests/test_version.py` | Python, sh |
 | USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read; `--pattern=N` writes and verifies known data, **scratch drives only**; `--log` prints the debug build's event log) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
+| SD sector read timing through `/dev/sdio/sdhc` and the SD high-speed state (`0x20`; `0x21` forces the fallback and re-reads to compare a CRC32). Read only: it never writes a sector of the card | `make -C tests/wii/sdbench`, then `python tests/wii/sdbench.py -- --ios=249 [--mb=32]` as a wii-bench job | devkitPPC, a Wii with HBC and an SD card |
 | Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
 Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.

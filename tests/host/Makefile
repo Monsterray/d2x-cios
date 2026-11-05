@@ -32,11 +32,12 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 .PHONY: all test clean
 all: test
 
-test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio
+test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio sdio/test_sdio
 	$(RUN) ./ums/test_ums
 	$(RUN) ./usbs/test_usbs
 	$(RUN) ./fat/test_fat
 	$(RUN) ./fat/test_diskio
+	$(RUN) ./sdio/test_sdio
 
 ums/test_ums: ums/test_ums.c ums/ums_unit.c $(SIM_DEPS) $(TINYEHCI)/usb.c $(TINYEHCI)/usb.h \
 		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
@@ -74,6 +75,12 @@ fat/test_diskio: fat/test_diskio.c fat/fat_types.h hostcheck.h fat/stub/mem.h $(
 	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -I. -Ifat -Ifat/stub -I$(FATMOD) -I$(CIOSLIB) \
 		-o $@ fat/test_diskio.c
 
+# cios-lib's sdio.c with -DSDIO_HIGH_SPEED, on a fake of IOS's SD driver.
+sdio/test_sdio: sdio/test_sdio.c hostcheck.h $(CIOSLIB)/sdio.c $(CIOSLIB)/sdio.h \
+		$(CIOSLIB)/sdio_hs.h
+	$(CC) $(ALL_CFLAGS) -DSDIO_HIGH_SPEED -Wno-pointer-to-int-cast -I. -I$(CIOSLIB) \
+		-o $@ sdio/test_sdio.c
+
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
-		fat/test_fat fat/test_diskio fat/*.o
+		fat/test_fat fat/test_diskio fat/*.o sdio/test_sdio

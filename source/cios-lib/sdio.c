@@ -35,6 +35,9 @@
 
 #include "syscalls.h"
 #include "timer.h"
+#ifdef SDIO_HIGH_SPEED
+#include "sdio_hs.h"
+#endif
 
 
 /* Page size */
@@ -131,6 +134,12 @@ static s32 __sd0_initialized = 0;
 static s32 __sd0_sdhc = 0;
 static u8  __sd0_cid[16];
 static s32 __sdio_initialized = 0;
+#ifdef SDIO_HIGH_SPEED
+static u8  __sd0_swstatus[SDHS_STATUS_LEN] ATTRIBUTE_ALIGN(32);
+static s32 __sd0_hs_on = 0;	/* host clock is at the high speed rate */
+static s32 __sd0_hs_dead = 0;	/* a transfer failed at high speed: never again this session */
+static struct sdhs_record __sd0_hs_rec;	/* outcome of the last __sd0_hs_try() */
+#endif
 
 /* Device */
 static char _sd0_fs[] ATTRIBUTE_ALIGN(32) = "/dev/sdio/slot0";
@@ -391,6 +400,97 @@ static s32 __sd0_getcid(void)
 	return __sdio_sendcommand(SDIO_CMD_ALL_SENDCID, 0, SDIO_RESPOSNE_R2, (__sd0_rca << 16), 0, 0, NULL, __sd0_cid, 16);
 }
 
+#ifdef SDIO_HIGH_SPEED
+/* CMD6 with a 64-byte data block; the card must be selected. IOS wants
+ * cmd_type 1 (BC) here, as libogc's wiisd.c sends it: sent as an ADTC (4) it
+ * returns rc 0 but never delivers the data stage (the status stays zeroed). */
+static s32 __sd0_switchfunc(u32 arg)
+{
+	memset(__sd0_swstatus, 0, sizeof(__sd0_swstatus));
+
+	return __sdio_sendcommand(SDHS_CMD6, SDIOCMD_TYPE_BC, SDIO_RESPONSE_R1, arg, 1, SDHS_STATUS_LEN, __sd0_swstatus, NULL, 0);
+}
+
+/* Back to default speed for the rest of the session. Safe at any speed. */
+static void __sd0_hs_fallback(void)
+{
+	u32 hc;
+
+	if (!__sd0_hs_on)
+		return;
+
+	__sd0_hs_on = 0;
+	__sd0_hs_dead = 1;
+
+	if (__sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc) >= 0)
+		__sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc));
+	__sdio_setclock(1);
+}
+
+/* Card selected, 4-bit mode on. Any failure leaves default speed, silently;
+ * where it stopped is kept in __sd0_hs_rec (ioctlv 0x22). */
+static void __sd0_hs_try(void)
+{
+	struct sdhs_record *rec = &__sd0_hs_rec;
+	u32 hc;
+	s32 ret;
+
+	rec->calls++;
+
+	if (__sd0_hs_dead) {
+		sdhs_record_step(rec, SDHS_STEP_DEAD, 0, NULL);
+		return;
+	}
+
+	/* CMD6 check, then switch; an SD 1.0 card fails or reports nothing */
+	ret = __sd0_switchfunc(SDHS_CMD6_CHECK);
+	if (ret < 0) {
+		sdhs_record_step(rec, SDHS_STEP_CHECK_RC, ret, __sd0_swstatus);
+		return;
+	}
+	if (!sdhs_group1_supported(__sd0_swstatus)) {
+		sdhs_record_step(rec, SDHS_STEP_CHECK_UNSUPPORTED, ret, __sd0_swstatus);
+		return;
+	}
+	ret = __sd0_switchfunc(SDHS_CMD6_SWITCH);
+	if (ret < 0) {
+		sdhs_record_step(rec, SDHS_STEP_SWITCH_RC, ret, __sd0_swstatus);
+		return;
+	}
+	if (!sdhs_group1_selected(__sd0_swstatus)) {
+		sdhs_record_step(rec, SDHS_STEP_SWITCH_NOT_SELECTED, ret, __sd0_swstatus);
+		return;
+	}
+
+	/* Host side: high speed enable, then the clock up */
+	ret = __sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc);
+	if (ret < 0) {
+		sdhs_record_step(rec, SDHS_STEP_HOSTCTL_READ, ret, __sd0_swstatus);
+		return;
+	}
+	ret = __sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_enable(hc));
+	if (ret < 0) {
+		sdhs_record_step(rec, SDHS_STEP_HOSTCTL_WRITE, ret, __sd0_swstatus);
+		return;
+	}
+
+	__sd0_hs_on = 1;
+	ret = __sdio_setclock(0);
+	if (ret < 0) {
+		sdhs_record_step(rec, SDHS_STEP_SETCLK, ret, __sd0_swstatus);
+		__sd0_hs_fallback();
+		return;
+	}
+	sdhs_record_step(rec, SDHS_STEP_ON, 0, __sd0_swstatus);
+}
+
+/* The record of the last __sd0_hs_try() */
+void sdio_HighSpeedRecord(struct sdhs_record *out)
+{
+	*out = __sd0_hs_rec;
+}
+#endif
+
 static	bool __sd0_initio(void)
 {
 	struct _sdioresponse resp;
@@ -398,6 +498,11 @@ static	bool __sd0_initio(void)
 	s32 ret;
 	s32 tries;
 	u32 status;
+
+#ifdef SDIO_HIGH_SPEED
+	/* The reset below clears the host's high speed bit */
+	__sd0_hs_on = 0;
+#endif
 
 	/* Reset card */
 	__sdio_resetcard();
@@ -543,6 +648,10 @@ static	bool __sd0_initio(void)
 		return false;
 	}
 
+#ifdef SDIO_HIGH_SPEED
+	__sd0_hs_try();
+#endif
+
 	/* Deselect card */
 	__sd0_deselect();
 
@@ -631,8 +740,12 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 	for (i = 0; i < 10; i++) {
 		/* Select card */
 		ret = __sd0_select();
-		if (ret < 0)
+		if (ret < 0) {
+#ifdef SDIO_HIGH_SPEED
+			__sd0_hs_fallback();
+#endif
 			continue;
+		}
 
 		/* Check if SDHC */
 		if (!__sd0_sdhc)
@@ -646,6 +759,10 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 
 		if (ret >= 0)
 			return true;
+
+#ifdef SDIO_HIGH_SPEED
+		__sd0_hs_fallback();
+#endif
 	}
 
 	return false;
@@ -664,8 +781,12 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 	for (i = 0; i < 10; i++) {
 		/* Select card */
 		ret = __sd0_select();
-		if (ret < 0)
+		if (ret < 0) {
+#ifdef SDIO_HIGH_SPEED
+			__sd0_hs_fallback();
+#endif
 			continue;
+		}
 
 		/* Check if SDHC */
 		if (!__sd0_sdhc)
@@ -679,6 +800,10 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 
 		if (ret >= 0)
 			return true;
+
+#ifdef SDIO_HIGH_SPEED
+		__sd0_hs_fallback();
+#endif
 	}
  
 	return false;
@@ -702,3 +827,17 @@ bool sdio_IsInitialized(void)
 	return ((__sdio_getstatus() & SDIO_STATUS_CARD_INITIALIZED) ==
 			SDIO_STATUS_CARD_INITIALIZED);
 }
+
+#ifdef SDIO_HIGH_SPEED
+/* bit 0: high speed active; bit 1: fell back to default speed this session */
+u32 sdio_HighSpeedState(void)
+{
+	return (__sd0_hs_on ? 1 : 0) | (__sd0_hs_dead ? 2 : 0);
+}
+
+/* Debug: drop to default speed now, as a transfer error would */
+void sdio_HighSpeedForceFallback(void)
+{
+	__sd0_hs_fallback();
+}
+#endif
