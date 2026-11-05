@@ -17,6 +17,7 @@ BEGIN {
     vars["${IOS_REV}"]       = 21000 + major_ver;
     vars["${RELEASE_NAME}"]  = release_name;              # d2x-v11.1.0
     vars["${RELEASE_TEXT}"]  = substr(release_name, 6);   # 11.1.0
+    vars["${BUILD_INFO}"]    = build_info;                # name, string, commit, variant, flags
 
 }
  

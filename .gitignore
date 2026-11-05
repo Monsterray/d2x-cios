@@ -11,7 +11,13 @@ build/
 dist/
 /stripios
 
-# Host test binaries (tests/host)
+# Host test binaries (tests/host): any test_* except its sources, plus sanitizer and coverage output
+tests/host/*/test_*
+!tests/host/*/test_*.c
+!tests/host/*/test_*.h
+*.gcda
+*.gcno
+*.log
 tests/host/ums/test_ums
 
 # Wii keys and console data: never commit them
@@ -42,3 +48,16 @@ tests/host/fat/test_fat
 tests/host/fat/test_diskio
 tests/host/sdio/test_sdio
 tests/host/fat/*.o
+
+# Packages and scratch copies staged for a Wii; console dumps: never commit them
+/stage/
+/dist/
+*.zip
+*.wad
+*.tmd
+*.tik
+nand.bin
+seeprom.bin
+boot0.bin
+*.img
+.docker-cache/

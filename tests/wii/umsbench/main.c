@@ -21,6 +21,7 @@
  * (tests/wii/umsbench.py fetches it). Its last line starts with "RESULT".
  */
 #include <gccore.h>
+#include <malloc.h>
 #include <fat.h>
 #include <sdcard/wiisd_io.h>
 #include <stdarg.h>
@@ -164,6 +165,46 @@ static void console_setup(void)
 		VIDEO_WaitVSync();
 }
 
+/* The cIOS identity block, read the way USB Loader GX does: the first content
+ * of the IOS's stored TMD starts with magic 0x1ee7c105, version, base IOS,
+ * name[16] and versionstring[16]. Shows which build is running. */
+static void show_cios_identity(u32 ios)
+{
+	u64 tid = (1ULL << 32) | ios;
+	u32 tmd_len = 0;
+	char path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32);
+	struct { u32 magic, magicver, version, base; char name[16], vstr[16]; } *info = NULL;
+	signed_blob *tmd = NULL;
+	fstats *st = NULL;
+	s32 fd = -1;
+
+	if (ISFS_Initialize() < 0 || ES_GetStoredTMDSize(tid, &tmd_len) < 0 || tmd_len <= 0x1E7 ||
+	    !(tmd = memalign(32, (tmd_len + 31) & ~31u)) || ES_GetStoredTMD(tid, tmd, tmd_len) < 0)
+		goto fail;
+	snprintf(path, sizeof(path), "/title/00000001/%08x/content/%08x.app", ios,
+	         (u32) *(u8 *) ((u32) tmd + 0x1E7));
+	fd = ISFS_Open(path, ISFS_OPEN_READ);
+	if (fd < 0 || !(st = memalign(32, sizeof(*st))) || ISFS_GetFileStats(fd, st) < 0 ||
+	    st->file_length < 0x30 || !(info = memalign(32, 64)) || ISFS_Read(fd, info, 64) < 0x30)
+		goto fail;
+	if (info->magic != 0x1ee7c105) {
+		say("cIOS %u: no identity block (magic %08x): stock IOS?\n", ios, info->magic);
+		goto done;
+	}
+	info->name[15] = info->vstr[15] = 0;
+	say("cIOS %u: %s v%u %s base %u rev %d\n", ios, info->name, info->version, info->vstr,
+	    info->base, IOS_GetRevision());
+	goto done;
+fail:
+	say("cIOS %u: identity not readable (tmd %d, file %d)\n", ios, (int) tmd_len, (int) fd);
+done:
+	if (fd >= 0)
+		ISFS_Close(fd);
+	free(info);
+	free(st);
+	free(tmd);
+}
+
 static int bench(int argc, char **argv)
 {
 	u32 ios = 249, sector_size = 0, sectors, lba;
@@ -231,6 +272,7 @@ static int bench(int argc, char **argv)
 		say("RESULT ios=%u error=reload\n", ios);
 		return 1;
 	}
+	show_cios_identity(ios);
 
 	/* An IOS heap is in MEM2: room for the ioctl vectors and two 32 KB buffers. */
 	heap = iosCreateHeap(2 * BIG * 512 + 4096);
