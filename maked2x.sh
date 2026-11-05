@@ -14,7 +14,7 @@ make_clean() {
 replace_vars() {
         echo -n Replacing variables in $1...
         # replace.awk needs gawk (rshift); mawk fails and left an empty file.
-        if ! ${AWK:-gawk} -v major_ver=${MAJOR_VERSION} -v minor_ver=${MINOR_VERSION} -v release_name=${D2XBUILD} -f replace.awk "data/$1" > "$2/$1" || [ ! -s "$2/$1" ]; then
+        if ! ${AWK:-gawk} -v major_ver=${MAJOR_VERSION} -v minor_ver=${MINOR_VERSION} -v release_name=${D2XBUILD} -v build_info="${D2XINFO:-${D2XBUILD}}" -f replace.awk "data/$1" > "$2/$1" || [ ! -s "$2/$1" ]; then
                 echo
                 echo "Replacing variables in $1 failed (is gawk installed?)"
                 quit
