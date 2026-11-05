@@ -266,8 +266,8 @@ static void split_check(unsigned char *b, unsigned lba, unsigned n, const unsign
 		CHECK(glue_data_len[i] == want[i], "write of %u sectors, piece %u: %s", n, i, xfers());
 }
 
-/* An aligned MEM2 buffer goes to IOS as it is, in pieces of USBS_MAX_DIRECT
- * (16 KB: IOS58's /dev/usb/ven hung on a 32 KB transfer): 64 sectors = 2. */
+/* An aligned MEM2 buffer goes to IOS as it is, in pieces of
+ * USBS_MAX_TRANSFER (16 KB: IOS58's /dev/usb/ven hung on a 32 KB transfer), the same as the bounce path: 64 sectors = 2. */
 static void test_direct_64_sectors_two_transfers(void)
 {
 	static const unsigned want[] = { 32 * SECTOR, 32 * SECTOR };

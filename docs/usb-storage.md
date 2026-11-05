@@ -124,21 +124,21 @@ sends fewer, bigger transfers:
 | Path | When | Piece | Option |
 |---|---|---|---|
 | Bounce | the caller's buffer is not 32-byte aligned, or not in MEM2 | 16384 bytes, through `dev->buffer` (from the 32 KB module heap) | `USBS_MAX_TRANSFER` |
-| Direct | aligned MEM2 buffer, handed to IOS as it is | up to 16384 bytes, cut to whole sectors of the drive: 16384 (32 sectors) for 512-byte sectors, 12288 for 4096 | `USBS_MAX_DIRECT` |
+| Direct | aligned MEM2 buffer, handed to IOS as it is | 16384 bytes, the same size | `USBS_MAX_TRANSFER` |
 
-The bulk `wLength` in `usb2.c` is a u16, so the module could send up to 65535
-bytes, and the first version of the direct path did (65024). **That hangs IOS on
-a real Wii**: umsbench's 64-sector read (32 KB, one direct transfer into an
-aligned MEM2 buffer) never returned from `/dev/usb/ven` on base 58 (IOS58
-v6175); the console froze and needed a power cycle. The 8 s deadline could not
-help, because the IPC call itself blocked. 16 KB transfers work. The per-transfer
-limit of IOS58's `/dev/usb/ven` looks like 16 KB, which matches libogc's
-`MAX_TRANSFER_SIZE_V5`. So `USBS_MAX_DIRECT` is 16384; it stays a build option,
-but never raise it without an attended bench run (a hang needs a power cycle).
-The data vector needs no extra cache work in the module: the callers (`wbfs.c`)
-do the invalidate and flush over the whole request. A 64-sector read into an
-aligned MEM2 buffer is 2 data transfers (4 transfers with CBW and CSW), a
-127-sector one 4 data transfers, a 200-sector one 7.
+Both paths split at `USBS_MAX_TRANSFER`. The bulk `wLength` in `usb2.c` is a u16,
+so the module could send up to 65535 bytes, and an earlier version of the direct
+path did (65024, `USBS_MAX_DIRECT`). **That hangs IOS on a real Wii**: umsbench's
+64-sector read (32 KB, one direct transfer into an aligned MEM2 buffer) never
+returned from `/dev/usb/ven` on base 58 (IOS58 v6175); the console froze and
+needed a power cycle. The 8 s deadline could not help, because the IPC call
+itself blocks. 16 KB transfers work. The per-transfer limit of IOS58's
+`/dev/usb/ven` looks like 16 KB, which matches libogc's `MAX_TRANSFER_SIZE_V5`.
+So the separate direct size is gone. **Do not try a bigger transfer again
+without a timeout that IOS itself enforces**: a hang needs a power cycle. The
+callers (`wbfs.c`) do the cache invalidate and flush over the whole request. A
+64-sector read is 2 data transfers (4 with CBW and CSW), a 127-sector one 4, a
+200-sector one 7, on either path.
 
 The CBW, CSW, STALL, retry and deadline logic runs per piece as before; a short
 piece ends the data phase and the CSW reports the residue.
