@@ -78,7 +78,7 @@ fat/test_diskio: fat/test_diskio.c fat/fat_types.h hostcheck.h fat/stub/mem.h $(
 # cios-lib's sdio.c with -DSDIO_HIGH_SPEED, on a fake of IOS's SD driver.
 sdio/test_sdio: sdio/test_sdio.c hostcheck.h $(CIOSLIB)/sdio.c $(CIOSLIB)/sdio.h \
 		$(CIOSLIB)/sdio_hs.h
-	$(CC) $(ALL_CFLAGS) -DSDIO_HIGH_SPEED -Wno-pointer-to-int-cast -I. -I$(CIOSLIB) \
+	$(CC) $(ALL_CFLAGS) -DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG -Wno-pointer-to-int-cast -I. -I$(CIOSLIB) \
 		-o $@ sdio/test_sdio.c
 
 clean:

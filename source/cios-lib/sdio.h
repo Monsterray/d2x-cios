@@ -12,8 +12,10 @@ bool sdio_IsInserted(void);
 #ifdef SDIO_HIGH_SPEED
 #include "sdio_hs.h"
 u32 sdio_HighSpeedState(void);
+#ifdef SDIO_HS_DEBUG
 void sdio_HighSpeedForceFallback(void);
 void sdio_HighSpeedRecord(struct sdhs_record *out);
+#endif
 #endif
 
 #endif
