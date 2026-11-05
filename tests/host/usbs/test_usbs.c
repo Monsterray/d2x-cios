@@ -23,6 +23,7 @@ static unsigned char buf[16 * SECTOR];
 extern int glue_mem2;
 extern unsigned glue_data_xfers;
 extern unsigned glue_data_len[64];
+extern unsigned glue_short_next;
 static unsigned char big[200 * SECTOR + 64] __attribute__((aligned(32)));
 
 static void mount(void)
@@ -330,6 +331,63 @@ static void test_direct_read_recovers_from_one_stall(void)
 	usbs_close();
 }
 
+/* The same STALL recovery for a write straight from a MEM2 buffer, 4 pieces
+ * of 16 KB: the data phase STALLs, the command is sent again, all the data
+ * arrives, and the retry needs no reset. */
+static void test_direct_write_recovers_from_one_stall(void)
+{
+	mount();
+	CHECK_OK();
+	glue_mem2 = 1;
+	fill(big, 127 * SECTOR, 17);
+	sim.stall_write_data = 1;
+	CHECK(usbs_write(1300, 127, big) >= 0, "write failed: %s", sim_summary());
+	CHECK(memcmp(sim.data + 1300 * SECTOR, big, 127 * SECTOR) == 0, "drive holds other data");
+	CHECK(sim.bot_resets == 0 && sim.port_resets == 0, "%s", sim_summary());
+	usbs_close();
+}
+
+/* IOS reports a write's data transfer short: the module treats it as a data
+ * residue error, resets the drive and sends the whole command again. The
+ * retry must put all of the data on the drive; both the bounce and the direct
+ * path. */
+static void test_short_write_is_retried_after_reset(void)
+{
+	for (int direct = 0; direct < 2; direct++) {
+		mount();
+		CHECK_OK();
+		glue_mem2 = direct;
+		fill(big, 70 * SECTOR, 19 + direct);
+		glue_short_next = SECTOR;
+		CHECK(usbs_write(1500 + direct * 100, 70, big) >= 0, "write failed: %s", sim_summary());
+		CHECK(memcmp(sim.data + (1500 + direct * 100) * SECTOR, big, 70 * SECTOR) == 0,
+		      "drive holds other data (direct %d)", direct);
+		CHECK(sim.bot_resets == 1, "%u BOT resets, expected 1: %s", sim.bot_resets, sim_summary());
+		usbs_close();
+	}
+}
+
+/* A read's data transfer comes back short: the module stops the data phase
+ * and reads the CSW. The drive still has data to send, so what arrives is not
+ * a CSW (bad signature); the module resets the drive and sends the command
+ * again, and the second try returns all the data. */
+static void test_short_read_is_retried_after_reset(void)
+{
+	for (int direct = 0; direct < 2; direct++) {
+		mount();
+		CHECK_OK();
+		glue_mem2 = direct;
+		memset(big, 0, 70 * SECTOR);
+		glue_short_next = SECTOR;
+		CHECK(usbs_read(1600, 70, big) >= 0, "read failed: %s", sim_summary());
+		CHECK(glue_short_next == 0, "the short count was not used");
+		CHECK(memcmp(big, sim.data + 1600 * SECTOR, 70 * SECTOR) == 0, "read returned other data (direct %d)",
+		      direct);
+		CHECK(sim.cbws == 2 && sim.bot_resets == 1, "%s", sim_summary());
+		usbs_close();
+	}
+}
+
 static const struct hc_test tests[] = {
 	{ "usbs_roundtrip", test_roundtrip, false },
 	{ "usbs_write_csw_failure_is_reported", test_write_csw_failure_is_reported, false },
@@ -347,12 +405,16 @@ static const struct hc_test tests[] = {
 	{ "usbs_direct_127_and_200_sectors", test_direct_127_and_200_sectors, false },
 	{ "usbs_bounce_pieces_are_16k", test_bounce_pieces_are_16k, false },
 	{ "usbs_direct_read_recovers_from_one_stall", test_direct_read_recovers_from_one_stall, false },
+	{ "usbs_direct_write_recovers_from_one_stall", test_direct_write_recovers_from_one_stall, false },
+	{ "usbs_short_write_is_retried_after_reset", test_short_write_is_retried_after_reset, false },
+	{ "usbs_short_read_is_retried_after_reset", test_short_read_is_retried_after_reset, false },
 };
 
 static void setup(void)
 {
 	sim_reset();
 	glue_mem2 = 0;
+	glue_short_next = 0;
 	sim.limit_us = 600 * 1000000ull;
 }
 

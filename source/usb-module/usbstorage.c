@@ -232,17 +232,59 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 	return USBSTORAGE_OK;
 }
 
+/* The data phase of a read or a write, in pieces of MAX_TRANSFER_SIZE. Sent
+   straight from or to the caller's buffer when IOS can take it as it is,
+   else through dev->buffer. Returns < 0 when the transfer failed and the
+   command needs a recovery (the caller resets the drive); a STALL ends the
+   phase without an error (the CSW says why: BOT 6.7.2 and 6.7.3). A short
+   read goes on to the CSW; a short write does not (EDATARESIDUE). */
+static s32 __data_phase(usbstorage_handle *dev, u8 *buffer, u32 len, u8 write)
+{
+	s32 retval = USBSTORAGE_OK;
+	u8 ep = write ? dev->ep_out : dev->ep_in;
+	u32 thisLen;
+
+	while(len > 0)
+	{
+		thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
+		if (usbs_buffer_direct(buffer)) {
+			retval = __USB_BlkMsgTimeout(dev, ep, thisLen, buffer);
+		} else {
+			if (write)
+				memcpy(dev->buffer, buffer, thisLen);
+			retval = __USB_BlkMsgTimeout(dev, ep, thisLen, dev->buffer);
+			if (!write && retval > 0)
+				memcpy(buffer, dev->buffer, retval);
+		}
+
+		if (retval == USBSTORAGE_ETIMEDOUT)
+			break;
+
+		if(USBS_IS_STALL(retval))
+			return USBSTORAGE_OK;
+
+		if(retval < 0)
+			return write ? USBSTORAGE_EDATARESIDUE : retval;
+
+		if(write && retval != thisLen)
+			return USBSTORAGE_EDATARESIDUE;
+
+		len -= retval;
+		buffer += retval;
+
+		if(!write && retval != thisLen)
+			break;
+	}
+
+	return retval;
+}
+
 static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, u8 cbLen, u8 write, u8 *_status, u32 *_dataResidue)
 {
 	s32 retval = USBSTORAGE_OK;
 
 	u8 status = 0;
 	u32 dataResidue = 0;
-	u32 thisLen;
-
-	/* each attempt sends the whole command again */
-	u8 *buffer2 = buffer;
-	u32 len2 = len;
 
 	s8 retries = USBSTORAGE_CYCLE_RETRIES + 1;
 
@@ -257,109 +299,12 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		if(retval < 0 && __deadline_passed())
 			break;
 
-		buffer = buffer2;
-		len = len2;
-
-		if(write)
-		{
-			retval = __send_cbw(dev, lun, len, CBW_OUT, cb, cbLen);
-			if(retval < 0)
-			{
-				if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-					retval = USBSTORAGE_ETIMEDOUT;
-				continue;
-			}
-			while(len > 0)
-			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if (usbs_buffer_direct(buffer)) {
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
-				} else {
-					memcpy(dev->buffer, buffer, thisLen);
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, dev->buffer);
-				}
-
-				if (retval == USBSTORAGE_ETIMEDOUT)
-					break;
-
-				/* the drive STALLed the data: the data phase is over and
-				   the CSW says what happened (BOT 6.7.3) */
-				if(USBS_IS_STALL(retval))
-				{
-					retval = USBSTORAGE_OK;
-					break;
-				}
-
-				if(retval < 0)
-				{
-					retval = USBSTORAGE_EDATARESIDUE;
-					break;
-				}
-
-				if(retval != thisLen && len > 0)
-				{
-					retval = USBSTORAGE_EDATARESIDUE;
-					break;
-				}
-				len -= retval;
-				buffer += retval;
-			}
-
-			if(retval < 0)
-			{
-				if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-					retval = USBSTORAGE_ETIMEDOUT;
-				continue;
-			}
-		}
-		else
-		{
-			retval = __send_cbw(dev, lun, len, CBW_IN, cb, cbLen);
-
-			if(retval < 0)
-			{
-				if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-					retval = USBSTORAGE_ETIMEDOUT;
-				continue;
-			}
-			while(len > 0)
-			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if (usbs_buffer_direct(buffer)) {
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
-				} else {
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, dev->buffer);
-					if (retval>0)
-						memcpy(buffer, dev->buffer, retval);
-				}
-
-				if (retval == USBSTORAGE_ETIMEDOUT)
-					break;
-
-				/* a STALL ends the data phase; the CSW says why (BOT 6.7.2) */
-				if(USBS_IS_STALL(retval))
-				{
-					retval = USBSTORAGE_OK;
-					break;
-				}
-
-				if(retval < 0)
-					break;
-
-				len -= retval;
-				buffer += retval;
-
-				if(retval != thisLen)
-					break;
-			}
-
-			if(retval < 0)
-			{
-				if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-					retval = USBSTORAGE_ETIMEDOUT;
-				continue;
-			}
-		}
+		/* each attempt sends the whole command again */
+		retval = __send_cbw(dev, lun, len, write ? CBW_OUT : CBW_IN, cb, cbLen);
+		if(retval >= 0)
+			retval = __data_phase(dev, buffer, len, write);
+		if(retval < 0)
+			goto recover;
 
 		retval = __read_csw(dev, &status, &dataResidue);
 
@@ -373,22 +318,21 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		}
 
 		if(retval < 0)
-		{
-			if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-				retval = USBSTORAGE_ETIMEDOUT;
-			continue;
-		}
+			goto recover;
 
 		/* phase error: the drive needs a reset recovery (BOT 5.3.3.1) */
 		if(status == 2)
 		{
 			retval = USBSTORAGE_ESTATUS;
-			if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
-				retval = USBSTORAGE_ETIMEDOUT;
-			continue;
+			goto recover;
 		}
 
 		retval = USBSTORAGE_OK;
+		continue;
+
+recover:
+		if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
+			retval = USBSTORAGE_ETIMEDOUT;
 	} while(retval < 0 && retries > 0);
 
 	if(retval < 0 && retval != USBSTORAGE_ETIMEDOUT)

@@ -92,6 +92,7 @@ Chasing a hang inside IOS, where nothing on the Wii can report? Build with `EXTR
 ## Conventions
 
 - **Line endings.** Every text file is LF, in the repository and in the checkout (`.gitattributes` sets `* text=auto eol=lf`, whatever `core.autocrlf` says). The one exception: `.bat` files are checked out with CRLF, which cmd.exe needs. Upstream has some files with CRLF; merge it with `git merge -X renormalize upstream/master` so the endings do not show up as conflicts. A checkout made before this rule: run `python tools/fix_line_endings.py`.
+- **Module size.** The `exe` region of each module is fixed in its `link.ld`; check headroom after a change (`arm-eabi-objdump -h` on `*.elf.orig`, or `tools/build.sh shell`; `REVIEW.md`, "Module size headroom"). Everything is Thumb and `-Os` with `--gc-sections`: give new assembly stubs a section of their own (`.section .text.NAME`) so a module that does not call them does not carry them, and keep libgcc's divide routines out of modules that have no hot-path division (use shifts, or `wbfs_udiv`).
 - **Upstream-friendly changes.** Keep commits focused. Don't reformat or rename upstream files. A fix that suits upstream goes in its own commit with its test.
 - **Evidence.** Say what a change was checked with: a host test, a build, or a run on a Wii. Record findings and ideas in `REVIEW.md`.
 - **No keys or console data.** `keys/` is ignored; check `git status` before you commit.

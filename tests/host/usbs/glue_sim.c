@@ -47,6 +47,9 @@ int glue_mem2;
 unsigned glue_data_xfers;
 unsigned glue_data_len[64];
 unsigned glue_data_ptr_aligned[64];
+/* n > 0: IOS reports the next data transfer n bytes short (the drive has
+ * taken or sent all of it; only the count is short), once. */
+unsigned glue_short_next;
 
 int glue_bulk(unsigned char ep, unsigned short len, void *buf)
 {
@@ -62,6 +65,11 @@ int glue_bulk(unsigned char ep, unsigned short len, void *buf)
 	int r = glue_bulk_raw(ep, len, buf);
 	if (r < 0)
 		return -7022;
+	if (!is_cbw && !is_csw && glue_short_next && r == len) {
+		r -= glue_short_next;
+		glue_short_next = 0;
+		return r;
+	}
 	if (r < len && ((ep & 0x80) ? sim.halt_in : sim.halt_out))
 		return -7004;
 	return r;
