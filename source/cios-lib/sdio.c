@@ -138,7 +138,12 @@ static s32 __sdio_initialized = 0;
 static u8  __sd0_swstatus[SDHS_STATUS_LEN] ATTRIBUTE_ALIGN(32);
 static s32 __sd0_hs_on = 0;	/* host clock is at the high speed rate */
 static s32 __sd0_hs_dead = 0;	/* a transfer failed at high speed: never again this session */
+#endif
+#ifdef SDIO_HS_DEBUG
 static struct sdhs_record __sd0_hs_rec;	/* outcome of the last __sd0_hs_try() */
+#define HS_STEP(step, rc, st)	sdhs_record_step(&__sd0_hs_rec, step, rc, st)
+#else
+#define HS_STEP(step, rc, st)	do { } while (0)
 #endif
 
 /* Device */
@@ -431,64 +436,67 @@ static void __sd0_hs_fallback(void)
  * where it stopped is kept in __sd0_hs_rec (ioctlv 0x22). */
 static void __sd0_hs_try(void)
 {
-	struct sdhs_record *rec = &__sd0_hs_rec;
 	u32 hc;
 	s32 ret;
 
-	rec->calls++;
+#ifdef SDIO_HS_DEBUG
+	__sd0_hs_rec.calls++;
+#endif
 
 	if (__sd0_hs_dead) {
-		sdhs_record_step(rec, SDHS_STEP_DEAD, 0, NULL);
+		HS_STEP(SDHS_STEP_DEAD, 0, NULL);
 		return;
 	}
 
 	/* CMD6 check, then switch; an SD 1.0 card fails or reports nothing */
 	ret = __sd0_switchfunc(SDHS_CMD6_CHECK);
 	if (ret < 0) {
-		sdhs_record_step(rec, SDHS_STEP_CHECK_RC, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_CHECK_RC, ret, __sd0_swstatus);
 		return;
 	}
 	if (!sdhs_group1_supported(__sd0_swstatus)) {
-		sdhs_record_step(rec, SDHS_STEP_CHECK_UNSUPPORTED, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_CHECK_UNSUPPORTED, ret, __sd0_swstatus);
 		return;
 	}
 	ret = __sd0_switchfunc(SDHS_CMD6_SWITCH);
 	if (ret < 0) {
-		sdhs_record_step(rec, SDHS_STEP_SWITCH_RC, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_SWITCH_RC, ret, __sd0_swstatus);
 		return;
 	}
 	if (!sdhs_group1_selected(__sd0_swstatus)) {
-		sdhs_record_step(rec, SDHS_STEP_SWITCH_NOT_SELECTED, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_SWITCH_NOT_SELECTED, ret, __sd0_swstatus);
 		return;
 	}
 
 	/* Host side: high speed enable, then the clock up */
 	ret = __sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc);
 	if (ret < 0) {
-		sdhs_record_step(rec, SDHS_STEP_HOSTCTL_READ, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_HOSTCTL_READ, ret, __sd0_swstatus);
 		return;
 	}
 	ret = __sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_enable(hc));
 	if (ret < 0) {
-		sdhs_record_step(rec, SDHS_STEP_HOSTCTL_WRITE, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_HOSTCTL_WRITE, ret, __sd0_swstatus);
 		return;
 	}
 
 	__sd0_hs_on = 1;
 	ret = __sdio_setclock(0);
 	if (ret < 0) {
-		sdhs_record_step(rec, SDHS_STEP_SETCLK, ret, __sd0_swstatus);
+		HS_STEP(SDHS_STEP_SETCLK, ret, __sd0_swstatus);
 		__sd0_hs_fallback();
 		return;
 	}
-	sdhs_record_step(rec, SDHS_STEP_ON, 0, __sd0_swstatus);
+	HS_STEP(SDHS_STEP_ON, 0, __sd0_swstatus);
 }
 
+#ifdef SDIO_HS_DEBUG
 /* The record of the last __sd0_hs_try() */
 void sdio_HighSpeedRecord(struct sdhs_record *out)
 {
 	*out = __sd0_hs_rec;
 }
+#endif
 #endif
 
 static	bool __sd0_initio(void)
@@ -835,9 +843,11 @@ u32 sdio_HighSpeedState(void)
 	return (__sd0_hs_on ? 1 : 0) | (__sd0_hs_dead ? 2 : 0);
 }
 
+#ifdef SDIO_HS_DEBUG
 /* Debug: drop to default speed now, as a transfer error would */
 void sdio_HighSpeedForceFallback(void)
 {
 	__sd0_hs_fallback();
 }
+#endif
 #endif

@@ -37,8 +37,10 @@
 #define SDHC_IOCTL_ISINSERTED		0x04
 #ifdef SDIO_HIGH_SPEED
 #define SDHC_IOCTL_HS_STATE		0x20	/* answer: bit 0 active, bit 1 fell back */
+#ifdef SDIO_HS_DEBUG
 #define SDHC_IOCTL_HS_FALLBACK		0x21	/* debug: fall back now, answer the state */
 #define SDHC_IOCTL_HS_RECORD		0x22	/* output vector 0: struct sdhs_record (sdio_hs.h) */
+#endif
 #endif
 #define SDHC_IOCTL_WBFS_OPEN_DISC	(WBFS_BASE + 0x1)
 #define SDHC_IOCTL_WBFS_READ_DISC	(WBFS_BASE + 0x2)
@@ -171,13 +173,16 @@ s32 SDHC_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 	}
 
 #ifdef SDIO_HIGH_SPEED
+#ifdef SDIO_HS_DEBUG
 	case SDHC_IOCTL_HS_FALLBACK:
 		sdio_HighSpeedForceFallback();
 		/* fall through */
+#endif
 	case SDHC_IOCTL_HS_STATE:
 		ret = sdio_HighSpeedState();
 		break;
 
+#ifdef SDIO_HS_DEBUG
 	case SDHC_IOCTL_HS_RECORD:
 		/* Where the last high speed attempt stopped; see sdio_hs.h */
 		if (inlen != 0 || iolen < 1 || vector[0].len < sizeof(struct sdhs_record)) {
@@ -187,6 +192,7 @@ s32 SDHC_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		sdio_HighSpeedRecord((struct sdhs_record *)vector[0].data);
 		ret = 0;
 		break;
+#endif
 #endif
 
 	/** Open WBFS disc **/

@@ -50,9 +50,23 @@ D2XNAME=d2x-v11-rc1-sdhs EXTRA_CFLAGS=-DSDIO_HIGH_SPEED tools/build.sh 11 -rc1-s
 (no dots), so the opt-in cIOS is a different title name from the release.
 `tools/build.sh` builds from clean when `EXTRA_CFLAGS` changes.
 
+The debug ioctlv commands 0x21 and 0x22 (and the record behind 0x22) are
+compiled only with a second flag, `SDIO_HS_DEBUG`, because the USBS/SDHC module's
+code region (0x3000 bytes) has no room for them next to the USBS fixes. A debug
+build:
+
+```
+D2X_VARIANT=sdhsd EXTRA_CFLAGS="-DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG" tools/build.sh
+```
+
+Use the variant `sdhsd`: `sdhsdbg` or `sdhs-dbg` is too long for the 15-character
+version string next to `-rc1`. Command 0x20 (the state) needs only
+`SDIO_HIGH_SPEED`. `sdbench` prints "debug ioctls not in this build" for a -101
+from 0x21 or 0x22.
+
 ## Seeing the state from a test app
 
-Only in builds with the flag, the `/dev/sdio/sdhc` device (`sdhc_server.c`)
+Only in builds with the flag (0x21 and 0x22 only with `SDIO_HS_DEBUG` too), the `/dev/sdio/sdhc` device (`sdhc_server.c`)
 answers three extra ioctlv commands:
 
 | Command | Vectors | Answer |
