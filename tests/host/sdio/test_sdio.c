@@ -29,7 +29,7 @@ static int fail_hs;             /* transfers fail while the clock is high speed 
 static int fail_all;            /* transfers always fail */
 static u32 hc[0x40], clk_div;
 static char log_[160];
-static int bad_cmd6;            /* CMD6 sent other than as an ADTC with one aligned 64-byte block */
+static int bad_cmd6;            /* CMD6 sent other than as cmd_type BC, isdma, one aligned 64-byte block */
 static int hs_xfers;            /* transfers that ran with the clock at high speed */
 static int fail_hcr_read;       /* host control read fails after the CMD6 switch */
 static int fail_hcr_write;      /* host control write fails after the CMD6 switch */
@@ -66,8 +66,8 @@ static s32 do_cmd(struct _sdiorequest *r, void *buf, struct _sdioresponse *p)
 	case SDHS_CMD6:                 /* also ACMD6, set bus width: no data block */
 		if (!buf)
 			return 0;
-		if (r->cmd_type != SDIOCMD_TYPE_ADTC || r->blk_cnt != 1 || r->blk_size != 64 ||
-		    !buf || ((unsigned long)buf & 31))
+		if (r->cmd_type != SDIOCMD_TYPE_BC || r->blk_cnt != 1 || r->blk_size != 64 ||
+		    ((unsigned long)buf & 31))
 			bad_cmd6++;
 		lg(r->arg == SDHS_CMD6_CHECK ? "C6c" : "C6s");
 		if (r->arg == SDHS_CMD6_SWITCH)
@@ -78,6 +78,10 @@ static s32 do_cmd(struct _sdiorequest *r, void *buf, struct _sdioresponse *p)
 			return fail_switch_rc;
 		if (card == CMD6_FAILS)
 			return -1;
+		/* Real IOS (dev Wii, 2026-11): cmd_type ADTC is accepted with rc 0
+		 * but the data stage never lands; the buffer stays untouched. */
+		if (r->cmd_type == SDIOCMD_TYPE_ADTC)
+			return 0;
 		if (card == HS_CARD || card == SWITCH_NOT_CHOSEN)
 			memcpy(buf, hs_status, 64);
 		if (card == SWITCH_NOT_CHOSEN)
@@ -145,7 +149,10 @@ s32 os_ioctl(s32 fd, s32 req, void *in, s32 bin, void *out, s32 bout)
 
 s32 os_ioctlv(s32 fd, s32 req, s32 bin, s32 bout, ioctlv *v)
 {
-	return do_cmd(v[0].data, v[1].data, v[2].data);
+	struct _sdiorequest *r = v[0].data;
+
+	/* data arrives through the DMA vector only when isdma is set */
+	return do_cmd(r, r->isdma ? v[1].data : NULL, v[2].data);
 }
 
 /* ---- tests ---- */
@@ -205,7 +212,7 @@ static void test_hs_card(void)
 	CHECK(sdio_ReadSectors(0, 2, sector_buf), "read");
 	CHECK(sdio_WriteSectors(0, 2, sector_buf), "write");
 	CHECK(hs_xfers == 2, "both transfers at high speed: %d", hs_xfers);
-	CHECK(bad_cmd6 == 0, "CMD6 is an ADTC with one 64-byte aligned block");
+	CHECK(bad_cmd6 == 0, "CMD6 is a BC with one 64-byte aligned DMA block");
 }
 
 /* A card that answers CMD6 with a status that has no high speed bit: also

@@ -401,12 +401,14 @@ static s32 __sd0_getcid(void)
 }
 
 #ifdef SDIO_HIGH_SPEED
-/* CMD6 with a 64-byte data block; the card must be selected */
+/* CMD6 with a 64-byte data block; the card must be selected. IOS wants
+ * cmd_type 1 (BC) here, as libogc's wiisd.c sends it: sent as an ADTC (4) it
+ * returns rc 0 but never delivers the data stage (the status stays zeroed). */
 static s32 __sd0_switchfunc(u32 arg)
 {
 	memset(__sd0_swstatus, 0, sizeof(__sd0_swstatus));
 
-	return __sdio_sendcommand(SDHS_CMD6, SDIOCMD_TYPE_ADTC, SDIO_RESPONSE_R1, arg, 1, SDHS_STATUS_LEN, __sd0_swstatus, NULL, 0);
+	return __sdio_sendcommand(SDHS_CMD6, SDIOCMD_TYPE_BC, SDIO_RESPONSE_R1, arg, 1, SDHS_STATUS_LEN, __sd0_swstatus, NULL, 0);
 }
 
 /* Back to default speed for the rest of the session. Safe at any speed. */

@@ -14,7 +14,7 @@ EHCI module (which serves `/dev/sdio/sdhc` to the DIP plugin) each link this cod
 
 After the card is selected and in 4-bit mode (in `__sd0_initio`):
 
-1. CMD6 check (argument `0x00FFFFF1`) as an ADTC with one 64-byte DMA block.
+1. CMD6 check (argument `0x00FFFFF1`) with `cmd_type` 1 (BC), as libogc sends it, and one 64-byte DMA block (`isdma` 1, `blk_cnt` 1, `blk_size` 64).
    If group 1 function 1 (high speed) is not supported, stop. An SD 1.0 card,
    a failing CMD6 or an all-zero status all end here, at default speed, with no error.
 2. CMD6 switch (`0x80FFFFF1`). If the status does not say function 1 was chosen, stop.
@@ -133,10 +133,23 @@ So `__sd0_hs_try()` either did not run on this path or stopped early (CMD6
 check failed, group 1 not offered, switch failed or not selected, host control
 write failed). That is why `0x22` exists: the next run prints which step.
 
+## What was wrong (2026-11-05)
+
+The first run stopped at step 3 (check unsupported) with rc 0 and an all-zero
+status: IOS accepted CMD6 but the data stage never filled our buffer. Cause:
+`__sd0_switchfunc()` sent CMD6 with `cmd_type` 4 (ADTC). Reads use 3 (AC), and
+libogc's `wiisd.c` (`__sd0_functions`, `SDIO_CMD_SWITCHFUNC`, `cmd_type` 1)
+sends its CMD6 as 1 (BC) with the same ioctlv DMA form (isdma 1, blk_cnt 1,
+blk_size 64, 32-byte aligned buffer, vectors request / data / response, 2 in 1
+out). IOS takes `cmd_type` as given, so ADTC returned rc 0 with no data.
+`cmd_type` is now `SDIOCMD_TYPE_BC`; the rest of the request already matched
+libogc. The host test's fake driver now delivers the data only for a DMA
+request that is not ADTC; the old code fails 13 of 20 tests, the new passes.
+Not yet run on a Wii with this change.
+
 ## Open questions for the first Wii run
 
-- The CMD6 data command is sent as an ADTC (as asked for); the existing read path sends
-  `READ_MULTIPLE_BLOCK` as an AC. If IOS refuses the ADTC, high speed never turns
-  on (it fails closed). The state ioctl shows it.
+- CMD6 is now sent as BC (see above). If the status is still all zero on a Wii,
+  `0x22` shows it; next to try is AC (3), as the reads use.
 - The CMD6 busy bits (status bits 287:272) are not checked: the switch is
   assumed complete when the status says function 1 is selected.
