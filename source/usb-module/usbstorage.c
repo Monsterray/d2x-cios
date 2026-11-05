@@ -80,16 +80,22 @@ distribution.
 
    USBS_MAX_DIRECT: the most one bulk transfer carries when the caller's
    buffer is 32-byte aligned MEM2 and goes to IOS as it is. The bulk wLength
-   in usb2.c is a u16, so 65535 is the limit; the piece is cut to whole
-   sectors (65024 for 512-byte sectors, 61440 for 4096). Both can be set
-   with -D (a variant build). */
+   in usb2.c is a u16, but IOS58's /dev/usb/ven does not take that much: a
+   64-sector (32 KB) read into an aligned MEM2 buffer never returned on a
+   real Wii (base 58, IOS58 v6175), the console froze and needed a power
+   cycle; the 8 s deadline cannot help because the IPC call itself blocks.
+   16 KB transfers work (64 sectors in 4051 us, no failures), and libogc's
+   MAX_TRANSFER_SIZE_V5 is 16 KB too, so the limit looks like 16 KB. The
+   piece is cut to whole sectors (16384 for 512-byte sectors, 12288 for
+   4096). Both can be set with -D (a variant build); do not raise
+   USBS_MAX_DIRECT above 16384 without a bench run that survives it. */
 #ifndef USBS_MAX_TRANSFER
 #define USBS_MAX_TRANSFER			16384
 #endif
 #define MAX_TRANSFER_SIZE			USBS_MAX_TRANSFER
 
 #ifndef USBS_MAX_DIRECT
-#define USBS_MAX_DIRECT				65535
+#define USBS_MAX_DIRECT				16384
 #endif
 
 /* A caller buffer IOS can use as it is: 32-byte aligned and in MEM2 (0x10000000

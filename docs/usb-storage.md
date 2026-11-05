@@ -124,17 +124,21 @@ sends fewer, bigger transfers:
 | Path | When | Piece | Option |
 |---|---|---|---|
 | Bounce | the caller's buffer is not 32-byte aligned, or not in MEM2 | 16384 bytes, through `dev->buffer` (from the 32 KB module heap) | `USBS_MAX_TRANSFER` |
-| Direct | aligned MEM2 buffer, handed to IOS as it is | up to 65535 bytes, cut to whole sectors of the drive: 65024 (127 sectors) for 512-byte sectors, 61440 for 4096 | `USBS_MAX_DIRECT` |
+| Direct | aligned MEM2 buffer, handed to IOS as it is | up to 16384 bytes, cut to whole sectors of the drive: 16384 (32 sectors) for 512-byte sectors, 12288 for 4096 | `USBS_MAX_DIRECT` |
 
-The 65535 is the u16 `wLength` of the bulk message in `usb2.c`. libogc uses
-16 KB on USBv5 (`MAX_TRANSFER_SIZE_V5`), but nothing in libogc, libogc2 or USB
-Loader GX says IOS limits a transfer; 16 KB there is a conservative choice and
-the 4 KB of d2x was the older. The data vector needs no extra cache work in
-the module: a bigger piece is the same vector at a longer length, the callers
-(`wbfs.c`) do the invalidate and flush over the whole request. A 64-sector read
-into an aligned MEM2 buffer is now 3 transfers. Not yet measured on a Wii with
-the direct path; if a large direct transfer misbehaves, build with
-`D2X_VARIANT=usbs32 EXTRA_CFLAGS=-DUSBS_MAX_DIRECT=32768` and compare.
+The bulk `wLength` in `usb2.c` is a u16, so the module could send up to 65535
+bytes, and the first version of the direct path did (65024). **That hangs IOS on
+a real Wii**: umsbench's 64-sector read (32 KB, one direct transfer into an
+aligned MEM2 buffer) never returned from `/dev/usb/ven` on base 58 (IOS58
+v6175); the console froze and needed a power cycle. The 8 s deadline could not
+help, because the IPC call itself blocked. 16 KB transfers work. The per-transfer
+limit of IOS58's `/dev/usb/ven` looks like 16 KB, which matches libogc's
+`MAX_TRANSFER_SIZE_V5`. So `USBS_MAX_DIRECT` is 16384; it stays a build option,
+but never raise it without an attended bench run (a hang needs a power cycle).
+The data vector needs no extra cache work in the module: the callers (`wbfs.c`)
+do the invalidate and flush over the whole request. A 64-sector read into an
+aligned MEM2 buffer is 2 data transfers (4 transfers with CBW and CSW), a
+127-sector one 4 data transfers, a 200-sector one 7.
 
 The CBW, CSW, STALL, retry and deadline logic runs per piece as before; a short
 piece ends the data phase and the CSW reports the residue.

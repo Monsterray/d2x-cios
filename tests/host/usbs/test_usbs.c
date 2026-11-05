@@ -266,27 +266,29 @@ static void split_check(unsigned char *b, unsigned lba, unsigned n, const unsign
 		CHECK(glue_data_len[i] == want[i], "write of %u sectors, piece %u: %s", n, i, xfers());
 }
 
-/* An aligned MEM2 buffer goes to IOS as it is: 64 sectors, 1 transfer. */
-static void test_direct_64_sectors_one_transfer(void)
+/* An aligned MEM2 buffer goes to IOS as it is, in pieces of USBS_MAX_DIRECT
+ * (16 KB: IOS58's /dev/usb/ven hung on a 32 KB transfer): 64 sectors = 2. */
+static void test_direct_64_sectors_two_transfers(void)
 {
-	static const unsigned want[] = { 64 * SECTOR };
+	static const unsigned want[] = { 32 * SECTOR, 32 * SECTOR };
 	mount();
 	CHECK_OK();
 	glue_mem2 = 1;
-	split_check(big, 20, 64, want, 1);
+	split_check(big, 20, 64, want, 2);
 	usbs_close();
 }
 
-/* 127 sectors = 65024 bytes, the most whole sectors that fit a u16 length. */
+/* 127 sectors = 4 pieces (32+32+32+31), 200 sectors = 7 (6 x 32 + 8). */
 static void test_direct_127_and_200_sectors(void)
 {
-	static const unsigned w127[] = { 127 * SECTOR };
-	static const unsigned w200[] = { 127 * SECTOR, 73 * SECTOR };
+	static const unsigned w127[] = { 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 31 * SECTOR };
+	static const unsigned w200[] = { 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 32 * SECTOR,
+					 32 * SECTOR, 8 * SECTOR };
 	mount();
 	CHECK_OK();
 	glue_mem2 = 1;
-	split_check(big, 30, 127, w127, 1);
-	split_check(big, 40, 200, w200, 2);
+	split_check(big, 30, 127, w127, 4);
+	split_check(big, 40, 200, w200, 7);
 	usbs_close();
 }
 
@@ -341,7 +343,7 @@ static const struct hc_test tests[] = {
 	{ "usbs_dead_drive_fails_in_time", test_dead_drive_fails_in_time, false },
 	{ "usbs_stuck_halt_fails_in_time", test_stuck_halt_fails_in_time, false },
 	{ "usbs_cbw_carries_command_length", test_cbw_carries_command_length, false },
-	{ "usbs_direct_64_sectors_one_transfer", test_direct_64_sectors_one_transfer, false },
+	{ "usbs_direct_64_sectors_two_transfers", test_direct_64_sectors_two_transfers, false },
 	{ "usbs_direct_127_and_200_sectors", test_direct_127_and_200_sectors, false },
 	{ "usbs_bounce_pieces_are_16k", test_bounce_pieces_are_16k, false },
 	{ "usbs_direct_read_recovers_from_one_stall", test_direct_read_recovers_from_one_stall, false },
