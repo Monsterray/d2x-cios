@@ -5,6 +5,7 @@
  * transfers) as one string per sequence. Run with `make -C tests/host`.
  */
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,11 @@ static u32 hc[0x40], clk_div;
 static char log_[160];
 static int bad_cmd6;            /* CMD6 sent other than as an ADTC with one aligned 64-byte block */
 static int hs_xfers;            /* transfers that ran with the clock at high speed */
+static int fail_hcr_read;       /* host control read fails after the CMD6 switch */
+static int fail_hcr_write;      /* host control write fails after the CMD6 switch */
+static int fail_setclk0;        /* SETCLK(0), the high speed clock, fails */
+static int fail_check_rc, fail_switch_rc;   /* CMD6 check / switch fail with this rc */
+static int after_switch;        /* the CMD6 switch ran */
 
 static const u8 hs_status[64] = { [13] = 0x03, [16] = 0x01 };
 
@@ -64,6 +70,12 @@ static s32 do_cmd(struct _sdiorequest *r, void *buf, struct _sdioresponse *p)
 		    !buf || ((unsigned long)buf & 31))
 			bad_cmd6++;
 		lg(r->arg == SDHS_CMD6_CHECK ? "C6c" : "C6s");
+		if (r->arg == SDHS_CMD6_SWITCH)
+			after_switch = 1;
+		if (fail_check_rc && r->arg == SDHS_CMD6_CHECK)
+			return fail_check_rc;
+		if (fail_switch_rc && r->arg == SDHS_CMD6_SWITCH)
+			return fail_switch_rc;
 		if (card == CMD6_FAILS)
 			return -1;
 		if (card == HS_CARD || card == SWITCH_NOT_CHOSEN)
@@ -97,9 +109,13 @@ s32 os_ioctl(s32 fd, s32 req, void *in, s32 bin, void *out, s32 bout)
 
 	switch (req) {
 	case IOCTL_SDIO_READHCREG:
+		if (fail_hcr_read && after_switch && q[0] == 0x28)
+			return -7;
 		*(u32 *)out = hc[q[0]] | (q[0] == 0x2c ? 2 : 0);   /* clock stable */
 		return 0;
 	case IOCTL_SDIO_WRITEHCREG:
+		if (fail_hcr_write && after_switch && q[0] == 0x28)
+			return -8;
 		hc[q[0]] = q[4];
 		if (q[0] == 0x2f)
 			hc[0x2f] = 0;                                /* reset done */
@@ -107,8 +123,10 @@ s32 os_ioctl(s32 fd, s32 req, void *in, s32 bin, void *out, s32 bout)
 			lg("H28=%02x", q[4]);
 		return 0;
 	case IOCTL_SDIO_SETCLK:
+		lg("CLK%u", *(u32 *)in);
+		if (fail_setclk0 && *(u32 *)in == 0)
+			return -9;
 		clk_div = *(u32 *)in;
-		lg("CLK%u", clk_div);
 		return 0;
 	case IOCTL_SDIO_RESETCARD:
 		hc[0x28] = 0;
@@ -135,6 +153,9 @@ static void reset_all(enum card c)
 {
 	card = c;
 	bad_cmd6 = fresh = fail_hs = fail_all = hs_xfers = 0;
+	fail_hcr_read = fail_hcr_write = fail_setclk0 = fail_check_rc = fail_switch_rc = 0;
+	after_switch = 0;
+	memset(&__sd0_hs_rec, 0, sizeof(__sd0_hs_rec));
 	memset(hc, 0, sizeof(hc));
 	clk_div = 0x80;
 	log_[0] = 0;
@@ -295,7 +316,138 @@ static void test_force_fallback(void)
 	CHECK(!strcmp(log_, "H28=02 CLK1"), "second call does nothing: %s", log_);
 }
 
+/* The record behind ioctlv 0x22: where the last __sd0_hs_try() stopped */
+static struct sdhs_record rec(void)
+{
+	struct sdhs_record r;
+
+	sdio_HighSpeedRecord(&r);
+	return r;
+}
+
+static void test_record_layout(void)
+{
+	/* the host's u32 may be 8 bytes; the layout is only the cIOS's when it is 4 */
+	if (sizeof(u32) == 4 && sizeof(s32) == 4) {
+		CHECK(sizeof(struct sdhs_record) == 32, "record is 32 bytes: %u", (unsigned)sizeof(struct sdhs_record));
+		CHECK(offsetof(struct sdhs_record, step) == 4 && offsetof(struct sdhs_record, rc) == 8 &&
+		      offsetof(struct sdhs_record, status) == 12, "field offsets");
+	}
+	CHECK(offsetof(struct sdhs_record, status) + SDHS_RECORD_STATUS_LEN == sizeof(struct sdhs_record),
+	      "status is the last field, no padding");
+	reset_all(HS_CARD);
+	CHECK(rec().step == SDHS_STEP_NOT_CALLED && rec().calls == 0, "before any call");
+}
+
+static void test_record_on(void)
+{
+	struct sdhs_record r;
+
+	reset_all(HS_CARD);
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.calls == 1 && r.step == SDHS_STEP_ON && r.rc == 0, "on: %d %d %d", (int)r.calls, (int)r.step, (int)r.rc);
+	CHECK(r.status[13] == 0x03 && r.status[16] == 0x01, "switch status kept");
+	sdio_Shutdown();
+	CHECK(sdio_Startup(), "again");
+	CHECK(rec().calls == 2, "counts calls across re-inits");
+}
+
+static void test_record_check_rc(void)
+{
+	struct sdhs_record r;
+
+	reset_all(HS_CARD);
+	fail_check_rc = -4;
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_CHECK_RC && r.rc == -4 && r.calls == 1, "check rc: %d %d", (int)r.step, (int)r.rc);
+}
+
+static void test_record_check_unsupported(void)
+{
+	struct sdhs_record r;
+
+	reset_all(NO_HS_CARD);
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_CHECK_UNSUPPORTED && r.rc == 0, "unsupported: %d", (int)r.step);
+	CHECK(r.status[13] == 0, "zero status recorded");
+}
+
+static void test_record_switch_rc(void)
+{
+	struct sdhs_record r;
+
+	reset_all(HS_CARD);
+	fail_switch_rc = -6;
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_SWITCH_RC && r.rc == -6, "switch rc: %d %d", (int)r.step, (int)r.rc);
+	CHECK(r.status[13] == 0, "status of the failed switch (zeroed buffer)");
+}
+
+static void test_record_switch_not_selected(void)
+{
+	struct sdhs_record r;
+
+	reset_all(SWITCH_NOT_CHOSEN);
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_SWITCH_NOT_SELECTED && r.rc == 0, "not selected: %d", (int)r.step);
+	CHECK(r.status[13] == 0x03 && r.status[16] == 0x0f, "the answer is kept: %02x %02x", r.status[13], r.status[16]);
+}
+
+static void test_record_hostctl_and_clock(void)
+{
+	struct sdhs_record r;
+
+	reset_all(HS_CARD);
+	fail_hcr_read = 1;
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_HOSTCTL_READ && r.rc == -7, "hostctl read: %d %d", (int)r.step, (int)r.rc);
+	CHECK(sdio_HighSpeedState() == 0, "not on");
+
+	reset_all(HS_CARD);
+	fail_hcr_write = 1;
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_HOSTCTL_WRITE && r.rc == -8, "hostctl write: %d %d", (int)r.step, (int)r.rc);
+	CHECK(sdio_HighSpeedState() == 0, "not on");
+
+	reset_all(HS_CARD);
+	fail_setclk0 = 1;
+	CHECK(sdio_Startup(), "startup");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_SETCLK && r.rc == -9, "setclk: %d %d", (int)r.step, (int)r.rc);
+	CHECK(sdio_HighSpeedState() == 2, "fell back, dead");
+}
+
+static void test_record_dead(void)
+{
+	struct sdhs_record r;
+
+	reset_all(HS_CARD);
+	CHECK(sdio_Startup(), "startup");
+	fail_hs = 1;
+	CHECK(sdio_ReadSectors(0, 1, sector_buf), "read");
+	CHECK(sdio_Shutdown(), "shutdown");
+	CHECK(sdio_Startup(), "startup again");
+	r = rec();
+	CHECK(r.step == SDHS_STEP_DEAD && r.calls == 2, "dead: %d calls %d", (int)r.step, (int)r.calls);
+	CHECK(r.status[16] == 0x01, "status of the earlier switch stays");
+}
+
 static const struct hc_test tests[] = {
+	{ "record_layout", test_record_layout, false },
+	{ "record_on", test_record_on, false },
+	{ "record_check_rc", test_record_check_rc, false },
+	{ "record_check_unsupported", test_record_check_unsupported, false },
+	{ "record_switch_rc", test_record_switch_rc, false },
+	{ "record_switch_not_selected", test_record_switch_not_selected, false },
+	{ "record_hostctl_and_clock", test_record_hostctl_and_clock, false },
+	{ "record_dead", test_record_dead, false },
 	{ "parse_status", test_parse_status, false },
 	{ "hs_card", test_hs_card, false },
 	{ "non_hs_card", test_non_hs_card, false },

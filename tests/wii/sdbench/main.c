@@ -5,11 +5,12 @@
  *     hbc.py run sdbench.dol [--ios=249] [--mb=32]
  *
  * Reloads to the cIOS, prints its identity, opens /dev/sdio/sdhc, sends INIT,
- * asks the high-speed state (ioctl 0x20; -4 is a release build without
- * SDIO_HIGH_SPEED), then times --mb MB of sequential reads from sector 0 in
+ * asks the high-speed state (ioctl 0x20; -101, IPC_EINVAL, is a release build
+ * without SDIO_HIGH_SPEED: the default case of the ioctlv switch) and the
+ * record of the last high-speed attempt (0x22), then times --mb MB of sequential reads from sector 0 in
  * 64-sector calls and 2 MB in 1-sector calls. On a build that answers 0x20 it
- * then sends 0x21 (forced fallback), prints the state (bit 1 set) and reads
- * the same area again: the CRC32 must match, and the speed shows the cost of
+ * then sends 0x21 (forced fallback), prints the state (bit 1 set, when high
+ * speed was on before) and reads the same area again: the CRC32 must match, and the speed shows the cost of
  * the slow path. Output goes to the TV and, until the IOS reload, to the PC
  * through hbc_netlog; the whole report is saved to sd:/sdbench.txt
  * (tests/wii/sdbench.py fetches it). The last line starts with "RESULT".
@@ -34,6 +35,28 @@ extern void __exception_setreload(int t);
 #define SDHC_IOCTL_READ        0x02
 #define SDHC_IOCTL_HS_STATE    0x20   /* SDIO_HIGH_SPEED builds: bit 0 active, bit 1 fell back */
 #define SDHC_IOCTL_HS_FALLBACK 0x21   /* same builds: fall back now, answer the state */
+#define SDHC_IOCTL_HS_RECORD   0x22   /* same builds: output vector, struct hs_record */
+
+/* docs/sd-high-speed.md, source/cios-lib/sdio_hs.h: where the last attempt stopped */
+struct hs_record {
+	u32 calls;
+	s32 step;
+	s32 rc;
+	u8  status[20];     /* CMD6 answer bytes 0..19: [13] bit 1 supported, [16] & 0xF selected */
+} __attribute__((packed));
+
+static const char *const hs_step_name[] = {
+	"high speed code was never called",
+	"skipped: an earlier fallback marked high speed dead",
+	"CMD6 check command failed",
+	"CMD6 check answered: the card does not offer high speed",
+	"CMD6 switch command failed",
+	"CMD6 switch answered: the card did not select high speed",
+	"reading the host control register failed",
+	"writing the host control register failed",
+	"setting the 50 MHz clock failed (fell back)",
+	"high speed is on",
+};
 
 #define BIG    64                     /* sectors per call */
 #define SECTOR 512
@@ -270,13 +293,33 @@ static int bench(int argc, char **argv)
 
 	s32 hs = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_HS_STATE, ":");
 	bool has_hs = hs >= 0;
-	if (hs == -4)
-		say("sdbench: release build: no high-speed state (0x20 = -4)\n");
+	bool hs_was_on = hs >= 0 && (hs & 1);
+	if (hs == -101)
+		say("sdbench: release build: no high-speed state (0x20 = -101, unknown command)\n");
 	else if (hs < 0)
 		say("sdbench: HS_STATE (0x20) = %d (error)\n", hs);
 	else
 		say("sdbench: HS_STATE (0x20) = %d (active %d, fell back %d)\n", hs, hs & 1,
 		    (hs >> 1) & 1);
+
+	if (has_hs) {
+		static struct hs_record rec ATTRIBUTE_ALIGN(32);
+		memset(&rec, 0, sizeof(rec));
+		s32 rr = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_HS_RECORD, ":d", &rec, sizeof(rec));
+		if (rr < 0) {
+			say("sdbench: HS_RECORD (0x22) = %d (not answered)\n", rr);
+		} else {
+			say("sdbench: HS_RECORD (0x22): high speed code ran %u time(s); last call: %s (step %d, IOS rc %d)\n",
+			    (unsigned) rec.calls, (rec.step >= 0 && rec.step < 10) ? hs_step_name[rec.step] : "unknown step",
+			    (int) rec.step, (int) rec.rc);
+			say("sdbench: CMD6 answer, first 20 bytes:");
+			for (int i = 0; i < 20; i++)
+				say(" %02x", rec.status[i]);
+			say("\n");
+			say("sdbench: group 1 function 1 (high speed) offered: %s; group 1 selected: %u\n",
+			    (rec.status[13] & 2) ? "yes" : "no", (unsigned) (rec.status[16] & 0xF));
+		}
+	}
 
 	u32 sectors = mb * 2048;
 	struct readres r64, r1, rfb;
@@ -301,12 +344,16 @@ static int bench(int argc, char **argv)
 
 	if (has_hs) {
 		s32 st = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_HS_FALLBACK, ":");
-		say("sdbench: HS_FALLBACK (0x21) = %d%s\n", st,
-		    st >= 0 ? ((st & 2) ? " (bit 1 set: fell back)" : " (bit 1 NOT set)") : " (error)");
-		if (st < 0 || !(st & 2)) {
-			if (!bad)
-				snprintf(why, sizeof(why), "fallback state %d lacks bit 1", st);
-			bad = true;
+		if (!hs_was_on) {
+			say("sdbench: HS_FALLBACK (0x21) = %d; fallback check skipped: high speed was not on\n", st);
+		} else {
+			say("sdbench: HS_FALLBACK (0x21) = %d%s\n", st,
+			    st >= 0 ? ((st & 2) ? " (bit 1 set: fell back)" : " (bit 1 NOT set)") : " (error)");
+			if (st < 0 || !(st & 2)) {
+				if (!bad)
+					snprintf(why, sizeof(why), "fallback state %d lacks bit 1", st);
+				bad = true;
+			}
 		}
 		printf("sdbench: reading %u MB again after the fallback...\n", mb);
 		read_run(&rfb, sectors, BIG, buf, true);

@@ -53,14 +53,47 @@ D2XNAME=d2x-v11-rc1-sdhs EXTRA_CFLAGS=-DSDIO_HIGH_SPEED tools/build.sh 11 -rc1-s
 ## Seeing the state from a test app
 
 Only in builds with the flag, the `/dev/sdio/sdhc` device (`sdhc_server.c`)
-answers two extra ioctlv commands (zero input and output vectors):
+answers three extra ioctlv commands:
 
-| Command | Answer |
+| Command | Vectors | Answer |
+| --- | --- | --- |
+| `0x20` | none | state of the EHCI module's SD code: bit 0 high speed active, bit 1 fell back this session |
+| `0x21` | none | debug: fall back now (as a transfer error would), answer the state. Does nothing when high speed is not on |
+| `0x22` | one output vector, at least 32 bytes | return 0; the vector holds `struct sdhs_record` (below), the outcome of the last `__sd0_hs_try()` |
+
+A default build answers all of them with `IPC_EINVAL` (-101, `ipc.h`): they
+fall into the `default:` of the ioctlv switch in `sdhc_server.c`. That is how an
+app tells the builds apart. (An earlier version of this page said -4.)
+
+### The 0x22 record
+
+`struct sdhs_record` in `source/cios-lib/sdio_hs.h`, packed, 32 bytes, big-endian:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | `calls`: times `__sd0_hs_try()` ran since the module started |
+| 4 | 4 | `step`: where the last call stopped (below) |
+| 8 | 4 | `rc`: IOS return code of that step (0 when the step did not fail on a code) |
+| 12 | 20 | `status`: bytes 0..19 of the last CMD6 answer. Byte 13 bit 1 = group 1 function 1 (high speed) offered; byte 16 low nibble = group 1 selected (1 = high speed, 0xF = switch failed) |
+
+| `step` | Meaning |
 | --- | --- |
-| `0x20` | state of the EHCI module's SD code: bit 0 high speed active, bit 1 fell back this session |
-| `0x21` | debug: fall back now (as a transfer error would), answer the state |
+| 0 | not called yet |
+| 1 | skipped: a fallback marked high speed dead |
+| 2 | CMD6 check: IOS returned `rc` < 0 |
+| 3 | CMD6 check ok, but the card does not offer high speed |
+| 4 | CMD6 switch: IOS returned `rc` < 0 |
+| 5 | CMD6 switch ok, but the card did not select high speed |
+| 6 | host control read failed |
+| 7 | host control write failed |
+| 8 | `SETCLK(0)` failed (fell back) |
+| 9 | high speed is on |
 
-A default build answers both with `IPC_EINVAL` (-4): that is how an app tells the builds apart.
+The record is per module (the EHCI module answers it; the FAT module has its
+own copy that this ioctl cannot reach). `__sd0_hs_try()` runs from
+`__sd0_initio()` after `sdio_Startup()`, so `sdio_Startup()` returning early
+(its module's `__sdio_initialized` already set) means no new attempt: `calls`
+stays the same.
 
 ## Tests
 
@@ -78,12 +111,27 @@ debug fallback. Run `tools/build.sh test`, or `make -C tests/host`.
 2. On 2 or 3 cards (an SD 1.0/2.0 card, an SDHC high speed card, a card that is
    known slow), time sector reads and writes (64-sector and 1-sector, a 32 MB file)
    with the release cIOS, then with this one. Use files on the card nobody needs.
-   `tests/wii/sdbench` does the read side read only (32 MB in 64-sector calls, 2 MB in 1-sector calls, CRC32, the `0x20` state, then `0x21` and a second read to compare): `python tests/wii/sdbench.py -- --ios=249`.
+   `tests/wii/sdbench` does the read side read only (32 MB in 64-sector calls, 2 MB in 1-sector calls, CRC32, the `0x20` state, the `0x22` record in words, then `0x21` and a second read to compare; the fallback check is skipped when high speed was not on): `python tests/wii/sdbench.py -- --ios=249`.
 3. Read the state ioctl (`0x20`): expect bit 0 on for a high speed card, off for an old card.
 4. Forced fallback: send `0x21` during a copy and check the copy finishes with the
    same data (compare a hash) and the state reads 2.
 5. Watch for read or write errors, a card that does not mount after a reboot,
    and speed that is no better; any of them is a reason to keep the default build.
+
+## First Wii run (2026-11-05)
+
+Dev Wii, slot 249, base 56, the `+sdhs` build, `tests/wii/sdbench`:
+
+- INIT (ioctl 1 on `/dev/sdio/sdhc`) = 0.
+- State (`0x20`) = 0: high speed not active, no fallback.
+- Reads fine at 6.82 MB/s, the same as the release build: no speed gain.
+- `0x21` (forced fallback) returned 0: `__sd0_hs_fallback()` does nothing when
+  high speed was never on.
+- On the release build `0x20` returned -101 (`IPC_EINVAL`), not -4.
+
+So `__sd0_hs_try()` either did not run on this path or stopped early (CMD6
+check failed, group 1 not offered, switch failed or not selected, host control
+write failed). That is why `0x22` exists: the next run prints which step.
 
 ## Open questions for the first Wii run
 
