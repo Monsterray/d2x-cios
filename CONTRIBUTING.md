@@ -38,6 +38,21 @@ Builds are reproducible: the date stamped into the modules comes from the last c
 
 `build/` holds one `.app` per module (EHCI, USBS, FAT, MLOAD, DIPP, ES, FFSP), plus `ciosmaps.xml`, `ciosmaps-vWii.xml` and `ReadMe.txt` for the d2x cIOS Installer and ModMii.
 
+### Which bases we test
+
+The maps list ten Wii bases. We test the ones people install:
+
+| Base | Usual slot | Used for | Tested |
+|---|---|---|---|
+| 56 | 249 | Most games and loaders | Map checked, boots in ironic, on the Wii |
+| 57 | 250 | USB loaders | Map checked, boots in ironic |
+| 38 | 251 | The few games that need it | Map checked, boots in ironic |
+| 58 | | USB through Nintendo's own USB 2.0 driver (the USBS module instead of EHCI) | Map checked |
+| 37, 53, 55, 80 | | Rarely used | Map checked |
+| 60, 70 | | Superseded System Menu IOS; Nintendo replaced both with stubs | Not checked, kept from upstream |
+
+"Map checked" means `tools/check_ciosmaps.py` matched every patch against that base's contents from a Wii's NAND. "Boots in ironic" means the built cIOS was installed into a copy of a NAND and started in the ironic Starlet emulator, with mload, the d2x identity and the module devices answering. ironic has no USB storage or disc drive, so USB and disc changes still need a Wii. 60 and 70 stay in the maps so installers that offer them keep working; checking them needs the old full versions (60 v6174, 70 v6687) from Nintendo's update server.
+
 ## Test
 
 ```sh
