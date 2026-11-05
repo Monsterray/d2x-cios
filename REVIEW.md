@@ -145,7 +145,28 @@ Host tests added for the refactor (`tests/host/usbs`): direct-buffer write recov
 
 Not done: `-Os` is already on everywhere; Thumb is already on everywhere (only the syscall stubs, `start.s` and `.init` are ARM); there are no debug strings in release (`.rodata` is 196 bytes in the data region). The WBFS ioctls are live (USB Loader GX), so wbfs.c stays. Next candidates if room is needed again: `sdio_Startup` (952 bytes, cold), `wbfs_open_partition`'s reset-only branch (about 150 bytes, needs a compile-time switch in the shared lib).
 
+### `+next` on both Wiis (2026-11-05)
+
+`+next` = `opt/size` 2b8a692 built with `SDIO_HIGH_SPEED`: the EHCI write fixes, SD high speed (CMD6 sent as BC), the USBS fixes with 16 KB transfers, and the size work. It is installed on devwii 249/56, 250/57, 251/38 and 252/58, and on lrwii 252/56 and 253/58. lrwii's 247 (rc1) is the reference; 249 (r65535) is untouched.
+
+| Kind | Result | Check |
+| --- | --- | --- |
+| Measurement | **USB reads, devwii, all four bases, read-only:** 64 sectors in 1501-1638 us on EHCI and 4001 us on base 58 (10002 us before the 16 KB change); 1 sector in 450-492 us on EHCI and 2991 us on base 58. 0 failed, the same as before the size work. | `umsbench.py`, job 20261105-105523-524822 |
+| Measurement | **USB writes, lrwii scratch drive:** write-back on 252/56: 1 sector in about 740 us (the first after reads 18 ms), 64 sectors in 4.9 ms. On 253/58: 1 sector in about 2.4 ms, 64 sectors in 6.6 ms. Data unchanged. Pattern test on 252: 544 sectors written and read back, 0 mismatched, 0 failed. | jobs 20261105-114644-56d600 and the `--pattern=32` run |
+| Measurement | **SD high speed:** the CMD6 answer arrives as BC (as ADTC it was all zero); the card switches. 64-sector reads: devwii 9.97 MB/s against 6.85 at default speed (+45%); lrwii 6.23 against 4.87 on rc1 (+28%). The forced fallback works (debug build) and the data is the same before and after. 0 failed. | `sdbench.py`; the 0x22 record in a `SDIO_HS_DEBUG` build |
+| Measurement | **USB Loader GX installs the retail disc (SMNE01, 350 MB) to USB on lrwii:** 252/56 in 215 s (write 3864 KiB/s, longest 441 ms), 253/58 in 260 s (3060 KiB/s, longest 439 ms); rc1 247 took 224 s, r65535 216 s. No request over 2 s, no drive error, disc reads about 19 MB/s. | Main USBLoaderGX jobs 20261105-115903-bb504b and -4405a4 |
+| Finding | **IOS58 `/dev/usb/ven` takes at most 16 KB per bulk transfer.** One 32 KB direct transfer never returned (devwii, 2026-11-05), and the console needed a power cycle. The 8 s deadline cannot help, because the IPC call itself blocks. USBS now sends 16 KB pieces on both paths. Each transfer costs about 1 ms whatever its size. Never raise it without a timeout that IOS itself enforces. | umsbench on `+usbs` (6609779), then `+usbs16` / `+next` |
+| Finding | **A read in a WBFS gap through Nintendo's DI module (0x71) hangs IOS, and `DIP_GAP_ERROR` does not prevent it.** On lrwii `+gaperr` (246) the DIP trace showed `Z ZERO GAP`, then `X FRAG FAIL 04`, then -4 returned for the a8 and for the 0x71 (`d DI back 71 fffffffc`, `c cmd out 71 fffffffc`). Nothing came after it, and the app's call never returned. The hang is in the DI module after d2x hands back the error. The zero fill fails the DI module's hash check and ends in the same place. A stored read (0x300000) returned 0 in 9 ms. Real games never read a gap, so keep the zero fill. `DIP_GAP_ERROR` stays a debug flag, and gap reads on other slots need not be repeated. | GX bench build (usbloadergx-bench e71d4420, `--mode launch --allow-di-reads --dip-trace --one 32768`), on lrwii with Monty there |
+| Open | **Disc boot through USB Loader GX goes to a black screen on lrwii, on `+next` 252 and on rc1 247 alike.** GX reloads to the cIOS, runs the disc's apploader to its end, and its boot.log stops at "Shutting down devices...", so the hang is at or after GX's jump to the game. Since rc1 does the same, it is GX's boot path, handed to the Main USBLoaderGX session. A USB game boot uses the same path and has not been tried. | Main USBLoaderGX jobs 20261105-131528-38f6bc and 20261105-133105-0daf8e |
+
 ### Next
+
+- **A way out of an IOS hang.** Every recovery that goes back to HBC needs IOS. When IOS itself hangs (the 32 KB transfer, the DI gap read), only a power cycle helps, so these tests need someone at the Wii.
+  - Two ideas to test:
+    - an HW_RESETS fallback in HBC's agent;
+    - a debug-only ARM-side reset timer in a cIOS test build: an mload thread that resets the console when the PowerPC hasn't checked in for N seconds. Never in 249 or a release.
+  - First check whether a Starlet thread still runs when the DI module or `/dev/usb/ven` hangs, and whether BootMii as boot2 lets the reset through.
+  - Trigger: the next test that can hang IOS.
 
 - **Bench test program.** A DOL, run from HBC through the bench queue, that reports which slots hold which cIOS (read only), then opens the cIOS's USB device and times sector reads and writes to a scratch file area, printing results to the HBC log. Trigger: before the first install of a fork build.
 - **ARM emulator harness.** Run the real module ELFs (big-endian ARM926) under an emulator such as Unicorn, with IOS syscalls and EHCI registers simulated in Python. This tests the compiled binary instead of a host rebuild. Trigger: a bug that the host tests cannot show (timing, endianness, the stripped ELF layout) or a second module that needs hardware-level simulation.
