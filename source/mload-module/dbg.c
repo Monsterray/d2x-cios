@@ -54,6 +54,25 @@ static void __Dbg_Out(void)
 	DCFlushRange(AREA + D2XDBG_RING_OFF + last * 16, 16);
 }
 
+/* IOS's page table maps MEM2 only as far as its modules reach (0x1379CFFF
+   on base 56, seen in ironic): the area has no ARM mapping, and its first
+   access is a translation fault that MEM2_Prot() and Perms_Write() cannot
+   help. Map its pages ourselves: small pages, read/write for all, cached,
+   in the coarse table IOS already has for that megabyte. */
+static void __Dbg_MapArea(void)
+{
+	u32 l1, *l2, i;
+
+	l1 = *(vu32 *)((MMU_GetTTB() & ~0x3FFF) + ((D2XDBG_PHYS >> 20) << 2));
+	if ((l1 & 3) != 1)		/* not a coarse page table */
+		return;
+	l2 = (u32 *)((l1 & ~0x3FF) + (((D2XDBG_PHYS >> 12) & 0xFF) << 2));
+	for (i = 0; i < D2XDBG_SIZE / 0x1000; i++)
+		l2[i] = (D2XDBG_PHYS + i * 0x1000) | 0xFFE;
+	DCFlushRange(l2, D2XDBG_SIZE / 0x1000 * 4);
+	MMU_InvalidateTLB();
+}
+
 static void __Dbg_Reset(void)
 {
 	/* Priiloader autoboots whatever its boot state says */
@@ -144,6 +163,7 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 	case D2XDBG_SWI_CTRL:
 		switch (arg1 & 0xFFFF) {
 		case 0xFF:	/* MLOAD starts: keep the last run's area as last words */
+			__Dbg_MapArea();
 			DCInvalidateRange(AREA, D2XDBG_SIZE);
 			d2xdbg_start(AREA, D2X_IDENT, buildFlags, __Dbg_Now());
 			DCFlushRange(AREA, D2XDBG_SIZE);

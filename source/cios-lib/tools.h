@@ -60,6 +60,10 @@ void Perms_Write(u32 flags);
 /* MEM2 routines */
 void MEM2_Prot(u32 flag);
 
+/* MMU */
+u32  MMU_GetTTB(void);
+void MMU_InvalidateTLB(void);
+
 /* Tools */
 void *VirtToPhys(void *address);
 void *PhysToVirt(void *address);

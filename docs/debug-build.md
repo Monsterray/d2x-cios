@@ -14,7 +14,7 @@ python tests/wii/d2xdiag.py -- --ios=250 --scenario=usb-csw-stall,sd-low
 
 Defined in [source/cios-lib/d2xdbg.h](../source/cios-lib/d2xdbg.h), which PowerPC programs include as well.
 
-- **Where it is.** 16 KB at physical `0x137A9000` in MEM2, in the gap between the end of the EHCI module's RAM (`0x137A9000`) and the FAT module's code (`0x137B5000`). No d2x module uses it; USBS ends lower still.
+- **Where it is.** 16 KB at physical `0x137A9000` in MEM2, in the gap between the end of the EHCI module's RAM (`0x137A9000`) and the FAT module's code (`0x137B5000`). No d2x module uses it; USBS ends lower still. IOS's page table does not map it (MEM2 is mapped only as far as the modules reach), so MLOAD maps its 4 pages when it starts.
 - **Who writes it.** MLOAD, and only MLOAD. Each module runs as its own IOS process and cannot write there. A module sends an event through MLOAD's SWI (`svc 0xcc`, commands 64 to 67), and the SWI handler does the write with every permission. It runs with IRQs off, so each event is atomic. It flushes the header and the new record at once, so a hang on the very next instruction still leaves them in memory.
 - **Who reads it.** The PowerPC, directly: MLOAD turns MEM2 protection off, so `0xD37A9000` (uncached) shows the area live, even while IOS is stuck. `/dev/d2xdbg` also copies it out.
 
@@ -57,7 +57,7 @@ Defined in [source/cios-lib/d2xdbg.h](../source/cios-lib/d2xdbg.h), which PowerP
 
 ## The watchdog
 
-An MLOAD thread (priority `0x7F` when IOS allows it, else MLOAD's own; `wd_prio` says which) wakes every 100 ms on an IOS timer. When it is armed and `wd_kick` has not changed for the timeout, it:
+An MLOAD thread (priority `0x7F` when IOS allows it, else MLOAD's own, `0x79` on base 56; `wd_prio` says which) wakes every 100 ms on an IOS timer. When it is armed and `wd_kick` has not changed for the timeout, it:
 
 1. writes a `W` record;
 2. writes Priiloader's magic word `Abra` (`0x41627261`) to physical `0x017FEFF0`, so Priiloader autoboots whatever its boot state says;

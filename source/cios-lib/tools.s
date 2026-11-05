@@ -88,6 +88,25 @@ Perms_Write:
 	bx	lr
 
 
+/* MMU: the translation table base, and a TLB flush (the d2x debug area) */
+	.section .text.MMU_GetTTB,"ax",%progbits
+	.balign 4
+	.code 32
+	.global MMU_GetTTB
+MMU_GetTTB:
+	mrc	p15, 0, r0, c2, c0
+	bx	lr
+
+	.section .text.MMU_InvalidateTLB,"ax",%progbits
+	.balign 4
+	.code 32
+	.global MMU_InvalidateTLB
+MMU_InvalidateTLB:
+	mov	r0, #0
+	mcr	p15, 0, r0, c8, c7, 0
+	bx	lr
+
+
 /* MEM2 routines */
 	.section .text.MEM2_Prot,"ax",%progbits
 	.balign 4
