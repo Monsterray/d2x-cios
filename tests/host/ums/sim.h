@@ -47,7 +47,7 @@ struct sim {
 	u8 status;
 	u8 cmd[16];
 	u32 lba, xfer_len, xfer_done;
-	u8 in_buf[64 * 1024];
+	u8 in_buf[256 * 1024];   /* the largest READ(10): 65535 sectors is more, tests stay below */
 	bool halt_in, halt_out;
 	u8 toggle_in, toggle_out;       /* the drive's data toggles */
 

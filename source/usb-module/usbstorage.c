@@ -71,12 +71,32 @@ distribution.
 
 /* Bytes per bulk transfer. IOS's /dev/usb/ven takes about 1 ms per transfer
    whatever its size (base 58 on a Wii: 3 ms for a 1-sector read, 10 ms for
-   64 sectors in 4 KB pieces), so bigger pieces are faster. libogc uses 16 KB
-   on USBv5; the bounce buffer comes from the 32 KB module heap. */
+   64 sectors in 4 KB pieces, 4 ms in 16 KB pieces), so fewer, bigger
+   transfers are faster.
+
+   USBS_MAX_TRANSFER: the piece size through the bounce buffer, used for a
+   caller buffer that is unaligned or not in MEM2. The bounce buffer comes
+   from the 32 KB module heap. libogc uses 16 KB on USBv5.
+
+   USBS_MAX_DIRECT: the most one bulk transfer carries when the caller's
+   buffer is 32-byte aligned MEM2 and goes to IOS as it is. The bulk wLength
+   in usb2.c is a u16, so 65535 is the limit; the piece is cut to whole
+   sectors (65024 for 512-byte sectors, 61440 for 4096). Both can be set
+   with -D (a variant build). */
 #ifndef USBS_MAX_TRANSFER
-#define USBS_MAX_TRANSFER			4096
+#define USBS_MAX_TRANSFER			16384
 #endif
 #define MAX_TRANSFER_SIZE			USBS_MAX_TRANSFER
+
+#ifndef USBS_MAX_DIRECT
+#define USBS_MAX_DIRECT				65535
+#endif
+
+/* A caller buffer IOS can use as it is: 32-byte aligned and in MEM2 (0x10000000
+   up). A test build replaces this, because host addresses are 64 bits wide. */
+#ifndef usbs_buffer_direct
+#define usbs_buffer_direct(p)		((((u32)(p)) & 0x1F) == 0 && (((u32)(p)) & 0x10000000))
+#endif
 
 /* IOS's USB driver reports a STALLed transfer as -7003 or -7004 (WiiBrew,
    /dev/usb/oh0, from gc-linux; not checked on a Wii). Any other negative
@@ -213,13 +233,24 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 	return USBSTORAGE_OK;
 }
 
+/* The most bytes one direct transfer carries: USBS_MAX_DIRECT cut down to
+   whole sectors of this LUN (512 when the size is not known yet). */
+static u32 __direct_limit(usbstorage_handle *dev, u8 lun)
+{
+	u32 ss = (lun < dev->max_lun) ? dev->sector_size[lun] : 0;
+
+	if(ss == 0 || ss > USBS_MAX_DIRECT)
+		ss = 512;
+	return (USBS_MAX_DIRECT / ss) * ss;
+}
+
 static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, u8 cbLen, u8 write, u8 *_status, u32 *_dataResidue)
 {
 	s32 retval = USBSTORAGE_OK;
 
 	u8 status = 0;
 	u32 dataResidue = 0;
-	u32 thisLen;
+	u32 thisLen, limit;
 
 	/* each attempt sends the whole command again */
 	u8 *buffer2 = buffer;
@@ -252,12 +283,15 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			}
 			while(len > 0)
 			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if ((u32)buffer&0x1F || !((u32)buffer&0x10000000)) {
+				if (usbs_buffer_direct(buffer)) {
+					limit = __direct_limit(dev, lun);
+					thisLen = len > limit ? limit : len;
+					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
+				} else {
+					thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
 					memcpy(dev->buffer, buffer, thisLen);
 					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, dev->buffer);
-				} else
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
+				}
 
 				if (retval == USBSTORAGE_ETIMEDOUT)
 					break;
@@ -304,13 +338,16 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			}
 			while(len > 0)
 			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if ((u32)buffer&0x1F || !((u32)buffer&0x10000000)) {
+				if (usbs_buffer_direct(buffer)) {
+					limit = __direct_limit(dev, lun);
+					thisLen = len > limit ? limit : len;
+					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
+				} else {
+					thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
 					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, dev->buffer);
 					if (retval>0)
 						memcpy(buffer, dev->buffer, retval);
-				} else
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
+				}
 
 				if (retval == USBSTORAGE_ETIMEDOUT)
 					break;

@@ -41,8 +41,24 @@ static int glue_bulk_raw(unsigned char ep, unsigned short len, void *buf);
  * or -ENODEV; translate both to what the USBS code would have received.
  * -7022 stands for "no answer" (an assumption: the real code is not known).
  */
+/* What the module sent, for the transfer-count tests: every bulk transfer
+ * that is not a CBW or a CSW, in order. */
+int glue_mem2;
+unsigned glue_data_xfers;
+unsigned glue_data_len[64];
+unsigned glue_data_ptr_aligned[64];
+
 int glue_bulk(unsigned char ep, unsigned short len, void *buf)
 {
+	int is_cbw = !(ep & 0x80) && len == 31 && memcmp(buf, "CBSU", 4) == 0;
+	int is_csw = (ep & 0x80) && len == 13;
+	if (!is_cbw && !is_csw) {
+		if (glue_data_xfers < 64) {
+			glue_data_len[glue_data_xfers] = len;
+			glue_data_ptr_aligned[glue_data_xfers] = (((unsigned long) buf) & 0x1F) == 0;
+		}
+		glue_data_xfers++;
+	}
 	int r = glue_bulk_raw(ep, len, buf);
 	if (r < 0)
 		return -7022;

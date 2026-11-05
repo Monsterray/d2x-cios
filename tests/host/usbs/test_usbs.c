@@ -18,6 +18,13 @@ void usbs_close(void);
 
 static unsigned char buf[16 * SECTOR];
 
+/* Transfer-count tests: the module's bulk transfers other than CBW and CSW
+ * (glue_sim.c), and which buffers it may hand to IOS as they are. */
+extern int glue_mem2;
+extern unsigned glue_data_xfers;
+extern unsigned glue_data_len[64];
+static unsigned char big[200 * SECTOR + 64] __attribute__((aligned(32)));
+
 static void mount(void)
 {
 	CHECK(usbs_mount() >= 0, "mount failed: %s", sim_summary());
@@ -222,6 +229,105 @@ static void test_cbw_carries_command_length(void)
 	usbs_close();
 }
 
+static void count_reset(void)
+{
+	glue_data_xfers = 0;
+}
+
+/* The data transfers of the last request, as "n: a b c" for a message. */
+static const char *xfers(void)
+{
+	static char s[256];
+	int o = snprintf(s, sizeof(s), "%u:", glue_data_xfers);
+	for (unsigned i = 0; i < glue_data_xfers && i < 16; i++)
+		o += snprintf(s + o, sizeof(s) - o, " %u", glue_data_len[i]);
+	return s;
+}
+
+/* One read and one write of n sectors at lba, through b; the result must be
+ * the drive's data and the data transfers must be exactly want[0..n_want). */
+static void split_check(unsigned char *b, unsigned lba, unsigned n, const unsigned *want, unsigned n_want)
+{
+	size_t bytes = (size_t) n * SECTOR;
+	memset(b, 0, bytes);
+	count_reset();
+	CHECK(usbs_read(lba, n, b) >= 0, "read failed: %s", sim_summary());
+	CHECK(memcmp(b, sim.data + (size_t) lba * SECTOR, bytes) == 0, "read returned other data");
+	CHECK(glue_data_xfers == n_want, "read of %u sectors: %s", n, xfers());
+	for (unsigned i = 0; i < n_want && i < glue_data_xfers; i++)
+		CHECK(glue_data_len[i] == want[i], "read of %u sectors, piece %u: %s", n, i, xfers());
+
+	fill(b, bytes, 11);
+	count_reset();
+	CHECK(usbs_write(lba + 1000, n, b) >= 0, "write failed: %s", sim_summary());
+	CHECK(memcmp(sim.data + (size_t) (lba + 1000) * SECTOR, b, bytes) == 0, "drive holds other data");
+	CHECK(glue_data_xfers == n_want, "write of %u sectors: %s", n, xfers());
+	for (unsigned i = 0; i < n_want && i < glue_data_xfers; i++)
+		CHECK(glue_data_len[i] == want[i], "write of %u sectors, piece %u: %s", n, i, xfers());
+}
+
+/* An aligned MEM2 buffer goes to IOS as it is: 64 sectors, 1 transfer. */
+static void test_direct_64_sectors_one_transfer(void)
+{
+	static const unsigned want[] = { 64 * SECTOR };
+	mount();
+	CHECK_OK();
+	glue_mem2 = 1;
+	split_check(big, 20, 64, want, 1);
+	usbs_close();
+}
+
+/* 127 sectors = 65024 bytes, the most whole sectors that fit a u16 length. */
+static void test_direct_127_and_200_sectors(void)
+{
+	static const unsigned w127[] = { 127 * SECTOR };
+	static const unsigned w200[] = { 127 * SECTOR, 73 * SECTOR };
+	mount();
+	CHECK_OK();
+	glue_mem2 = 1;
+	split_check(big, 30, 127, w127, 1);
+	split_check(big, 40, 200, w200, 2);
+	usbs_close();
+}
+
+/* An unaligned buffer, or one outside MEM2, goes through the 16 KB bounce
+ * buffer in pieces of 16 KB. */
+static void test_bounce_pieces_are_16k(void)
+{
+	static const unsigned w64[] = { 32 * SECTOR, 32 * SECTOR };
+	static const unsigned w127[] = { 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 31 * SECTOR };
+	static const unsigned w200[] = { 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 32 * SECTOR, 32 * SECTOR,
+					 32 * SECTOR, 8 * SECTOR };
+	mount();
+	CHECK_OK();
+	glue_mem2 = 1;                  /* unaligned in MEM2 */
+	split_check(big + 1, 50, 64, w64, 2);
+	split_check(big + 1, 60, 127, w127, 4);
+	split_check(big + 1, 70, 200, w200, 7);
+	glue_mem2 = 0;                  /* aligned, but not MEM2 */
+	split_check(big, 80, 64, w64, 2);
+	split_check(big, 90, 200, w200, 7);
+	usbs_close();
+}
+
+/* The retry on a STALL works with a big direct transfer: the command is sent
+ * again and the whole data arrives. */
+static void test_direct_read_recovers_from_one_stall(void)
+{
+	mount();
+	CHECK_OK();
+	glue_mem2 = 1;
+	sim.stall_read_data = 1;
+	CHECK(usbs_read(100, 127, big) >= 0, "read failed: %s", sim_summary());
+	CHECK(memcmp(big, sim.data + 100 * SECTOR, 127 * SECTOR) == 0, "read returned other data");
+	CHECK(sim.bot_resets == 0 && sim.port_resets == 0, "%s", sim_summary());
+	fill(big, 127 * SECTOR, 13);
+	sim.lose_write_csw = 1;
+	CHECK(usbs_write(1100, 127, big) >= 0, "write failed: %s", sim_summary());
+	CHECK(memcmp(sim.data + 1100 * SECTOR, big, 127 * SECTOR) == 0, "drive holds other data");
+	usbs_close();
+}
+
 static const struct hc_test tests[] = {
 	{ "usbs_roundtrip", test_roundtrip, false },
 	{ "usbs_write_csw_failure_is_reported", test_write_csw_failure_is_reported, false },
@@ -235,11 +341,16 @@ static const struct hc_test tests[] = {
 	{ "usbs_dead_drive_fails_in_time", test_dead_drive_fails_in_time, false },
 	{ "usbs_stuck_halt_fails_in_time", test_stuck_halt_fails_in_time, false },
 	{ "usbs_cbw_carries_command_length", test_cbw_carries_command_length, false },
+	{ "usbs_direct_64_sectors_one_transfer", test_direct_64_sectors_one_transfer, false },
+	{ "usbs_direct_127_and_200_sectors", test_direct_127_and_200_sectors, false },
+	{ "usbs_bounce_pieces_are_16k", test_bounce_pieces_are_16k, false },
+	{ "usbs_direct_read_recovers_from_one_stall", test_direct_read_recovers_from_one_stall, false },
 };
 
 static void setup(void)
 {
 	sim_reset();
+	glue_mem2 = 0;
 	sim.limit_us = 600 * 1000000ull;
 }
 

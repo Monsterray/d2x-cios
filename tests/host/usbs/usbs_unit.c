@@ -114,6 +114,12 @@ void usbsglue_FreeDescriptors(usb_devdesc *udd)
 	udd->configurations = NULL;
 }
 
+/* Host addresses are 64 bits wide, so the module's MEM2 test (address bit
+ * 0x10000000) cannot be true here. A test says which buffers count as aligned
+ * MEM2; the alignment rule is the module's. */
+extern int glue_mem2;
+#define usbs_buffer_direct(p) (glue_mem2 && (((unsigned long)(p)) & 0x1F) == 0)
+
 #include "usbstorage.c"
 
 /* For test_usbs.c, in plain C types. */
