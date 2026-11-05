@@ -59,6 +59,10 @@ struct sim {
 	                           after the clear-halt the CSW never comes, until
 	                           a reset (the SanDisk on the bench, 2026-10-24) */
 	bool csw_lost;          /* the drive is in that state now */
+	int stall_read_data;    /* READ(10): STALL bulk-in at the data phase, status 1
+	                           (BOT 6.7.2, Hi > Di) */
+	int stall_csw;          /* the next CSW read STALLs; after the clear-halt the
+	                           CSW is there (BOT 6.7.2: the host reads it again) */
 
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;

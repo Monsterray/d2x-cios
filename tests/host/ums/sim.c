@@ -202,6 +202,15 @@ static void start_command(const u8 *cbw)
 		sim.lba = be32(c + 2);
 		memcpy(sim.in_buf, sim.data + (size_t)sim.lba * SIM_SECTOR_SIZE, len);
 		sim.phase = SIM_DATA_IN;
+		if (sim.stall_read_data > 0) {
+			/* no data: STALL bulk-in, status 1 in the CSW */
+			sim.stall_read_data--;
+			sim.halt_in = true;
+			sim.status = 1;
+			sim.residue = len;
+			set_sense(0x03, 0x11);  /* MEDIUM ERROR, UNRECOVERED READ ERROR */
+			sim.phase = SIM_CSW;
+		}
 		break;
 	case 0x2A:                      /* WRITE(10) */
 		sim.lba = be32(c + 2);
@@ -303,6 +312,11 @@ static s32 bulk_in(u32 len, u8 *p)
 			return 0;
 		}
 		return no_answer();
+	}
+	if (sim.phase == SIM_CSW && len == 13 && sim.stall_csw > 0) {
+		sim.stall_csw--;
+		sim.halt_in = true;
+		return 0;
 	}
 	if (sim.phase == SIM_CSW && len == 13) {
 		memset(p, 0, 13);

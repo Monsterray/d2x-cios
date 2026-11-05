@@ -86,3 +86,31 @@ was mostly waiting for IOS.
   back. It overwrites sectors in the middle of the drive: **scratch drives
   only.** `--write-back` writes back what is there, which cannot catch a
   write that lands stale data.
+
+## USBS (base 58): the same rules on IOS's own USB driver
+
+The USBS module (`usb-module/usbstorage.c`) talks to Nintendo's USB 2.0
+driver through ioctls instead of driving the controller. It now follows the
+same rules as the EHCI module:
+
+- **Shared with EHCI:** a STALL in the data phase ends the data and the CSW
+  says why; a CSW that STALLs gets a clear-halt and one more read; CSW status
+  1 gets a REQUEST SENSE; a phase error or CSW status 2 gets reset recovery;
+  `USBSTORAGE_SECTOR_TRIES` (4) attempts per sector request; one
+  `USBSTORAGE_REQUEST_MS` (8 s) deadline per request.
+- **Ported, differently:** the buffer and length are restored before every
+  retry (the old `__cycle()` subtracted a negative return value from the
+  length and overran the buffer). The deadline reads the Hollywood timer
+  (`HW_TIMER`, 0x0D800010) directly, as `ehci-module` does; the STALL codes
+  are IOS's (-7003, -7004; -7005 is a NAK).
+- **Untested on a Wii:**
+  - the STALL codes (from WiiBrew; no real drive has been seen to return them);
+  - the timer register from this module (both modules are mload ELFs started
+    the same way, but only EHCI has run it);
+  - whether `USB_CancelEndpoint()`, which USBS uses as clear-halt, also clears
+    the halt on the drive;
+  - an IOS transfer that never returns: the deadline is checked between
+    transfers only, so a blocked ioctl blocks the request.
+
+The host tests are `tests/host/usbs` (the driver built against the simulated
+drive of `tests/host/ums`).
