@@ -27,6 +27,8 @@
  * Macro
  */
 .macro syscall num name
+	.section .text.\name,"ax",%progbits
+	.balign 4
 	.code 32
 	.global \name
 \name:
@@ -96,6 +98,8 @@
 /*
  * ARM syscalls
  */
+	.section .text.svc_write,"ax",%progbits
+	.balign 4
 	.code 32
 	.global svc_write
 svc_write:

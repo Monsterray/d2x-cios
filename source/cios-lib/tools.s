@@ -28,6 +28,9 @@
 	.code 32
 
 /* Direct syscalls */
+	.section .text.DCInvalidateRange,"ax",%progbits
+	.balign 4
+	.code 32
 	.global DCInvalidateRange
 DCInvalidateRange:
 	mcr	p15, 0, r0, c7, c6, 1
@@ -36,6 +39,9 @@ DCInvalidateRange:
 	bne	DCInvalidateRange
 	bx	lr
 
+	.section .text.DCFlushRange,"ax",%progbits
+	.balign 4
+	.code 32
 	.global DCFlushRange
 DCFlushRange:
 	mcr	p15, 0, r0, c7, c10, 1
@@ -44,6 +50,9 @@ DCFlushRange:
 	bne	DCFlushRange
 	bx	lr
 
+	.section .text.ICInvalidate,"ax",%progbits
+	.balign 4
+	.code 32
 	.global ICInvalidate
 ICInvalidate:
 	mov	r0, #0
@@ -52,6 +61,9 @@ ICInvalidate:
 
 
 /* MLoad syscalls */
+	.section .text.Swi_MLoad,"ax",%progbits
+	.balign 4
+	.code 32
 	.global Swi_MLoad
 Swi_MLoad:
 	svc	0xcc
@@ -59,11 +71,17 @@ Swi_MLoad:
 
 
 /* ARM permissions */
+	.section .text.Perms_Read,"ax",%progbits
+	.balign 4
+	.code 32
 	.global Perms_Read
 Perms_Read:
 	mrc	p15, 0, r0, c3, c0
 	bx	lr
 
+	.section .text.Perms_Write,"ax",%progbits
+	.balign 4
+	.code 32
 	.global Perms_Write
 Perms_Write:
 	mcr	p15, 0, r0, c3, c0
@@ -71,6 +89,9 @@ Perms_Write:
 
 
 /* MEM2 routines */
+	.section .text.MEM2_Prot,"ax",%progbits
+	.balign 4
+	.code 32
 	.global MEM2_Prot
 MEM2_Prot:
 	ldr	r1, =0xD8B420A
@@ -79,11 +100,17 @@ MEM2_Prot:
 
 
 /* Tools */
+	.section .text.VirtToPhys,"ax",%progbits
+	.balign 4
+	.code 32
 	.global VirtToPhys
 VirtToPhys:
 	and	r0, #0x7fffffff
 	bx	lr
 
+	.section .text.PhysToVirt,"ax",%progbits
+	.balign 4
+	.code 32
 	.global PhysToVirt
 PhysToVirt:
 	orr	r0, #0x80000000
