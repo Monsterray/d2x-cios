@@ -1,5 +1,6 @@
 /*
  * cIOS d2x v${RELEASE_TEXT} by blackb0x
+ * Build: ${BUILD_INFO}
  *
  * Previous releases were by davebaol
  * 

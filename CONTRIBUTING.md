@@ -32,6 +32,16 @@ tools/build.sh clean
 
 Inside the cIOS the version is stored the way loaders and ModMii read it: the major as a number (and the TMD revision, 21000 + major), the rest as the version string `-1-0`, since ModMii allows no dots there. USB Loader GX shows `d2x v11-1-0 base56`; upstream builds show `d2x v11beta3`. `tests/test_version.py` checks `VERSION` stays within those limits.
 
+**One rule for every build we put on a Wii, so the loader always says which build it is:**
+
+- The release is `VERSION` and nothing else: `11.1.0-rc1` shows `-1-0-rc1`.
+- Any other build appends `+<variant>` to the name and to the version string: `D2X_VARIANT=sdhs tools/build.sh` makes `d2x-v11.1.0-rc1+sdhs`, shown as `-1-0-rc1+sdhs`. A variant is lower-case letters and digits, words joined by `-` (`sdhs`, `usbs`, `dbg`, `trace`, `sdhs-dbg`).
+- A build with `EXTRA_CFLAGS` (a debug or trace flag, `-DSDIO_HIGH_SPEED`) must name a variant, or `tools/build.sh` stops. Only CI's `-Werror` is exempt, since it changes no code. So a flagged build can never look like the release.
+- The version string holds 15 characters (16 bytes with the NUL). If `VERSION` plus the variant is longer, the build stops with a message; it never truncates. With `-rc1` there are 7 characters for `+variant` (`+gaperr` fits, `+sdhs-dbg` does not); a release without `-rc1` has 11.
+- `tools/build.sh version` prints the name and string without building. `tests/test_version.py` checks the rule.
+- The 16 bytes cannot hold the commit. Every build also writes `build/BUILD.txt` and a `Build:` line in the generated `ReadMe.txt`: name, version string, git short hash (`-dirty` when tracked files differ), variant and flags. Keep that line (or a manifest like it) with a staged package.
+- `tests/wii/umsbench` prints the identity it reads from the cIOS at start, the way USB Loader GX does: `cIOS 249: d2x v11 -1-0-rc1+sdhs base 56 rev 21011`.
+
 The first run builds the image `d2x-build:<hash>` from `docker/Dockerfile`: Debian (pinned by digest) and devkitARM r32 (pinned by SHA-256). The modules are big-endian ARM, and devkitARM releases after r32 cannot build them, so please don't build with a locally installed devkitARM.
 
 Builds are reproducible: the date stamped into the modules comes from the last commit, so the same tree gives byte-identical `.app` files.
@@ -66,7 +76,7 @@ tools/build.sh test
 | USBS USB storage driver against the same drive | `tests/host/usbs/` | a C compiler (in the image) |
 | The modules build, with no warnings | `EXTRA_CFLAGS=-Werror tools/build.sh` (CI does this) | Docker |
 | FAT module (`fat_wrapper.c`, its IPC handlers, `diskio.c`) on RAM disks | `tests/host/fat/` | a C compiler (in the image) |
-| `VERSION` is a valid release number | `tests/test_version.py` | Python |
+| `VERSION` is a valid release number; variant names fit the 15-character version string | `tests/test_version.py` | Python, sh |
 | USB sector read and write timing through a cIOS on a Wii (`--write-back` puts back the bytes it read; `--pattern=N` writes and verifies known data, **scratch drives only**; `--log` prints the debug build's event log) | `make -C tests/wii/umsbench`, then `python tests/wii/umsbench.py -- --ios=249 [--write-back]` as a wii-bench job | devkitPPC, a Wii with HBC and a USB drive |
 | Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
