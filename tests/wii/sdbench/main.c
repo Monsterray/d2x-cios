@@ -345,8 +345,7 @@ static int bench(int argc, char **argv)
 	if (has_hs) {
 		s32 st = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_HS_FALLBACK, ":");
 		if (st == -101) {
-			say("sdbench: debug ioctls not in this build (0x21 = -101); fallback check skipped
-");
+			say("sdbench: debug ioctls not in this build (0x21 = -101); fallback check skipped\n");
 		} else if (!hs_was_on) {
 			say("sdbench: HS_FALLBACK (0x21) = %d; fallback check skipped: high speed was not on\n", st);
 		} else {
