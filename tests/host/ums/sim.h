@@ -47,7 +47,7 @@ struct sim {
 	u8 status;
 	u8 cmd[16];
 	u32 lba, xfer_len, xfer_done;
-	u8 in_buf[64 * 1024];
+	u8 in_buf[256 * 1024];   /* the largest READ(10): 65535 sectors is more, tests stay below */
 	bool halt_in, halt_out;
 	u8 toggle_in, toggle_out;       /* the drive's data toggles */
 
@@ -59,6 +59,10 @@ struct sim {
 	                           after the clear-halt the CSW never comes, until
 	                           a reset (the SanDisk on the bench, 2026-10-24) */
 	bool csw_lost;          /* the drive is in that state now */
+	int stall_read_data;    /* READ(10): STALL bulk-in at the data phase, status 1
+	                           (BOT 6.7.2, Hi > Di) */
+	int stall_csw;          /* the next CSW read STALLs; after the clear-halt the
+	                           CSW is there (BOT 6.7.2: the host reads it again) */
 
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;

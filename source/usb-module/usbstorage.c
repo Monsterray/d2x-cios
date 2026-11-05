@@ -28,6 +28,7 @@ distribution.
 
 #include <string.h>
 
+#include "hollywood.h"
 #include "ipc.h"
 #include "mem.h"
 #include "timer.h"
@@ -68,7 +69,78 @@ distribution.
 
 #define USBSTORAGE_CYCLE_RETRIES	3
 
-#define MAX_TRANSFER_SIZE			4096
+/* Bytes per bulk transfer. IOS's /dev/usb/ven takes about 1 ms per transfer
+   whatever its size (base 58 on a Wii: 3 ms for a 1-sector read, 10 ms for
+   64 sectors in 4 KB pieces, 4 ms in 16 KB pieces), so fewer, bigger
+   transfers are faster.
+
+   USBS_MAX_TRANSFER: the piece size through the bounce buffer, used for a
+   caller buffer that is unaligned or not in MEM2. The bounce buffer comes
+   from the 32 KB module heap. libogc uses 16 KB on USBv5.
+
+   USBS_MAX_DIRECT: the most one bulk transfer carries when the caller's
+   buffer is 32-byte aligned MEM2 and goes to IOS as it is. The bulk wLength
+   in usb2.c is a u16, but IOS58's /dev/usb/ven does not take that much: a
+   64-sector (32 KB) read into an aligned MEM2 buffer never returned on a
+   real Wii (base 58, IOS58 v6175), the console froze and needed a power
+   cycle; the 8 s deadline cannot help because the IPC call itself blocks.
+   16 KB transfers work (64 sectors in 4051 us, no failures), and libogc's
+   MAX_TRANSFER_SIZE_V5 is 16 KB too, so the limit looks like 16 KB. The
+   piece is cut to whole sectors (16384 for 512-byte sectors, 12288 for
+   4096). Both can be set with -D (a variant build); do not raise
+   USBS_MAX_DIRECT above 16384 without a bench run that survives it. */
+#ifndef USBS_MAX_TRANSFER
+#define USBS_MAX_TRANSFER			16384
+#endif
+#define MAX_TRANSFER_SIZE			USBS_MAX_TRANSFER
+
+#ifndef USBS_MAX_DIRECT
+#define USBS_MAX_DIRECT				16384
+#endif
+
+/* A caller buffer IOS can use as it is: 32-byte aligned and in MEM2 (0x10000000
+   up). A test build replaces this, because host addresses are 64 bits wide. */
+#ifndef usbs_buffer_direct
+#define usbs_buffer_direct(p)		((((u32)(p)) & 0x1F) == 0 && (((u32)(p)) & 0x10000000))
+#endif
+
+/* IOS's USB driver reports a STALLed transfer as -7003 or -7004 (WiiBrew,
+   /dev/usb/oh0, from gc-linux; not checked on a Wii). Any other negative
+   result is a transfer error that needs a reset recovery. */
+#define USBS_IS_STALL(r)		((r) == -7003 || (r) == -7004)
+
+/* How many times a sector read or write is tried while the drive answers. */
+#define USBSTORAGE_SECTOR_TRIES		4
+
+/* How long one sector read or write may go on recovering a drive that keeps
+   failing, in ms. After that no new attempt or reset recovery starts, and the
+   caller gets an error instead of a wait that looks like a hang. A transfer
+   that IOS's driver never ends still blocks (docs/usb-storage.md, USBS).
+   Same value and rule as the EHCI module. */
+#define USBSTORAGE_REQUEST_MS		8000
+
+/* The Hollywood timer, about 1898 ticks per ms; it wraps after about 37
+   minutes, which the signed difference below allows for. */
+#ifndef usbs_get_timer
+#define usbs_get_timer()		(*(vu32 *)HW_TIMER)
+#endif
+#define USBS_TICKS_PER_MS		1898
+
+/* The deadline of the sector request in progress. Off outside a sector
+   request, so mounting keeps its own limits. */
+static u32 usbs_deadline;
+static int usbs_deadline_on;
+
+static void __deadline_start(void)
+{
+	usbs_deadline = usbs_get_timer() + USBSTORAGE_REQUEST_MS * USBS_TICKS_PER_MS;
+	usbs_deadline_on = 1;
+}
+
+static int __deadline_passed(void)
+{
+	return usbs_deadline_on && (int)(usbs_get_timer() - usbs_deadline) >= 0;
+}
 
 
 static inline s32 Swap32(s32 val)
@@ -167,13 +239,28 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 	return USBSTORAGE_OK;
 }
 
+/* The most bytes one direct transfer carries: USBS_MAX_DIRECT cut down to
+   whole sectors of this LUN (512 when the size is not known yet). */
+static u32 __direct_limit(usbstorage_handle *dev, u8 lun)
+{
+	u32 ss = (lun < dev->max_lun) ? dev->sector_size[lun] : 0;
+
+	if(ss == 0 || ss > USBS_MAX_DIRECT)
+		ss = 512;
+	return (USBS_MAX_DIRECT / ss) * ss;
+}
+
 static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, u8 cbLen, u8 write, u8 *_status, u32 *_dataResidue)
 {
 	s32 retval = USBSTORAGE_OK;
 
 	u8 status = 0;
 	u32 dataResidue = 0;
-	u32 thisLen;
+	u32 thisLen, limit;
+
+	/* each attempt sends the whole command again */
+	u8 *buffer2 = buffer;
+	u32 len2 = len;
 
 	s8 retries = USBSTORAGE_CYCLE_RETRIES + 1;
 
@@ -183,6 +270,13 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 
 		if(retval == USBSTORAGE_ETIMEDOUT)
 			break;
+
+		/* the sector request's time is used up: no more attempts */
+		if(retval < 0 && __deadline_passed())
+			break;
+
+		buffer = buffer2;
+		len = len2;
 
 		if(write)
 		{
@@ -195,15 +289,26 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			}
 			while(len > 0)
 			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if ((u32)buffer&0x1F || !((u32)buffer&0x10000000)) {
+				if (usbs_buffer_direct(buffer)) {
+					limit = __direct_limit(dev, lun);
+					thisLen = len > limit ? limit : len;
+					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
+				} else {
+					thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
 					memcpy(dev->buffer, buffer, thisLen);
 					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, dev->buffer);
-				} else
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_out, thisLen, buffer);
+				}
 
 				if (retval == USBSTORAGE_ETIMEDOUT)
 					break;
+
+				/* the drive STALLed the data: the data phase is over and
+				   the CSW says what happened (BOT 6.7.3) */
+				if(USBS_IS_STALL(retval))
+				{
+					retval = USBSTORAGE_OK;
+					break;
+				}
 
 				if(retval < 0)
 				{
@@ -239,15 +344,28 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 			}
 			while(len > 0)
 			{
-				thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
-				if ((u32)buffer&0x1F || !((u32)buffer&0x10000000)) {
+				if (usbs_buffer_direct(buffer)) {
+					limit = __direct_limit(dev, lun);
+					thisLen = len > limit ? limit : len;
+					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
+				} else {
+					thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
 					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, dev->buffer);
 					if (retval>0)
 						memcpy(buffer, dev->buffer, retval);
-				} else
-					retval = __USB_BlkMsgTimeout(dev, dev->ep_in, thisLen, buffer);
+				}
 
 				if (retval == USBSTORAGE_ETIMEDOUT)
+					break;
+
+				/* a STALL ends the data phase; the CSW says why (BOT 6.7.2) */
+				if(USBS_IS_STALL(retval))
+				{
+					retval = USBSTORAGE_OK;
+					break;
+				}
+
+				if(retval < 0)
 					break;
 
 				len -= retval;
@@ -267,8 +385,26 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 
 		retval = __read_csw(dev, &status, &dataResidue);
 
+		/* The CSW read STALLed: clear the halt and read it once more (BOT
+		   5.3.3). A drive that still sends none needs a reset recovery. */
+		if(retval == USBSTORAGE_ESHORTREAD || USBS_IS_STALL(retval))
+		{
+			if(retval == USBSTORAGE_ESHORTREAD)
+				USB_ClearHalt(dev->usb_fd, dev->ep_in);
+			retval = __read_csw(dev, &status, &dataResidue);
+		}
+
 		if(retval < 0)
 		{
+			if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
+				retval = USBSTORAGE_ETIMEDOUT;
+			continue;
+		}
+
+		/* phase error: the drive needs a reset recovery (BOT 5.3.3.1) */
+		if(status == 2)
+		{
+			retval = USBSTORAGE_ESTATUS;
 			if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
 				retval = USBSTORAGE_ETIMEDOUT;
 			continue;
@@ -542,7 +678,22 @@ s32 USBStorage_ReadCapacity(usbstorage_handle *dev, u8 lun, u32 *sector_size, u3
 	return retval;
 }
 
-s32 USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u8 *buffer)
+/* REQUEST SENSE after a failed command clears the condition (a drive may
+   refuse everything until it is asked) */
+static void __usbstorage_sense(usbstorage_handle *dev, u8 lun)
+{
+	u8 cmd[16];
+	u8 sense[SCSI_SENSE_REPLY_SIZE];
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = SCSI_REQUEST_SENSE;
+	cmd[1] = lun << 5;
+	cmd[4] = SCSI_SENSE_REPLY_SIZE;
+	memset(sense, 0, SCSI_SENSE_REPLY_SIZE);
+	__cycle(dev, lun, sense, SCSI_SENSE_REPLY_SIZE, cmd, 6, 0, NULL, NULL);
+}
+
+static s32 __USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u8 *buffer)
 {
 	u8 status = 0;
 	s32 retval;
@@ -559,18 +710,18 @@ s32 USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u
 		0
 	};
 
-	if(lun >= dev->max_lun || dev->sector_size[lun] == 0)
-		return IPC_EINVAL;
-
 	retval = __cycle(dev, lun, buffer, n_sectors * dev->sector_size[lun], cmd, sizeof(cmd), 0, &status, NULL);
 	// CSW status 1 or 2: the command failed (__cycle() returns 0 on success)
 	if(retval >= 0 && status != 0)
+	{
+		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
+	}
 
 	return retval;
 }
 
-s32 USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, const u8 *buffer)
+static s32 __USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, const u8 *buffer)
 {
 	u8 status = 0;
 	s32 retval;
@@ -587,13 +738,59 @@ s32 USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, 
 		0
 	};
 
-	if(lun >= dev->max_lun || dev->sector_size[lun] == 0)
-		return IPC_EINVAL;
 	retval = __cycle(dev, lun, (u8 *)buffer, n_sectors * dev->sector_size[lun], cmd, sizeof(cmd), 1, &status, NULL);
 	// CSW status 1 or 2: the command failed (__cycle() returns 0 on success)
 	if(retval >= 0 && status != 0)
+	{
+		__usbstorage_sense(dev, lun);
 		retval = USBSTORAGE_ESTATUS;
+	}
 	return retval;
+}
+
+/*
+ * One sector read or write gives up on a failing drive after
+ * USBSTORAGE_SECTOR_TRIES attempts or USBSTORAGE_REQUEST_MS, whichever comes
+ * first. (The EHCI module's __USBStorage_Sectors() also waits, without limit,
+ * for a drive that is unplugged; here IOS's driver owns the port, and a
+ * request on a removed drive simply fails.)
+ */
+static s32 __USBStorage_Sectors(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u8 *buffer, u8 write)
+{
+	s32 retval;
+	int tries = 0;
+
+	if(lun >= dev->max_lun || dev->sector_size[lun] == 0)
+		return IPC_EINVAL;
+
+	__deadline_start();
+
+	for(;;)
+	{
+		if(write)
+			retval = __USBStorage_Write(dev, lun, sector, n_sectors, buffer);
+		else
+			retval = __USBStorage_Read(dev, lun, sector, n_sectors, buffer);
+
+		if(retval >= 0)
+			break;
+
+		if(++tries >= USBSTORAGE_SECTOR_TRIES || __deadline_passed())
+			break;
+	}
+
+	usbs_deadline_on = 0;
+	return retval;
+}
+
+s32 USBStorage_Read(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, u8 *buffer)
+{
+	return __USBStorage_Sectors(dev, lun, sector, n_sectors, buffer, 0);
+}
+
+s32 USBStorage_Write(usbstorage_handle *dev, u8 lun, u32 sector, u16 n_sectors, const u8 *buffer)
+{
+	return __USBStorage_Sectors(dev, lun, sector, n_sectors, (u8 *)buffer, 1);
 }
 
 s32 USBStorage_Suspend(usbstorage_handle *dev)

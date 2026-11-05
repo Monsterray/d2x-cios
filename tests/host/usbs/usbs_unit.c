@@ -33,8 +33,16 @@ s32 USB_DeviceRemovalNotify(s32 devId, usbcallback cb, void *userdata)
 s32 USB_SuspendResume(s32 devId, s32 resumed) { (void)devId; (void)resumed; return 0; }
 
 /* IOS's request cancels the endpoint's pending transfers. Whether IOS also
- * clears a halt there is not modelled: the drive's halts stay. */
-s32 USB_CancelEndpoint(s32 devId, u8 endpoint) { (void)devId; (void)endpoint; return 0; }
+ * clears a halt there is not known: glue_cancel_clears_halt picks. */
+extern int glue_cancel_clears_halt;
+unsigned int glue_timer(void);
+s32 USB_CancelEndpoint(s32 devId, u8 endpoint)
+{
+	(void)devId;
+	if (glue_cancel_clears_halt)
+		glue_ctrl(0x02, USB_REQ_CLEARFEATURE, 0, endpoint, 0, NULL);
+	return 0;
+}
 
 s32 USB_WriteBlkMsg(s32 devId, u8 ep, u16 len, void *data)
 {
@@ -105,6 +113,12 @@ void usbsglue_FreeDescriptors(usb_devdesc *udd)
 {
 	udd->configurations = NULL;
 }
+
+/* Host addresses are 64 bits wide, so the module's MEM2 test (address bit
+ * 0x10000000) cannot be true here. A test says which buffers count as aligned
+ * MEM2; the alignment rule is the module's. */
+extern int glue_mem2;
+#define usbs_buffer_direct(p) (glue_mem2 && (((unsigned long)(p)) & 0x1F) == 0)
 
 #include "usbstorage.c"
 

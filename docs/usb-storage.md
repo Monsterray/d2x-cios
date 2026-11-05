@@ -86,3 +86,62 @@ was mostly waiting for IOS.
   back. It overwrites sectors in the middle of the drive: **scratch drives
   only.** `--write-back` writes back what is there, which cannot catch a
   write that lands stale data.
+
+## USBS (base 58): the same rules on IOS's own USB driver
+
+The USBS module (`usb-module/usbstorage.c`) talks to Nintendo's USB 2.0
+driver through ioctls instead of driving the controller. It now follows the
+same rules as the EHCI module:
+
+- **Shared with EHCI:** a STALL in the data phase ends the data and the CSW
+  says why; a CSW that STALLs gets a clear-halt and one more read; CSW status
+  1 gets a REQUEST SENSE; a phase error or CSW status 2 gets reset recovery;
+  `USBSTORAGE_SECTOR_TRIES` (4) attempts per sector request; one
+  `USBSTORAGE_REQUEST_MS` (8 s) deadline per request.
+- **Ported, differently:** the buffer and length are restored before every
+  retry (the old `__cycle()` subtracted a negative return value from the
+  length and overran the buffer). The deadline reads the Hollywood timer
+  (`HW_TIMER`, 0x0D800010) directly, as `ehci-module` does; the STALL codes
+  are IOS's (-7003, -7004; -7005 is a NAK).
+- **Untested on a Wii:**
+  - the STALL codes (from WiiBrew; no real drive has been seen to return them);
+  - the timer register from this module (both modules are mload ELFs started
+    the same way, but only EHCI has run it);
+  - whether `USB_CancelEndpoint()`, which USBS uses as clear-halt, also clears
+    the halt on the drive;
+  - an IOS transfer that never returns: the deadline is checked between
+    transfers only, so a blocked ioctl blocks the request.
+
+### USBS transfer sizes
+
+Measured on the dev Wii (read-only `umsbench`, 8 GB drive): `/dev/usb/ven`
+costs about 1 ms per bulk transfer whatever its size. A 1-sector read is 3
+transfers (CBW, data, CSW) and took 2991 us. 64 sectors in 4 KB pieces is 10
+transfers and took 10002 us; in 16 KB pieces (build `+usbs16`) it took 4051 us,
+with no failures and no hang. The time is the transfer count, so the module
+sends fewer, bigger transfers:
+
+| Path | When | Piece | Option |
+|---|---|---|---|
+| Bounce | the caller's buffer is not 32-byte aligned, or not in MEM2 | 16384 bytes, through `dev->buffer` (from the 32 KB module heap) | `USBS_MAX_TRANSFER` |
+| Direct | aligned MEM2 buffer, handed to IOS as it is | up to 16384 bytes, cut to whole sectors of the drive: 16384 (32 sectors) for 512-byte sectors, 12288 for 4096 | `USBS_MAX_DIRECT` |
+
+The bulk `wLength` in `usb2.c` is a u16, so the module could send up to 65535
+bytes, and the first version of the direct path did (65024). **That hangs IOS on
+a real Wii**: umsbench's 64-sector read (32 KB, one direct transfer into an
+aligned MEM2 buffer) never returned from `/dev/usb/ven` on base 58 (IOS58
+v6175); the console froze and needed a power cycle. The 8 s deadline could not
+help, because the IPC call itself blocked. 16 KB transfers work. The per-transfer
+limit of IOS58's `/dev/usb/ven` looks like 16 KB, which matches libogc's
+`MAX_TRANSFER_SIZE_V5`. So `USBS_MAX_DIRECT` is 16384; it stays a build option,
+but never raise it without an attended bench run (a hang needs a power cycle).
+The data vector needs no extra cache work in the module: the callers (`wbfs.c`)
+do the invalidate and flush over the whole request. A 64-sector read into an
+aligned MEM2 buffer is 2 data transfers (4 transfers with CBW and CSW), a
+127-sector one 4 data transfers, a 200-sector one 7.
+
+The CBW, CSW, STALL, retry and deadline logic runs per piece as before; a short
+piece ends the data phase and the CSW reports the residue.
+
+The host tests are `tests/host/usbs` (the driver built against the simulated
+drive of `tests/host/ums`).
