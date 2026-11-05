@@ -78,6 +78,7 @@ debug fallback. Run `tools/build.sh test`, or `make -C tests/host`.
 2. On 2 or 3 cards (an SD 1.0/2.0 card, an SDHC high speed card, a card that is
    known slow), time sector reads and writes (64-sector and 1-sector, a 32 MB file)
    with the release cIOS, then with this one. Use files on the card nobody needs.
+   `tests/wii/sdbench` does the read side read only (32 MB in 64-sector calls, 2 MB in 1-sector calls, CRC32, the `0x20` state, then `0x21` and a second read to compare): `python tests/wii/sdbench.py -- --ios=249`.
 3. Read the state ioctl (`0x20`): expect bit 0 on for a high speed card, off for an old card.
 4. Forced fallback: send `0x21` during a copy and check the copy finishes with the
    same data (compare a hash) and the state reads 2.
