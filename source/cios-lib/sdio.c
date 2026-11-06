@@ -796,12 +796,17 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 		/* Send command */
 #ifdef D2X_DEBUG
 		ret = __sd0_fault(sector);
+		SD_EV(D2XDBG_E_STEP, 'f', ret, i);
 		if (ret >= 0)
 #endif
 		ret = __sdio_sendcommand(SDIO_CMD_READMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), i);
+#else
 		__sd0_deselect();
+#endif
 
 		if (ret >= 0) {
 			SD_EV(D2XDBG_E_END, 0, 0, i);
@@ -848,12 +853,17 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 		/* Send command */
 #ifdef D2X_DEBUG
 		ret = __sd0_fault(sector);
+		SD_EV(D2XDBG_E_STEP, 'f', ret, i);
 		if (ret >= 0)
 #endif
 		ret = __sdio_sendcommand(SDIO_CMD_WRITEMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, (char *)buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), i);
+#else
 		__sd0_deselect();
+#endif
 
 		if (ret >= 0) {
 			SD_EV(D2XDBG_E_END, 0, 0, i);

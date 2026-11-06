@@ -57,6 +57,7 @@
 #define D2XDBG_E_RESET		'Z'	/* recovery reset: x = kind (b BOT, p port, d device) */
 #define D2XDBG_E_TIMEOUT	'T'	/* a = what timed out */
 #define D2XDBG_E_ERROR		'X'	/* an error outside a request's result: a = code */
+#define D2XDBG_E_STEP		's'	/* a step inside a request: x = which ('f' fault point passed, 'd' deselected), a = its result, b = attempt */
 #define D2XDBG_E_SDHS		'H'	/* SD high-speed state: a = sdio_hs state word */
 #define D2XDBG_E_FAULT		'F'	/* MLOAD: an injected fault fired: x = point, a = action, b = fault slot */
 #define D2XDBG_E_BOOT		'S'	/* MLOAD: area started: a = boots, b = 1 if last words were kept */
