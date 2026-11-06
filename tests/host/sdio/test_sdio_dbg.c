@@ -167,10 +167,10 @@ static void test_error_fault_once_retries(void)
 	      m->errors);
 	CHECK(dbg_host_count(SD, D2XDBG_E_RETRY) == 1 && dbg_host_count(SD, D2XDBG_E_END) == 1, "R and E traced");
 	CHECK(m->faults == 1 && dbg_host_count(SD, D2XDBG_E_FAULT) == 1, "the fault counted and traced");
-	CHECK(n_rd == 1, "the faulted attempt sent no command: %u", n_rd);
+	CHECK(n_rd == 2, "the faulted attempt sent its command too (the fault marks it failed): %u", n_rd);
 	/* a failed attempt always drops to default speed (sdio.c), debug or not */
 	CHECK(DBG_HEAD->sd_hs == 2 && sdio_HighSpeedState() == 2, "fallback after the failed attempt: %u", DBG_HEAD->sd_hs);
-	CHECK(hs_xfers == 0, "the retry ran at default speed");
+	CHECK(hs_xfers == 1, "the faulted attempt at high speed, the retry at default speed: %d", hs_xfers);
 }
 
 static void test_sdlow_fault_falls_back_and_reads(void)
@@ -183,7 +183,7 @@ static void test_sdlow_fault_falls_back_and_reads(void)
 	CHECK(sdio_ReadSectors(4, 2, sector_buf), "read failed");
 	CHECK(DBG_HEAD->sd_hs == 2 && sdio_HighSpeedState() == 2, "sd_hs shows the fallback: %u", DBG_HEAD->sd_hs);
 	CHECK(dbg_host_count(SD, D2XDBG_E_SDHS) == 2, "the startup state and the fallback traced");
-	CHECK(n_rd == 1 && last_arg == 4 && hs_xfers == 0, "the transfer went on at default speed: %u %u %d", n_rd,
+	CHECK(n_rd == 1 && last_arg == 4 && hs_xfers == 1, "the transfer ran at high speed, then fell back: %u %u %d", n_rd,
 	      (unsigned)last_arg, hs_xfers);
 	CHECK(m->retries == 0 && m->errors == 0 && m->requests == 1, "no retry: it is no failure: %u/%u/%u", m->requests,
 	      m->retries, m->errors);
@@ -208,7 +208,7 @@ static void test_error_fault_every_time_fails(void)
 	start(1);
 	dbg_host_fault(0, SD, D2XDBG_P_REQ, 1000000, 0, D2XDBG_F_ERROR << 24);
 	CHECK(!sdio_ReadSectors(3, 1, sector_buf), "a read that always fails succeeded");
-	CHECK(n_rd == 0, "no command got through");
+	CHECK(n_rd == 10, "each attempt sent its command: %u", n_rd);
 	CHECK(m->requests == 1 && m->errors == 1 && m->retries == 10, "counters %u/%u/%u (want 1/1/10)", m->requests,
 	      m->errors, m->retries);
 	CHECK(dbg_host_count(SD, D2XDBG_E_END) == 1 && m->cur_start == 0, "E traced, request closed");
@@ -225,7 +225,7 @@ static void test_error_fault_nine_times_succeeds(void)
 	start(1);
 	dbg_host_fault(0, SD, D2XDBG_P_REQ, 9, 0, D2XDBG_F_ERROR << 24);
 	CHECK(sdio_WriteSectors(3, 1, sector_buf), "the tenth attempt should succeed");
-	CHECK(m->retries == 9 && m->errors == 0 && n_wr == 1, "counters %u/%u, %u writes", m->retries, m->errors, n_wr);
+	CHECK(m->retries == 9 && m->errors == 0 && n_wr == 10, "counters %u/%u, %u writes", m->retries, m->errors, n_wr);
 }
 
 static void test_real_failure_is_counted_like_a_fault(void)
