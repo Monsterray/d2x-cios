@@ -21,14 +21,14 @@ Defined in [source/cios-lib/d2xdbg.h](../source/cios-lib/d2xdbg.h), which PowerP
 | Offset | What |
 |---|---|
 | `0x000` | Header: magic `D2XD`, layout 1, size, IOS starts, build identity (version string and commit), build flags, SD high-speed state, records written |
-| `0x040` | Watchdog: timeout, the last check-in seen and when, when it fired, its thread's checks and priority |
+| `0x040` | Watchdog: timeout, the last check-in seen and when, when it fired, its thread's checks and priority, and (`0x058`) when its reset did not take |
 | `0x060` | `wd_kick`: the PowerPC adds one to check in. It is alone in its 32-byte cache line, which the ARM only reads, so an ARM write-back never undoes a check-in |
 | `0x080` | 8 fault slots |
 | `0x100` | Counters for each module (EHCI 1, USBS 2, SD 3, FAT 4, DIP 5, MLOAD 6): requests, errors, retries, resets, timeouts, faults fired, the longest request (length in ticks, command, argument) and the open request |
 | `0x1000` | Trace ring: 256 records of 16 bytes: Hollywood ticks (about 1898 per ms), `module << 24 \| event << 16 \| x`, `a`, `b` |
 | `0x2000` | Last words: the first half as the previous IOS run left it |
 
-**Last words.** When the debug MLOAD starts and finds a valid area, it copies it to `0x2000` before it starts afresh. A request still open there (`cur_start` set) shows where IOS stopped. That happens after every IOS reload, and after a reset if MEM2 kept its contents. (HBC's kept log at `0x91800100` survived resets on the bench Wii, so MEM2 does keep them; whether this address survives the IOSes that run in between is checked on the Wii.) Any later load of a d2x debug IOS replaces the last words, so read them first.
+**Last words.** When the debug MLOAD starts and finds a valid area, it copies it to `0x2000` before it starts afresh. A request still open there (`cur_start` set) shows where IOS stopped. That happens after every IOS reload, and after a reset if MEM2 kept its contents. (HBC's kept log at `0x91800100` survived resets on the bench Wii, so MEM2 does keep them; whether this address survives the IOSes that run in between is checked on the Wii.) A power-off clears it: after holding the power button there are no last words (devwii, 2026-11-05). Any later load of a d2x debug IOS replaces the last words, so read them first.
 
 ### Events
 
@@ -39,7 +39,7 @@ Defined in [source/cios-lib/d2xdbg.h](../source/cios-lib/d2xdbg.h), which PowerP
 | `u` | EHCI | A Bulk-Only step, the letters of the EHCI event log (`x` = letter << 8 \| endpoint) |
 | `H` | SD | High-speed state (`a`: bit 0 on, bit 1 fell back) |
 | `D d O o m g r I i` | DIP | The DIP trace (`m` = its `R`, `g` = its `Z`) |
-| `S` `A` `W` `G` `F` | MLOAD | Area started, watchdog armed, watchdog fired, hang requested, fault fired |
+| `S` `A` `W` `N` `G` `F` | MLOAD | Area started, watchdog armed, watchdog fired, its reset did not take, hang requested, fault fired |
 
 ## `/dev/d2xdbg`
 
@@ -61,7 +61,8 @@ An MLOAD thread (priority `0x7F` when IOS allows it, else MLOAD's own, `0x79` on
 
 1. writes a `W` record;
 2. writes Priiloader's magic word `Abra` (`0x41627261`) to physical `0x017FEFF0`, so Priiloader autoboots whatever its boot state says;
-3. clears `HW_RESETS` bit 0, a system reset that needs nothing from IOS.
+3. clears `HW_RESETS` bit 0, a system reset that needs nothing from IOS;
+4. if the console is still running 250 ms later, puts `HW_RESETS` and the magic word back, writes an `N` record and `wd_noreset`, turns itself off and returns. IOS goes on, so the PowerPC can show what happened. (Before 4481038 it spun there for good with interrupts off, which stops every IOS thread and the RESET button.)
 
 It is off after every IOS load and after the reset, and only a test app arms it. So it can't loop, and the magic word is never left behind without a reset. It can't help when the hang stops every thread at or above its priority, or turns interrupts off: nothing in IOS runs then. On a console with BootMii as boot2, the reset may stop at BootMii's menu. See REVIEW.md for what was shown on the bench.
 
@@ -96,6 +97,7 @@ The host tests (`tests/host/dbg`, `ums/test_ums_dbg`, and the USBS, SD and FAT `
 - reload to the cIOS and print its identity;
 - print the last words and this run's area;
 - arm the watchdog with `--wd=S`, checking in as they work;
+- send every workload call asynchronously, with a 15 s limit. A call that does not come back is the result: d2xdiag shows the debug area as it stands, read from MEM2 without asking IOS, then stops checking in and shows what the watchdog does;
 - run scenarios (`--scenario=a,b,...`). Each sets a fault, does a short read-only workload, and checks that the fault fired and the module recovered:
   - `usb-csw-stall`, `usb-csw-lost`, `usb-data-stall`, `usb-cmd-timeout`, `usb-delay`;
   - `sd-error`, `sd-low`, `sd-delay`;
