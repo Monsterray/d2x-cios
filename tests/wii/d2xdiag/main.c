@@ -192,7 +192,8 @@ static void print_head(const char *title, const u8 *area, u32 records)
 	say("%s: build \"%.31s\" flags %02x, IOS start %u, %u records\n", title, h->build, h->flags,
 	    h->boots, h->trace_head);
 	say("  watchdog: %u ms%s, %u checks (thread prio %u), fired %s\n", h->wd_timeout_ms,
-	    h->wd_timeout_ms ? " armed" : " (off)", h->wd_beats, h->wd_prio, h->wd_fired ? "YES" : "no");
+	    h->wd_timeout_ms ? " armed" : " (off)", h->wd_beats, h->wd_prio,
+	    !h->wd_fired ? "no" : h->wd_noreset ? "YES, but the reset did not take" : "YES");
 	if (h->sd_hs)
 		say("  SD high speed: %s%s\n", (h->sd_hs & 1) ? "on" : "off", (h->sd_hs & 2) ? ", fell back" : "");
 	for (u32 m = 1; m < D2XDBG_MODS; m++) {
@@ -218,6 +219,45 @@ static void print_head(const char *title, const u8 *area, u32 records)
 	}
 }
 
+/* ---- IOS calls with a time limit ---- */
+
+/* A module that never answers must not leave this program waiting too:
+   every workload call is sent asynchronously and waited for at most
+   CALL_LIMIT_S, checking in meanwhile. A call still out after that is the
+   finding: stuck() shows the area live, then the watchdog's answer. */
+#define CALL_LIMIT_S        15
+#define CALL_STUCK          ((s32) 0x80000001)
+
+static volatile int call_done;
+static volatile s32 call_ret;
+static const char *call_what;
+
+static s32 call_cb(s32 result, void *usrdata)
+{
+	(void) usrdata;
+	call_ret = result;
+	call_done = 1;
+	return 0;
+}
+
+static s32 call_wait(s32 queued)
+{
+	u64 start = gettime();
+
+	if (queued < 0)
+		return queued;
+	while (!call_done) {
+		if (ticks_to_secs(diff_ticks(start, gettime())) >= CALL_LIMIT_S)
+			return CALL_STUCK;
+		check_in();
+		usleep(1000);
+	}
+	return call_ret;
+}
+
+/* TIMED("what", IOS_xxxAsync(..., call_cb, NULL)) */
+#define TIMED(what, call)   (call_done = 0, call_what = (what), call_wait(call))
+
 /* ---- workloads: read only ---- */
 
 static s32 usb_fd = -1, sd_fd = -1;
@@ -228,46 +268,58 @@ static int usb_open(void)
 	u32 ss = 0;
 	if (usb_fd >= 0)
 		return 0;
-	usb_fd = IOS_Open(dev_usb2, 0);
-	if (usb_fd < 0)
-		return usb_fd;
-	IOS_IoctlvFormat(heap, usb_fd, USB_IOCTL_SET_PORT, "i:", 0);
-	s32 r = IOS_IoctlvFormat(heap, usb_fd, USB_IOCTL_UMS_INIT, ":");
-	s32 n = IOS_IoctlvFormat(heap, usb_fd, USB_IOCTL_UMS_GET_CAPACITY, ":i", &ss);
+	s32 fd = TIMED("open /dev/usb2", IOS_OpenAsync(dev_usb2, 0, call_cb, NULL));
+	if (fd < 0)
+		return fd;
+	usb_fd = fd;
+	TIMED("USB set port", IOS_IoctlvFormatAsync(heap, usb_fd, USB_IOCTL_SET_PORT, call_cb, NULL, "i:", 0));
+	s32 r = TIMED("USB init", IOS_IoctlvFormatAsync(heap, usb_fd, USB_IOCTL_UMS_INIT, call_cb, NULL, ":"));
+	if (r == CALL_STUCK)
+		return r;
+	s32 n = TIMED("USB capacity", IOS_IoctlvFormatAsync(heap, usb_fd, USB_IOCTL_UMS_GET_CAPACITY, call_cb, NULL,
+							     ":i", &ss));
+	if (n == CALL_STUCK)
+		return n;
 	say("d2xdiag: USB init %d, %d sectors of %u bytes\n", r, n, ss);
 	return (n > 0 && ss == 512) ? 0 : -1;
 }
 
 static s32 usb_read(u32 lba, u32 count)
 {
-	return IOS_IoctlvFormat(heap, usb_fd, USB_IOCTL_UMS_READ_SECTORS, "ii:d", lba, count, buf, count * 512);
+	return TIMED("USB read", IOS_IoctlvFormatAsync(heap, usb_fd, USB_IOCTL_UMS_READ_SECTORS, call_cb, NULL, "ii:d",
+						       lba, count, buf, count * 512));
 }
 
 static int sd_open(void)
 {
 	if (sd_fd >= 0)
 		return 0;
-	sd_fd = IOS_Open(dev_sdhc, 0);
-	if (sd_fd < 0)
-		return sd_fd;
-	return IOS_IoctlvFormat(heap, sd_fd, SDHC_IOCTL_INIT, ":");
+	s32 fd = TIMED("open /dev/sdio/sdhc", IOS_OpenAsync(dev_sdhc, 0, call_cb, NULL));
+	if (fd < 0)
+		return fd;
+	sd_fd = fd;
+	s32 r = TIMED("SD init", IOS_IoctlvFormatAsync(heap, sd_fd, SDHC_IOCTL_INIT, call_cb, NULL, ":"));
+	return r == CALL_STUCK ? r : r ? -1 : 0;
 }
 
 static s32 sd_read(u32 lba, u32 count)
 {
-	return IOS_IoctlvFormat(heap, sd_fd, SDHC_IOCTL_READ, "ii:d", lba, count, buf, count * 512);
+	return TIMED("SD read", IOS_IoctlvFormatAsync(heap, sd_fd, SDHC_IOCTL_READ, call_cb, NULL, "ii:d", lba, count,
+						      buf, count * 512));
 }
 
 static s32 di_cover(void)
 {
 	static u32 in[8] ATTRIBUTE_ALIGN(32), out[8] ATTRIBUTE_ALIGN(32);
-	s32 fd = IOS_Open(dev_di, 0), r;
+	s32 fd = TIMED("open /dev/di", IOS_OpenAsync(dev_di, 0, call_cb, NULL)), r;
 	if (fd < 0)
 		return fd;
 	memset(in, 0, sizeof(in));
 	in[0] = DI_COVER_STATUS << 24;
-	r = IOS_Ioctl(fd, DI_COVER_STATUS, in, sizeof(in), out, sizeof(out));
-	IOS_Close(fd);
+	r = TIMED("DI cover status", IOS_IoctlAsync(fd, DI_COVER_STATUS, in, sizeof(in), out, sizeof(out), call_cb,
+						    NULL));
+	if (r != CALL_STUCK)
+		IOS_Close(fd);
 	return r;
 }
 
@@ -345,6 +397,12 @@ static void watch_until_reset(u32 wd_s)
 		       beats == last_beats ? " (STOPPED)" : "", head, mod_name(w >> 24), (char) ((w >> 16) & 0xFF), r[2]);
 		same = beats == last_beats ? same + 1 : 0;
 		last_beats = beats;
+		if (live[0x58 / 4]) {
+			say("\nd2xdiag: the watchdog fired after %u s, but its reset did not take: it put everything back, "
+			    "turned itself off, and IOS goes on\n", s);
+			say("RESULT fail the watchdog's reset (HW_RESETS bit 0) did not reset the console\n");
+			return;
+		}
 		if (s > wd_s + 30) {
 			say("\nd2xdiag: no reset %u s after the watchdog's %u s; its thread %s\n", s, wd_s,
 			    same > 4 ? "stopped running" : "runs, but did not fire");
@@ -355,16 +413,46 @@ static void watch_until_reset(u32 wd_s)
 	}
 }
 
+static void copy_live(void)
+{
+	for (u32 i = 0; i < D2XDBG_HALF / 4; i++)
+		((u32 *) snap)[i] = live[i];
+}
+
+/* An IOS call that never came back: show where, then what the watchdog does */
+static int stuck(const struct scenario *s, u32 wd_s)
+{
+	say("d2xdiag: %s: \"%s\" did not return in %u s. The debug area as it stands:\n", s->name, call_what,
+	    CALL_LIMIT_S);
+	copy_live();
+	print_head("  stuck", snap, 24);
+	if (wd_s)
+		say("d2xdiag: no more check-ins: the watchdog (%u s) should reset the console\n", wd_s);
+	else
+		say("d2xdiag: the watchdog is off (no --wd): watching for 30 s\n");
+	watch_until_reset(wd_s);
+	copy_live();
+	print_head("  after", snap, 8);
+	say("RESULT-SCENARIO %s STUCK in %s\n", s->name, call_what);
+	return 1;
+}
+
 static int run_scenario(const struct scenario *s, u32 wd_s)
 {
+	s32 r;
+
 	u32 slot = 0;
 
 	say("d2xdiag: scenario %s: %s\n", s->name, s->what);
-	if (s->work == W_USB && usb_open() < 0) {
+	if (s->work == W_USB && (r = usb_open()) < 0) {
+		if (r == CALL_STUCK)
+			return stuck(s, wd_s);
 		say("RESULT-SCENARIO %s skip (no USB drive)\n", s->name);
 		return 0;
 	}
-	if (s->work == W_SD && sd_open() < 0) {
+	if (s->work == W_SD && (r = sd_open()) < 0) {
+		if (r == CALL_STUCK)
+			return stuck(s, wd_s);
 		say("RESULT-SCENARIO %s skip (no SD card through /dev/sdio/sdhc)\n", s->name);
 		return 0;
 	}
@@ -396,8 +484,12 @@ static int run_scenario(const struct scenario *s, u32 wd_s)
 	u64 t = gettime();
 	s32 r1 = workload(s, 0);
 	u32 us1 = ticks_to_microsecs(diff_ticks(t, gettime()));
+	if (r1 == CALL_STUCK)
+		return stuck(s, wd_s);
 	check_in();
 	s32 r2 = workload(s, 1);
+	if (r2 == CALL_STUCK)
+		return stuck(s, wd_s);
 	check_in();
 	snapshot();
 	u32 fired = faults_of(s);

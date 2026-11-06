@@ -312,6 +312,23 @@ static void test_watchdog_arm_clamped(void)
 	CHECK(H->wd_timeout_ms == D2XDBG_WD_MAX_MS, "clamped to %u", D2XDBG_WD_MAX_MS);
 }
 
+/* A reset that did not take: recorded, and the watchdog is off so it
+   cannot fire again on every check */
+static void test_watchdog_noreset(void)
+{
+	u32 limit = d2xdbg_ms_to_ticks(1000);
+
+	fresh();
+	d2xdbg_wd_arm(area, 0, 1000);
+	CHECK(d2xdbg_wd_check(area, limit) == 1, "fires");
+	d2xdbg_wd_noreset(area, limit + 500);
+	CHECK(H->wd_noreset == limit + 500, "noreset time");
+	CHECK(H->wd_fired == limit, "fired time kept");
+	CHECK(H->wd_timeout_ms == 0, "off again");
+	CHECK(rec(H->trace_head - 1)[1] == word(D2XDBG_M_MLOAD, D2XDBG_E_NORESET, 0), "N record");
+	CHECK(d2xdbg_wd_check(area, 10 * limit) == 0, "does not fire again");
+}
+
 static const struct hc_test tests[] = {
 	{ "layout", test_layout, false },
 	{ "start_fresh", test_start_fresh, false },
@@ -334,6 +351,7 @@ static const struct hc_test tests[] = {
 	{ "watchdog_across_timer_wrap", test_watchdog_across_timer_wrap, false },
 	{ "watchdog_disarm", test_watchdog_disarm, false },
 	{ "watchdog_arm_clamped", test_watchdog_arm_clamped, false },
+	{ "watchdog_noreset", test_watchdog_noreset, false },
 };
 
 int main(int argc, char **argv)

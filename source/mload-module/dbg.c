@@ -73,8 +73,13 @@ static void __Dbg_MapArea(void)
 	MMU_InvalidateTLB();
 }
 
+/* Returns only when the reset did not take: then everything is put back and
+   the watchdog is off, so IOS goes on (IRQs are off here) and the PowerPC
+   can show what happened, instead of a console stuck for good. */
 static void __Dbg_Reset(void)
 {
+	u32 abra = *(vu32 *)D2XDBG_ABRA_PHYS, start;
+
 	/* Priiloader autoboots whatever its boot state says */
 	*(vu32 *)D2XDBG_ABRA_PHYS = D2XDBG_ABRA;
 	DCFlushRange((void *)(D2XDBG_ABRA_PHYS & ~31), 32);
@@ -82,8 +87,15 @@ static void __Dbg_Reset(void)
 	/* HW_RESETS bit 0 low: system reset, no IOS needed */
 	*(vu32 *)HW_RESETS &= ~1;
 
-	for (;;)
+	start = __Dbg_Now();
+	while (__Dbg_Now() - start < d2xdbg_ms_to_ticks(250))
 		;
+
+	*(vu32 *)HW_RESETS |= 1;
+	*(vu32 *)D2XDBG_ABRA_PHYS = abra;
+	DCFlushRange((void *)(D2XDBG_ABRA_PHYS & ~31), 32);
+	d2xdbg_wd_noreset(AREA, __Dbg_Now());
+	__Dbg_Out();
 }
 
 static s32 __Dbg_Ctrl(u32 op, u32 *in, u32 *out, u32 outlen)

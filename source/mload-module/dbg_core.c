@@ -196,3 +196,14 @@ s32 d2xdbg_wd_check(u8 *area, u32 now)
 	__record(area, now, (D2XDBG_M_MLOAD << 24) | (D2XDBG_E_WDFIRE << 16), __ticks_to_ms(quiet), h->wd_timeout_ms);
 	return 1;
 }
+
+/* The reset after a fire did not take: say so and turn the watchdog off,
+   so IOS goes on and the PowerPC can show it. */
+void d2xdbg_wd_noreset(u8 *area, u32 now)
+{
+	d2xdbg_head *h = HEAD(area);
+
+	h->wd_noreset = now ? now : 1;
+	h->wd_timeout_ms = 0;
+	__record(area, now, (D2XDBG_M_MLOAD << 24) | (D2XDBG_E_NORESET << 16), 0, 0);
+}

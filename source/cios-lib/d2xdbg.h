@@ -62,6 +62,7 @@
 #define D2XDBG_E_BOOT		'S'	/* MLOAD: area started: a = boots, b = 1 if last words were kept */
 #define D2XDBG_E_WDARM		'A'	/* MLOAD: watchdog armed: a = timeout ms (0 = off) */
 #define D2XDBG_E_WDFIRE		'W'	/* MLOAD: watchdog resets the console: a = ms since the last check-in */
+#define D2XDBG_E_NORESET	'N'	/* MLOAD: the watchdog's reset did not take; it is off again */
 #define D2XDBG_E_HANG		'G'	/* MLOAD: a hang requested through the device: a = mode */
 
 /* Fault points (SWI 65): only a fault that fires is traced. x = point */
@@ -154,7 +155,8 @@ typedef struct {
 	u32 wd_fired;		/* 0x04C timer when the watchdog reset the console; 0 = never */
 	u32 wd_beats;		/* 0x050 watchdog thread checks (it is alive) */
 	u32 wd_prio;		/* 0x054 the watchdog thread's priority (0 = not running) */
-	u32 resv[2];		/* 0x058 */
+	u32 wd_noreset;		/* 0x058 timer when the watchdog's reset did not take; 0 = never */
+	u32 resv;		/* 0x05C */
 	u32 wd_kick;		/* 0x060 the PowerPC adds one to check in. Alone in its
 				   32-byte cache line: the ARM only reads it, so its
 				   write-backs never undo a check-in */
@@ -170,6 +172,7 @@ u32  d2xdbg_point(u8 *area, u32 now, u32 mod, u32 point, u32 a);
 void d2xdbg_clear(u8 *area);
 void d2xdbg_wd_arm(u8 *area, u32 now, u32 ms);
 s32  d2xdbg_wd_check(u8 *area, u32 now);
+void d2xdbg_wd_noreset(u8 *area, u32 now);
 s32  d2xdbg_fault_set(u8 *area, const u32 *in);
 u32  d2xdbg_ms_to_ticks(u32 ms);
 
