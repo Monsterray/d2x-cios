@@ -75,18 +75,26 @@ static void __Dbg_Out(void)
    access is a translation fault that MEM2_Prot() and Perms_Write() cannot
    help. Map its pages ourselves: small pages, read/write for all, cached,
    in the coarse table IOS already has for that megabyte. */
-static void __Dbg_MapArea(void)
+static u32 __Dbg_MapArea(void)
 {
-	u32 l1, *l2, i;
+	u32 l1, i, fixed = 0;
+	vu32 *l2;
 
 	l1 = *(vu32 *)((MMU_GetTTB() & ~0x3FFF) + ((D2XDBG_PHYS >> 20) << 2));
 	if ((l1 & 3) != 1)		/* not a coarse page table */
-		return;
-	l2 = (u32 *)((l1 & ~0x3FF) + (((D2XDBG_PHYS >> 12) & 0xFF) << 2));
-	for (i = 0; i < D2XDBG_SIZE / 0x1000; i++)
-		l2[i] = (D2XDBG_PHYS + i * 0x1000) | 0xFFE;
-	__Dbg_Clean(l2, D2XDBG_SIZE / 0x1000 * 4);
-	MMU_InvalidateTLB();
+		return 0;
+	l2 = (vu32 *)((l1 & ~0x3FF) + (((D2XDBG_PHYS >> 12) & 0xFF) << 2));
+	for (i = 0; i < D2XDBG_SIZE / 0x1000; i++) {
+		if (l2[i] != ((D2XDBG_PHYS + i * 0x1000) | 0xFFE)) {
+			l2[i] = (D2XDBG_PHYS + i * 0x1000) | 0xFFE;
+			fixed++;
+		}
+	}
+	if (fixed) {
+		__Dbg_Clean((void *)l2, D2XDBG_SIZE / 0x1000 * 4);
+		MMU_InvalidateTLB();
+	}
+	return fixed;
 }
 
 /* Returns only when the reset did not take: then everything is put back and
@@ -165,6 +173,16 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 	s32 ret = 0;
 
 	Perms_Write(0xFFFFFFFF);
+
+	/* IOS may rebuild its page table and drop our entries: put them back
+	   before touching the area, and count it (a fault here, in SVC mode
+	   with IRQs off, would stop the whole console) */
+	if (cmd != D2XDBG_SWI_CTRL || (arg1 & 0xFFFF) != 0xFF) {
+		if (__Dbg_MapArea()) {
+			HEAD->map_fixes++;
+			__Dbg_Clean(&HEAD->map_fixes, 4);
+		}
+	}
 
 	switch (cmd) {
 	case D2XDBG_SWI_EVENT:

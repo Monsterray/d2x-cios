@@ -194,6 +194,8 @@ static void print_head(const char *title, const u8 *area, u32 records)
 	say("  watchdog: %u ms%s, %u checks (thread prio %u), fired %s\n", h->wd_timeout_ms,
 	    h->wd_timeout_ms ? " armed" : " (off)", h->wd_beats, h->wd_prio,
 	    !h->wd_fired ? "no" : h->wd_noreset ? "YES, but the reset did not take" : "YES");
+	if (h->map_fixes)
+		say("  page entries for the area were gone and put back %u times\n", h->map_fixes);
 	if (h->sd_hs)
 		say("  SD high speed: %s%s\n", (h->sd_hs & 1) ? "on" : "off", (h->sd_hs & 2) ? ", fell back" : "");
 	for (u32 m = 1; m < D2XDBG_MODS; m++) {
@@ -393,8 +395,9 @@ static void watch_until_reset(u32 wd_s)
 		const volatile u32 *r = live + D2XDBG_RING_OFF / 4 + ((head - 1) & (D2XDBG_RECORDS - 1)) * 4;
 		u32 w = r[1];
 
-		printf("\rd2xdiag: %3u s, watchdog checks %u%s, %u records, last %s %c a %08x  ", s, beats,
-		       beats == last_beats ? " (STOPPED)" : "", head, mod_name(w >> 24), (char) ((w >> 16) & 0xFF), r[2]);
+		printf("\rd2xdiag: %3u s, watchdog checks %u%s, %u records, last %s %c a %08x, map fixes %u  ", s, beats,
+		       beats == last_beats ? " (STOPPED)" : "", head, mod_name(w >> 24), (char) ((w >> 16) & 0xFF), r[2],
+		       live[0x5C / 4]);
 		same = beats == last_beats ? same + 1 : 0;
 		last_beats = beats;
 		if (live[0x58 / 4]) {

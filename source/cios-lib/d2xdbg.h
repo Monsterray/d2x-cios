@@ -157,7 +157,7 @@ typedef struct {
 	u32 wd_beats;		/* 0x050 watchdog thread checks (it is alive) */
 	u32 wd_prio;		/* 0x054 the watchdog thread's priority (0 = not running) */
 	u32 wd_noreset;		/* 0x058 timer when the watchdog's reset did not take; 0 = never */
-	u32 resv;		/* 0x05C */
+	u32 map_fixes;		/* 0x05C times an SWI found the area's page entries gone and put them back */
 	u32 wd_kick;		/* 0x060 the PowerPC adds one to check in. Alone in its
 				   32-byte cache line: the ARM only reads it, so its
 				   write-backs never undo a check-in */
