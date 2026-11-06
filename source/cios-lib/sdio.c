@@ -434,9 +434,22 @@ static void __sd0_hs_fallback(void)
 	__sd0_hs_on = 0;
 	__sd0_hs_dead = 1;
 
+#ifdef D2X_DEBUG
+	{
+		s32 r;
+
+		SD_EV(D2XDBG_E_STEP, 'g', 0, 0);
+		r = __sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc);
+		SD_EV(D2XDBG_E_STEP, 'h', r, hc);
+		if (r >= 0)
+			SD_EV(D2XDBG_E_STEP, 'c', __sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc)), 0);
+		SD_EV(D2XDBG_E_STEP, 'k', __sdio_setclock(1), 0);
+	}
+#else
 	if (__sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc) >= 0)
 		__sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc));
 	__sdio_setclock(1);
+#endif
 	SD_EV(D2XDBG_E_SDHS, 0, 2, 0);
 }
 
@@ -785,6 +798,7 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 	/* Read loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
+		SD_EV(D2XDBG_E_STEP, 's', 0, i);
 		ret = __sd0_select();
 		if (ret < 0) {
 #ifdef SDIO_HIGH_SPEED
@@ -797,7 +811,11 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 		ret = __sdio_sendcommand(SDIO_CMD_READMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), ret);
+#else
 		__sd0_deselect();
+#endif
 
 #ifdef D2X_DEBUG
 		/* An injected fault marks a finished transfer failed, so the
@@ -841,6 +859,7 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 	/* Write loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
+		SD_EV(D2XDBG_E_STEP, 's', 0, i);
 		ret = __sd0_select();
 		if (ret < 0) {
 #ifdef SDIO_HIGH_SPEED
@@ -853,7 +872,11 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 		ret = __sdio_sendcommand(SDIO_CMD_WRITEMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, (char *)buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), ret);
+#else
 		__sd0_deselect();
+#endif
 
 #ifdef D2X_DEBUG
 		/* An injected fault marks a finished transfer failed, so the

@@ -106,6 +106,15 @@ MMU_InvalidateTLB:
 	mcr	p15, 0, r0, c8, c7, 0
 	bx	lr
 
+	.section .text.DCDrainWriteBuffer,"ax",%progbits
+	.balign 4
+	.code 32
+	.global DCDrainWriteBuffer
+DCDrainWriteBuffer:
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+
 
 /* MEM2 routines */
 	.section .text.MEM2_Prot,"ax",%progbits

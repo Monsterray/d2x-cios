@@ -36,6 +36,7 @@
 #define D2XDBG_HALF		0x2000		/* current run; then the previous */
 #define D2XDBG_MAGIC		0x44325844	/* 'D2XD' */
 #define D2XDBG_LAYOUT		1
+#define D2XDBG_INSVC_OFF	0x280		/* 4 words: 'SV' << 16 | cmd, arg1..3 while MLOAD's debug SWI runs; 0 after */
 #define D2XDBG_RING_OFF		0x1000
 #define D2XDBG_RECORDS		256		/* a power of two: no divide in the index */
 

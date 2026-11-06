@@ -46,6 +46,7 @@ static void __Dbg_Clean(const void *p, u32 len)
 	u32 a = (u32)p & ~31;
 
 	DCFlushRange((void *)a, ((u32)p + len - a + 31) >> 5);
+	DCDrainWriteBuffer();	/* in memory now, not queued behind a stalled access */
 }
 
 static void __Dbg_Discard(const void *p, u32 len)
@@ -184,6 +185,17 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 		}
 	}
 
+	/* Say we are in here, so a stop inside the handler shows */
+	if (cmd != D2XDBG_SWI_CTRL || (arg1 & 0xFFFF) != 0xFF) {
+		u32 *sv = (u32 *)(AREA + D2XDBG_INSVC_OFF);
+
+		sv[0] = 0x53560000 | cmd;
+		sv[1] = arg1;
+		sv[2] = arg2;
+		sv[3] = arg3;
+		__Dbg_Clean(sv, 16);
+	}
+
 	switch (cmd) {
 	case D2XDBG_SWI_EVENT:
 		ret = d2xdbg_event(AREA, __Dbg_Now(), arg1, arg2, arg3);
@@ -225,6 +237,9 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 		}
 		break;
 	}
+
+	*(u32 *)(AREA + D2XDBG_INSVC_OFF) = 0;
+	__Dbg_Clean(AREA + D2XDBG_INSVC_OFF, 4);
 
 	Perms_Write(perms);
 	return ret;
