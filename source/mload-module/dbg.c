@@ -35,6 +35,8 @@ static const u32 buildFlags = D2XDBG_FL_DEBUG | D2XDBG_FL_DIP_TRACE
 #endif
 	;
 
+static u32 areaReady;
+
 static u32 wdStack[0x100] ATTRIBUTE_ALIGN(32);	/* 1 KB */
 static u32 wdQueueBuf[4] ATTRIBUTE_ALIGN(32);
 
@@ -167,6 +169,23 @@ static s32 __Dbg_Ctrl(u32 op, u32 *in, u32 *out, u32 outlen)
 	return 0;
 }
 
+/* Every SWI, before Swi_Handler picks a handler: what it was asked */
+void Dbg_SwiEntry(const u8 *addr, u32 arg0, u32 arg1)
+{
+	u32 perms, *en = (u32 *)(AREA + D2XDBG_ENTRY_OFF);
+
+	if (!areaReady)
+		return;
+	perms = Perms_Read();
+	Perms_Write(0xFFFFFFFF);
+	en[0] = 0x454E0000 | addr[0];
+	en[1] = (u32)addr;
+	en[2] = arg0;
+	en[3] = arg1;
+	__Dbg_Clean(en, 16);
+	Perms_Write(perms);
+}
+
 /* SWI 0xcc, commands 64 to 67, in SVC mode with IRQs off: atomic. */
 s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 {
@@ -224,6 +243,7 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 			__Dbg_MapArea();
 			__Dbg_Discard(AREA, D2XDBG_SIZE);
 			d2xdbg_start(AREA, D2X_IDENT, buildFlags, __Dbg_Now());
+			areaReady = 1;
 			__Dbg_Clean(AREA, D2XDBG_SIZE);
 			break;
 

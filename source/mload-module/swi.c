@@ -80,6 +80,10 @@ s32 Swi_Handler(u32 arg0, u32 arg1, u32 arg2, u32 arg3)
 	/* Get command */
 	cmd = SwiAddr[0];
 
+#ifdef D2X_DEBUG
+	Dbg_SwiEntry(SwiAddr, arg0, arg1);
+#endif
+
 	/* Check command */
 	if (cmd != 0xcc) {
 		if (SwiTable[cmd])

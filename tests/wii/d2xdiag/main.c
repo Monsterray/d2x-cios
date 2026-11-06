@@ -431,6 +431,8 @@ static int stuck(const struct scenario *s, u32 wd_s)
 	print_head("  stuck", snap, 24);
 	say("  in MLOAD's SWI: %08x %08x %08x %08x (0 = not inside)\n", live[D2XDBG_INSVC_OFF / 4],
 	    live[D2XDBG_INSVC_OFF / 4 + 1], live[D2XDBG_INSVC_OFF / 4 + 2], live[D2XDBG_INSVC_OFF / 4 + 3]);
+	say("  last SWI entered: %08x at %08x, r0 %08x r1 %08x\n", live[D2XDBG_ENTRY_OFF / 4],
+	    live[D2XDBG_ENTRY_OFF / 4 + 1], live[D2XDBG_ENTRY_OFF / 4 + 2], live[D2XDBG_ENTRY_OFF / 4 + 3]);
 	if (wd_s)
 		say("d2xdiag: no more check-ins: the watchdog (%u s) should reset the console\n", wd_s);
 	else

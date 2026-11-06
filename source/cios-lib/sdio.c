@@ -829,6 +829,7 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
 		}
+		SD_EV(D2XDBG_E_STEP, 'r', ret, i);
 		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
@@ -890,6 +891,7 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
 		}
+		SD_EV(D2XDBG_E_STEP, 'r', ret, i);
 		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
