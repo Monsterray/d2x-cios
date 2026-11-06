@@ -46,7 +46,7 @@ def back_in_hbc(wii, timeout, what):
     while not wt.in_hbc(wii):
         if time.monotonic() > end:
             sys.exit(f"d2xdiag.py: the Wii did not return to HBC in {timeout} s ({what})")
-        time.sleep(5)
+        time.sleep(2)
 
 
 def fetch(wii, path, out):
@@ -76,11 +76,23 @@ def main():
     for f in (REPORT, PRE):
         wt.hbc(wii, "rm", f, timeout=30)             # an old report must not count
     outdir = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
-    cap = None
+    cap, stop = None, outdir / "video.stop"
+    stop.unlink(missing_ok=True)
     if a.video and pathlib.Path(WIICAP).is_file():
+        # --video is the longest it records: it ends a few seconds after the run is over and
+        # the Wii is back in HBC, so the job does not sit out the rest of it
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
-                                str(outdir / "d2xdiag.mp4"), "--label", "d2xdiag"])
+                                str(outdir / "d2xdiag.mp4"), "--label", "d2xdiag", "--stop-file", str(stop)])
+    try:
+        return run(a, wii, hangs, outdir)
+    finally:
+        if cap:
+            stop.touch()
+            cap.wait(timeout=a.video + 60)
+            print(f"d2xdiag.py: TV recording in {outdir / 'd2xdiag.mp4'}", flush=True)
 
+
+def run(a, wii, hangs, outdir):
     r = wt.hbc(wii, "run", "--timeout", str(min(a.timeout, 300)), str(DOL), *a.args,
                timeout=min(a.timeout, 300) + 60)
     print(r.text, flush=True)
@@ -101,9 +113,6 @@ def main():
     if text is None:
         sys.exit("d2xdiag.py: no report")
     print("--- sd:/d2xdiag.txt ---\n" + text, flush=True)
-    if cap:
-        cap.wait(timeout=a.video + 60)
-        print(f"d2xdiag.py: TV recording in {outdir / 'd2xdiag.mp4'}", flush=True)
     if hangs:
         ok = "wd_fired_before=yes" in text
         print(f"RESULT {'ok' if ok else 'fail'}: the watchdog {'reset' if ok else 'did NOT reset'} the console "
