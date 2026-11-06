@@ -39,6 +39,22 @@ static u32 wdStack[0x100] ATTRIBUTE_ALIGN(32);	/* 1 KB */
 static u32 wdQueueBuf[4] ATTRIBUTE_ALIGN(32);
 
 
+/* cios-lib's DCFlushRange (clean) and DCInvalidateRange take a count of
+   32-byte lines, not bytes: these take bytes. */
+static void __Dbg_Clean(const void *p, u32 len)
+{
+	u32 a = (u32)p & ~31;
+
+	DCFlushRange((void *)a, ((u32)p + len - a + 31) >> 5);
+}
+
+static void __Dbg_Discard(const void *p, u32 len)
+{
+	u32 a = (u32)p & ~31;
+
+	DCInvalidateRange((void *)a, ((u32)p + len - a + 31) >> 5);
+}
+
 static inline u32 __Dbg_Now(void)
 {
 	return *(vu32 *)HW_TIMER;
@@ -50,8 +66,8 @@ static void __Dbg_Out(void)
 {
 	u32 last = (HEAD->trace_head - 1) & (D2XDBG_RECORDS - 1);
 
-	DCFlushRange(AREA, sizeof(d2xdbg_head));
-	DCFlushRange(AREA + D2XDBG_RING_OFF + last * 16, 16);
+	__Dbg_Clean(AREA, sizeof(d2xdbg_head));
+	__Dbg_Clean(AREA + D2XDBG_RING_OFF + last * 16, 16);
 }
 
 /* IOS's page table maps MEM2 only as far as its modules reach (0x1379CFFF
@@ -69,7 +85,7 @@ static void __Dbg_MapArea(void)
 	l2 = (u32 *)((l1 & ~0x3FF) + (((D2XDBG_PHYS >> 12) & 0xFF) << 2));
 	for (i = 0; i < D2XDBG_SIZE / 0x1000; i++)
 		l2[i] = (D2XDBG_PHYS + i * 0x1000) | 0xFFE;
-	DCFlushRange(l2, D2XDBG_SIZE / 0x1000 * 4);
+	__Dbg_Clean(l2, D2XDBG_SIZE / 0x1000 * 4);
 	MMU_InvalidateTLB();
 }
 
@@ -82,7 +98,7 @@ static void __Dbg_Reset(void)
 
 	/* Priiloader autoboots whatever its boot state says */
 	*(vu32 *)D2XDBG_ABRA_PHYS = D2XDBG_ABRA;
-	DCFlushRange((void *)(D2XDBG_ABRA_PHYS & ~31), 32);
+	__Dbg_Clean((void *)D2XDBG_ABRA_PHYS, 4);
 
 	/* HW_RESETS bit 0 low: system reset, no IOS needed */
 	*(vu32 *)HW_RESETS &= ~1;
@@ -93,7 +109,7 @@ static void __Dbg_Reset(void)
 
 	*(vu32 *)HW_RESETS |= 1;
 	*(vu32 *)D2XDBG_ABRA_PHYS = abra;
-	DCFlushRange((void *)(D2XDBG_ABRA_PHYS & ~31), 32);
+	__Dbg_Clean((void *)D2XDBG_ABRA_PHYS, 4);
 	d2xdbg_wd_noreset(AREA, __Dbg_Now());
 	__Dbg_Out();
 }
@@ -116,7 +132,7 @@ static s32 __Dbg_Ctrl(u32 op, u32 *in, u32 *out, u32 outlen)
 
 	case D2XDBG_IOCTL_CLEAR:
 		d2xdbg_clear(AREA);
-		DCFlushRange(AREA, D2XDBG_HALF);
+		__Dbg_Clean(AREA, D2XDBG_HALF);
 		return 0;
 
 	case D2XDBG_IOCTL_WD_ARM:
@@ -125,13 +141,13 @@ static s32 __Dbg_Ctrl(u32 op, u32 *in, u32 *out, u32 outlen)
 
 	case D2XDBG_IOCTL_WD_KICK:
 		HEAD->wd_kick++;
-		DCFlushRange(&HEAD->wd_kick, 4);
+		__Dbg_Clean(&HEAD->wd_kick, 4);
 		return 0;
 
 	case D2XDBG_IOCTL_FAULT:
 		if (d2xdbg_fault_set(AREA, in) < 0)
 			return -1;
-		DCFlushRange(AREA, sizeof(d2xdbg_head));
+		__Dbg_Clean(AREA, sizeof(d2xdbg_head));
 		return 0;
 
 	default:
@@ -164,26 +180,26 @@ s32 Dbg_Swi(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
 
 	case D2XDBG_SWI_WDTICK:
 		/* wd_kick is written by the PowerPC: read it from memory */
-		DCInvalidateRange(&HEAD->wd_kick, 32);
+		__Dbg_Discard(&HEAD->wd_kick, 4);
 		if (d2xdbg_wd_check(AREA, __Dbg_Now())) {
 			__Dbg_Out();
 			__Dbg_Reset();
 		}
-		DCFlushRange(AREA, 0x60);
+		__Dbg_Clean(AREA, 0x60);
 		break;
 
 	case D2XDBG_SWI_CTRL:
 		switch (arg1 & 0xFFFF) {
 		case 0xFF:	/* MLOAD starts: keep the last run's area as last words */
 			__Dbg_MapArea();
-			DCInvalidateRange(AREA, D2XDBG_SIZE);
+			__Dbg_Discard(AREA, D2XDBG_SIZE);
 			d2xdbg_start(AREA, D2X_IDENT, buildFlags, __Dbg_Now());
-			DCFlushRange(AREA, D2XDBG_SIZE);
+			__Dbg_Clean(AREA, D2XDBG_SIZE);
 			break;
 
 		case 0xFE:	/* the watchdog thread runs, at this priority */
 			HEAD->wd_prio = arg2;
-			DCFlushRange(AREA, sizeof(d2xdbg_head));
+			__Dbg_Clean(AREA, sizeof(d2xdbg_head));
 			break;
 
 		default:
