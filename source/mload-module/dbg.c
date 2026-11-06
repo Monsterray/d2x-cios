@@ -98,12 +98,69 @@ static u32 __Dbg_MapArea(void)
 	return fixed;
 }
 
+static void __Dbg_Spin(u32 ms)
+{
+	u32 start = __Dbg_Now();
+
+	while (__Dbg_Now() - start < d2xdbg_ms_to_ticks(ms))
+		;
+}
+
+/* Before the watchdog's reset: a USB bus reset on every EHCI port with a
+   device, then the ports' power off where the controller switches it.
+   Port power survives a console reset, so a drive left in the middle of a
+   transfer stayed that way, and the next boot (System Menu, before
+   Priiloader) waited on it with a black screen until the drive was
+   unplugged (devwii, 2026-11-06). A bus reset puts any USB device back in
+   its default state. Traced as U: a = HCSPARAMS, b = port 0 before. */
+#define EHCI_BASE	0x0D040000
+#define EHCI_PORT_CONNECT	(1 << 0)
+#define EHCI_PORT_RWC		((1 << 1) | (1 << 3) | (1 << 5))
+#define EHCI_PORT_PE		(1 << 2)
+#define EHCI_PORT_RESET		(1 << 8)
+#define EHCI_PORT_POWER		(1 << 12)
+#define EHCI_PORT_OWNER		(1 << 13)
+
+static void __Dbg_UsbOff(void)
+{
+	vu32 *caps = (vu32 *)EHCI_BASE;
+	vu32 *port = (vu32 *)(EHCI_BASE + (caps[0] & 0xFF) + 0x44);
+	u32 hcs = caps[1], n = hcs & 0xF, i, s, reset = 0;
+
+	if (n > 4)
+		n = 4;
+	d2xdbg_event(AREA, __Dbg_Now(), (D2XDBG_M_MLOAD << 24) | (D2XDBG_E_USBOFF << 16), hcs, n ? port[0] : 0);
+	__Dbg_Out();
+
+	for (i = 0; i < n; i++) {
+		s = port[i];
+		if (!(s & EHCI_PORT_CONNECT) || (s & EHCI_PORT_OWNER))
+			continue;
+		port[i] = (s & ~(EHCI_PORT_PE | EHCI_PORT_RWC)) | EHCI_PORT_RESET;
+		reset |= 1 << i;
+	}
+	if (reset) {
+		__Dbg_Spin(60);			/* USB 2.0 7.1.7.5: at least 50 ms */
+		for (i = 0; i < n; i++)
+			if (reset & (1 << i))
+				port[i] = port[i] & ~(EHCI_PORT_RESET | EHCI_PORT_RWC);
+		__Dbg_Spin(20);
+	}
+	if (hcs & (1 << 4)) {			/* HCS_PPC: the ports switch power */
+		for (i = 0; i < n; i++)
+			port[i] = port[i] & ~(EHCI_PORT_POWER | EHCI_PORT_RWC);
+		__Dbg_Spin(300);
+	}
+}
+
 /* Returns only when the reset did not take: then everything is put back and
    the watchdog is off, so IOS goes on (IRQs are off here) and the PowerPC
    can show what happened, instead of a console stuck for good. */
 static void __Dbg_Reset(void)
 {
 	u32 abra = *(vu32 *)D2XDBG_ABRA_PHYS, start;
+
+	__Dbg_UsbOff();
 
 	/* Priiloader autoboots whatever its boot state says */
 	*(vu32 *)D2XDBG_ABRA_PHYS = D2XDBG_ABRA;

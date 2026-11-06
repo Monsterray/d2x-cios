@@ -66,6 +66,7 @@
 #define D2XDBG_E_WDFIRE		'W'	/* MLOAD: watchdog resets the console: a = ms since the last check-in */
 #define D2XDBG_E_NORESET	'N'	/* MLOAD: the watchdog's reset did not take; it is off again */
 #define D2XDBG_E_HANG		'G'	/* MLOAD: a hang requested through the device: a = mode */
+#define D2XDBG_E_USBOFF		'U'	/* MLOAD: before the watchdog's reset, USB ports reset (and power off): a = HCSPARAMS, b = port 0 status */
 
 /* Fault points (SWI 65): only a fault that fires is traced. x = point */
 #define D2XDBG_P_DATA		'd'	/* USB data phase (EHCI, USBS) */
