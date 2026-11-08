@@ -101,15 +101,6 @@ From a read-only review (F1-F8); the fixed ones have host tests in `tests/host/f
 
 The DIP plugin has no host harness yet. Trigger: the next DIP change, or a bench failure in a game boot.
 
-### Bench results (dev Wii, 2026-10-23)
-
-| Kind | Change | Check |
-| --- | --- | --- |
-| Measurement | The slot 249 cIOS that was installed before (an unknown d2x build, v65535): 1-sector read 653 us, 64-sector read 1.5 ms; **the first 1-sector write after reads took 192 s**, the next two 1.3 ms; 64-sector writes 3.3 ms. Data unchanged after the write-back. | `tests/wii/umsbench.py -- --ios=249 --write-back --writes=3` |
-| Measurement | **USB Loader GX end to end (2026-10-24)**, GX bench build 3c18015c, 3 runs each on the scratch Memorex: this branch (mr10 = bc12c74) and upstream 33ad1ee are equal. Single-sector write (FSInfo, own bytes, no skip) 2.0-3.3 ms with the bytes verified; GX's exit unmount with its unchanged-sector skip OFF 13-14 ms (whole exit 0.73-0.87 s); settings save 14-18 ms; 0 failed writes in 6 runs. Reads about 0.1 ms faster on this branch (boot sector 0.48 against 0.59 ms). The 2026-10-23 baseline (old cIOS on the SanDisk: unmount 21-223 s, FSInfo rewrite never returned) was that drive. | GX session jobs 20261024-210439-f55226, -210440-3986f8, -210440-0c5e8e (fork); 20261024-210739-d3374c, -ae714a, -1ea93c (upstream). |
-| Measurement | **A full disc dump through USB Loader GX (2026-10-25), lrwii, its new 8 GB FAT32 scratch drive.** The old r65535 cIOS (slot 249) froze at 16.53 MB and GX's exit then hung on the unmount. `d2x-v11.1.0-rc1` (3a570be, slot 247) dumped New Super Mario Bros. Wii (SMNE01, 350 MB) in 223.8 s: 11275 USB writes, 369 MB, 0 failed, longest 521 ms; 11275 reads (GX's libfat reads each cache page before writing it), longest 4962 ms, the only request over 2 s, which looks like one recovered stall (a 1 s transfer timeout plus recovery); worth a debug-log run. | Main USBLoaderGX session job 20261025-000218-3cb697 (GX `-ios=247`, IoGuard on). |
-| Tools | Installed `d2x-v11-beta3-mr1` (this branch at fa5d8d8, base 56) to slot 249 with the d2x installer's `--auto` mode (local patched installer). Read back: slot 249 holds v21011, boots, mounts the drive, reads at the same speed. | `tests/wii/install_cios.py` (TV recorded), then `umsbench.py` read-only. |
-
 ### SD high speed (opt-in, `SDIO_HIGH_SPEED`)
 
 | Kind | Change | Check |
@@ -118,46 +109,6 @@ The DIP plugin has no host harness yet. Trigger: the next DIP change, or a bench
 | Fix | Opt-in high speed (`docs/sd-high-speed.md`): CMD6 check and switch, then 0x28 bit 2 and `SETCLK(0)`; on a failed transfer at high speed, back to default speed for the session. Reference: bootmii-reborn `starlet/sdmmc.c`, `starlet/sdhc.c`, `docs/mini-plan.md`. | Host tests (`tests/host/sdio`, 12 tests, 3 mutations caught). First Wii run (2026-11-05): CMD6 answered all zero because it was sent with cmd_type ADTC; now BC as in libogc (`docs/sd-high-speed.md`), second Wii run pending. ironic has no CMD6, so it cannot show the switch. |
 
 Trigger to make it the default: an attended run on 2-3 cards with no errors and a measured gain.
-
-### Module size headroom (opt/size, 2026-11-05)
-
-Every module is Thumb, `-Os`, `-ffunction-sections`, `--gc-sections` already, so there was no compiler flag left to gain from; the gains came from code that was linked and never needed. The `exe` regions in each `link.ld` are fixed (the cIOS maps depend on them). Bytes = `.init` + `.text` from the region start, `+next` build (`SDIO_HIGH_SPEED`):
-
-| Module | Region | Used before | Free before | Used after | Free after |
-| --- | --- | --- | --- | --- | --- |
-| MLOAD | 0x2000 (8192) | 5716 | 2476 | 5400 | 2792 |
-| FAT | 0x5000 (20480) | 18400 | 2080 | 18040 | 2440 |
-| EHCI | 0x5000 (20480) | 16840 | 3640 | 16440 | 4040 |
-| USBS | 0x3000 (12288) | 12272 | 16 | 11204 | 1084 |
-| DIPP | 0x2000 (8192) | 6852 | 1340 | 6448 | 1744 |
-| ES | 0x2000 (8192) | 3264 | 4928 | 2872 | 5320 |
-| FFSP | 0x3000 (12288) | 7104 | 5184 | 6700 | 5588 |
-
-The plain release build (no SD high speed) has 1436 free in USBS and 4392 in EHCI.
-
-| Change | Bytes (USBS) | Why it does not change speed |
-| --- | --- | --- |
-| `cios-lib/syscalls.s`, `tools.s`: one section per stub (`.text.NAME`), so `--gc-sections` drops the stubs a module never calls (the whole file, 55 stubs of 8 bytes, was one section). All modules link it. | -396 (MLOAD -316, FAT -360, EHCI -400, DIPP -404, ES -392, FFSP -404) | The same instructions, only unused stubs go; no call path changes. |
-| `libwbfs.c`: `wbfs_open_partition` divides through `wbfs_udiv`/`wbfs_sdiv` (`wbfs_div.c`, shift and subtract) instead of libgcc's `__udivsi3`/`__divsi3` (620 bytes) that nothing else in USBS needs. One shift replaces a division by the constant 0x8000. EHCI defines both with `/`, as it links the libgcc routines for `qtd_fill` and `USBStorage_Read/Write`. | -560 (EHCI +8 to +20) | Runs once per disc open (WBFS ioctl), never in a transfer. |
-| USBS `usbstorage.c`: `__cycle` shares one `__data_phase` for the read and write chunk loops, and one recovery label for the four reset-and-retry exits. | -112 | Same calls in the same order per 16 KB piece; the per-piece code is the one loop, a flag picks the endpoint and the copy direction. |
-
-Host tests added for the refactor (`tests/host/usbs`): direct-buffer write recovering from a STALL, and short data transfers (the module's residue paths) for a read and a write, bounce and direct. They pass on the old and the new `__cycle`. The tests already covered 16 KB chunking and bounce/direct both ways.
-
-Not done: `-Os` is already on everywhere; Thumb is already on everywhere (only the syscall stubs, `start.s` and `.init` are ARM); there are no debug strings in release (`.rodata` is 196 bytes in the data region). The WBFS ioctls are live (USB Loader GX), so wbfs.c stays. Next candidates if room is needed again: `sdio_Startup` (952 bytes, cold), `wbfs_open_partition`'s reset-only branch (about 150 bytes, needs a compile-time switch in the shared lib).
-
-### `+next` on both Wiis (2026-11-05)
-
-`+next` = `opt/size` 2b8a692 built with `SDIO_HIGH_SPEED`: the EHCI write fixes, SD high speed (CMD6 sent as BC), the USBS fixes with 16 KB transfers, and the size work. It is installed on devwii 249/56, 250/57, 251/38 and 252/58, and on lrwii 252/56 and 253/58. lrwii's 247 (rc1) is the reference; 249 (r65535) is untouched.
-
-| Kind | Result | Check |
-| --- | --- | --- |
-| Measurement | **USB reads, devwii, all four bases, read-only:** 64 sectors in 1501-1638 us on EHCI and 4001 us on base 58 (10002 us before the 16 KB change); 1 sector in 450-492 us on EHCI and 2991 us on base 58. 0 failed, the same as before the size work. | `umsbench.py`, job 20261105-105523-524822 |
-| Measurement | **USB writes, lrwii scratch drive:** write-back on 252/56: 1 sector in about 740 us (the first after reads 18 ms), 64 sectors in 4.9 ms. On 253/58: 1 sector in about 2.4 ms, 64 sectors in 6.6 ms. Data unchanged. Pattern test on 252: 544 sectors written and read back, 0 mismatched, 0 failed. | jobs 20261105-114644-56d600 and the `--pattern=32` run |
-| Measurement | **SD high speed:** the CMD6 answer arrives as BC (as ADTC it was all zero); the card switches. 64-sector reads: devwii 9.97 MB/s against 6.85 at default speed (+45%); lrwii 6.23 against 4.87 on rc1 (+28%). The forced fallback works (debug build) and the data is the same before and after. 0 failed. | `sdbench.py`; the 0x22 record in a `SDIO_HS_DEBUG` build |
-| Measurement | **USB Loader GX installs the retail disc (SMNE01, 350 MB) to USB on lrwii:** 252/56 in 215 s (write 3864 KiB/s, longest 441 ms), 253/58 in 260 s (3060 KiB/s, longest 439 ms); rc1 247 took 224 s, r65535 216 s. No request over 2 s, no drive error, disc reads about 19 MB/s. | Main USBLoaderGX jobs 20261105-115903-bb504b and -4405a4 |
-| Finding | **IOS58 `/dev/usb/ven` takes at most 16 KB per bulk transfer.** One 32 KB direct transfer never returned (devwii, 2026-11-05), and the console needed a power cycle. The 8 s deadline cannot help, because the IPC call itself blocks. USBS now sends 16 KB pieces on both paths. Each transfer costs about 1 ms whatever its size. Never raise it without a timeout that IOS itself enforces. | umsbench on `+usbs` (6609779), then `+usbs16` / `+next` |
-| Finding | **A read in a WBFS gap through Nintendo's DI module (0x71) hangs IOS, and `DIP_GAP_ERROR` does not prevent it.** On lrwii `+gaperr` (246) the DIP trace showed `Z ZERO GAP`, then `X FRAG FAIL 04`, then -4 returned for the a8 and for the 0x71 (`d DI back 71 fffffffc`, `c cmd out 71 fffffffc`). Nothing came after it, and the app's call never returned. The hang is in the DI module after d2x hands back the error. The zero fill fails the DI module's hash check and ends in the same place. A stored read (0x300000) returned 0 in 9 ms. Real games never read a gap, so keep the zero fill. `DIP_GAP_ERROR` stays a debug flag, and gap reads on other slots need not be repeated. | GX bench build (usbloadergx-bench e71d4420, `--mode launch --allow-di-reads --dip-trace --one 32768`), on lrwii with Monty there |
-| Open | **Disc boot through USB Loader GX goes to a black screen on lrwii, on `+next` 252 and on rc1 247 alike.** GX reloads to the cIOS, runs the disc's apploader to its end, and its boot.log stops at "Shutting down devices...", so the hang is at or after GX's jump to the game. Since rc1 does the same, it is GX's boot path, handed to the Main USBLoaderGX session. A USB game boot uses the same path and has not been tried. | Main USBLoaderGX jobs 20261105-131528-38f6bc and 20261105-133105-0daf8e |
 
 ### Debug build `+dbg` (2026-11-05)
 
@@ -185,9 +136,8 @@ Not done: `-Os` is already on everywhere; Thumb is already on everywhere (only t
 | Measurement | **The watchdog's reset works on hardware, through BootMii as boot2.** `hang-block`, `hang-spin` and `hang-top` each reset the console 30 s after the check-ins stopped: about 2 s of no signal, BootMii's 3 s countdown, Priiloader's autoboot to HBC, with nobody touching the Wii. The last words survive (IOS start 2 then 3, `W` traced). | jobs 20261106-114608-0f120d, -115119-0906b5, -115120-5517ba (video) |
 | Finding | **A USB drive left mid-transfer stops the next boot after the watchdog's reset.** With a read in flight (`usb-spin`, and a stuck `usb-data-stall` earlier), the reset works and BootMii starts the System Menu, but the screen stays black before Priiloader writes its first log line. Unplugging the drive alone let the boot go on to HBC, with no RESET: port power stays on through a console reset, so the drive is never restarted, and the boot waits on it. Seen with devwii's SanDisk flash drive (already the bad drive behind slow and junk writes); not yet tried with another drive. Fix idea: before the reset write, turn the EHCI ports' power off (`PORTSC` PP, if `HCSPARAMS` PPC says the ports switch power) for a few hundred ms, or at least reset the ports. Trigger: a watchdog reset that has to recover from a USB hang unattended. | job 20261106-115120-5fe96b (video), and Monty at the Wii: unplugging the drive brought it to HBC |
 
-### Next
+## Moved out of this file
 
-- **USB hangs: let the next boot through.** Try the port power-off before the watchdog's reset (see the finding above), and check `usb-spin` again with the SanDisk and with another drive. Until then, a USB hang test needs someone at the Wii to unplug the drive. Then `usbs-big` on 252 base 58 (install the current build there first) and `di-error` after a reinstall of 250.
-
-- **Bench test program.** A DOL, run from HBC through the bench queue, that reports which slots hold which cIOS (read only), then opens the cIOS's USB device and times sector reads and writes to a scratch file area, printing results to the HBC log. Trigger: before the first install of a fork build.
-- **ARM emulator harness.** Run the real module ELFs (big-endian ARM926) under an emulator such as Unicorn, with IOS syscalls and EHCI registers simulated in Python. This tests the compiled binary instead of a host rebuild. Trigger: a bug that the host tests cannot show (timing, endianness, the stripped ELF layout) or a second module that needs hardware-level simulation.
+- Bench results and the `+next` runs: [docs/bench.md](docs/bench.md).
+- Module size headroom: [docs/module-size.md](docs/module-size.md).
+- Ideas and triggers (the old "Next" list): [docs/roadmap.md](docs/roadmap.md).

@@ -12,8 +12,9 @@ Addresses are local to each workstation, never in the repo:
   $WII_BENCH_IP                 the bench Wii (the queue sets it inside a job)
   $WII_PROTECTED                comma-separated protected Wiis
   .dev/wiis.json (ignored)      {"bench": "...", "protected": ["...", "..."]}
-  $HBC_TOOL                     path to hbc-reborn's tools/hbc.py
-  $WII_BENCH_QUEUE              path to wiibench.py
+  $HBC_PY                       path to hbc-reborn's tools/hbc.py (default $HBC_REBORN/tools/hbc.py)
+  $WII_BENCH                    path to wiibench.py (default: the workstation's shim)
+  (both found through tools/wii_paths.py; see wii-bench's docs/paths.md)
 
 Helpers:
   bench_wii(what)       the bench Wii's address inside a queue job; exits outside one
@@ -55,8 +56,17 @@ def _config():
 
 
 BENCH_WII, PROTECTED_WIIS = _config()
-HBC_TOOL = os.environ.get("HBC_TOOL") or str(REPO.parent / "hbc-reborn" / "tools" / "hbc.py")
-QUEUE = os.environ.get("WII_BENCH_QUEUE") or "wiibench.py"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import wii_paths  # noqa: E402  (shared-tool lookup: HBC_PY, WII_BENCH; see wii-bench docs/paths.md)
+
+try:
+    HBC_TOOL = str(wii_paths.hbc_py())
+except wii_paths.NotFound:           # not needed until a script calls hbc(); the call then fails with this path
+    HBC_TOOL = str(REPO.parent / "hbc-reborn" / "tools" / "hbc.py")
+try:
+    QUEUE = str(wii_paths.wii_bench())
+except wii_paths.NotFound:           # only printed in help and errors
+    QUEUE = "wiibench.py"
 PY = sys.executable
 
 

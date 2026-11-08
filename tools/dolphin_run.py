@@ -67,17 +67,12 @@ LOG_MAX = int(os.environ.get("DOLPHIN_LOG_MAX_MB", "512")) * 1024 * 1024
 
 
 def find_dolphin():
-    if os.environ.get("DOLPHIN"):
-        return os.environ["DOLPHIN"]
-    candidates = {
-        "Windows": [r"C:\tools\Dolphin-x64\Dolphin.exe", r"C:\Program Files\Dolphin\Dolphin.exe"],
-        "Darwin": ["/Applications/Dolphin.app"],
-    }.get(platform.system(), [])
-    candidates.append(shutil.which("dolphin-emu") or "")
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    sys.exit("Dolphin not found; set DOLPHIN to its executable")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import wii_paths
+    try:
+        return str(wii_paths.dolphin())
+    except wii_paths.NotFound as e:
+        sys.exit(str(e))
 
 
 def last_segment(text):
