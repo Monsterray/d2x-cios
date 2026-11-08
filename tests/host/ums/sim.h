@@ -69,6 +69,23 @@ struct sim {
 	bool csc;               /* PORTSC.CSC, write-1-to-clear */
 	u64 replug_at_us;       /* when it comes back (0: never by itself) */
 	u32 portsc_writes, port_xfers_gone;
+	bool ppc;               /* HCSPARAMS.PPC: the ports switch power */
+	bool unpowered;         /* port power is off (PORT_POWER 0, no drive seen) */
+	u32 power_offs, power_cycles;   /* PORT_POWER 1 -> 0, and back to 1 */
+	int stuck;              /* the drive answers no bulk transfer: 1 until a port
+	                           reset, 2 until a power cycle (a drive left mid-
+	                           transfer by an earlier reset) */
+	bool stuck_io_only;     /* ... only READ(10) and WRITE(10) commands */
+
+	/* the controller: USBCMD and USBSTS as ehci_recover.h uses them */
+	u32 hc_cmd;             /* USBCMD */
+	bool hc_ass;            /* USBSTS.ASS follows CMD_ASE unless ass_stuck */
+	bool ass_stuck;         /* the schedule does not stop when CMD_ASE clears */
+	bool iaa_never;         /* the doorbell is never answered */
+	bool iaa_set;           /* USBSTS.IAA, write-1-to-clear */
+	bool iaa_pending;       /* a doorbell was rung and not answered yet */
+	u64 iaa_at_us;
+	u32 doorbells, ase_clears, ase_sets, async_next;
 
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;
@@ -87,6 +104,9 @@ const char *sim_summary(void);
 void sim_unplug_for(u64 us);    /* unplug now; it is back (CSC set) after us */
 u32 sim_portsc_read(void);
 void sim_portsc_write(u32 v);
+enum { SIM_HC_CMD, SIM_HC_STS, SIM_HC_ASYNC_NEXT };
+u32 sim_hc_read(int reg);
+void sim_hc_write(int reg, u32 v);
 
 /* ums_unit.c: the module code under test */
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
@@ -97,6 +117,9 @@ s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery 
 s32 ums_init(void);             /* USBStorage_Init(): UMS_INIT on a mounted drive */
 int ums_keepalive_ready(void);  /* USBStorage_Keepalive_Ready() */
 int ums_is_dead(void);
+void ums_startup(void);         /* ehci_startup_recover(), as EHCI_Init() calls it */
+int ums_power_cycle(void);      /* ehci_port_power_cycle(0) */
+int ums_quiesce(void);          /* ehci_async_quiesce(), then ehci_async_resume() if it asks */
 s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer);
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer);
 

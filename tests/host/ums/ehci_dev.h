@@ -29,5 +29,6 @@ void ehci_msleep(int time);
 int ehci_reset_port(int port);
 int ehci_reset_port2(int port);
 int ehci_reset_device(struct ehci_device *dev);
+int ehci_reset_usb_port(int port);
 
 #endif

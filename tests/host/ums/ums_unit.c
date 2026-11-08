@@ -8,20 +8,40 @@
 #include "sim.h"
 #include "ehci_dev.h"
 
-struct ehci_regs { u32 status; u32 port_status[4]; };
-struct ehci_hcd { struct ehci_regs *regs; int num_port; struct ehci_device devices[4]; };
+struct ehci_regs { u32 command; u32 status; u32 async_next; u32 port_status[4]; };
+struct ehci_qh_head { u32 qh_dma; };
+struct ehci_hcd {
+	struct ehci_regs *regs;
+	int num_port;
+	u32 hcs_params;
+	struct ehci_qh_head *async;
+	struct ehci_device devices[4];
+};
 static struct ehci_regs sim_regs;
-static struct ehci_hcd sim_hcd = { .regs = &sim_regs, .num_port = 1 };
+static struct ehci_qh_head sim_async = { .qh_dma = 0x1000 };
+static struct ehci_hcd sim_hcd = { .regs = &sim_regs, .num_port = 1, .async = &sim_async };
 struct ehci_hcd *ehci = &sim_hcd;
-/* PORTSC (port 0) is the simulated port: sim.c keeps it, write-1-to-clear */
+/* PORTSC (port 0), USBCMD and USBSTS are simulated: sim.c keeps them */
 static u32 sim_rd(volatile u32 *a)
 {
-	return a == &sim_regs.port_status[0] ? sim_portsc_read() : *a;
+	if (a == &sim_regs.port_status[0])
+		return sim_portsc_read();
+	if (a == &sim_regs.command)
+		return sim_hc_read(SIM_HC_CMD);
+	if (a == &sim_regs.status)
+		return sim_hc_read(SIM_HC_STS);
+	return *a;
 }
 static void sim_wr(u32 v, volatile u32 *a)
 {
 	if (a == &sim_regs.port_status[0])
 		sim_portsc_write(v);
+	else if (a == &sim_regs.command)
+		sim_hc_write(SIM_HC_CMD, v);
+	else if (a == &sim_regs.status)
+		sim_hc_write(SIM_HC_STS, v);
+	else if (a == &sim_regs.async_next)
+		sim_hc_write(SIM_HC_ASYNC_NEXT, v);
 	else
 		*a = v;
 }
@@ -33,7 +53,16 @@ static void sim_wr(u32 v, volatile u32 *a)
 #define PORT_PEC     (1 << 3)
 #define PORT_OCC     (1 << 5)
 #define PORT_OWNER   (1 << 13)
+#define PORT_POWER   (1 << 12)
+#define PORT_RESET   (1 << 8)
 #define PORT_RWC_BITS (PORT_CSC | PORT_PEC | PORT_OCC)
+#define PORT_USB11(x) (((x)&(3<<10)) == (1<<10))
+#define CMD_IAAD     (1 << 6)
+#define CMD_ASE      (1 << 5)
+#define STS_ASS      (1 << 15)
+#define STS_HALT     (1 << 12)
+#define STS_IAA      (1 << 5)
+#define HCS_PPC(p)   ((void)(p), sim.ppc)   /* the simulated HCSPARAMS.PPC */
 #define printk(...) ((void)0)
 
 /* Globals that ehci.c and the module define. */
@@ -56,6 +85,7 @@ void USB_FreeDescriptors(usb_devdesc *udd);
 /* Hollywood's timer, from the simulated clock (ehci.c defines it on the Wii) */
 #define get_timer() ((u32)(sim.now_us * 1898 / 1000))
 
+#include "ehci_recover.h"
 #include "usbstorage.h"
 #include "usbstorage.c"
 
@@ -91,6 +121,20 @@ void ums_unplug(void)
 	sim_dev.toggles = 0;
 	ums_dead = 0;
 	ums_fail_n = 0;
+}
+
+/* The recovery helpers of ehci_recover.h, on the simulated controller */
+void ums_startup(void)
+{
+	ehci_startup_recover();
+}
+int ums_power_cycle(void) { return ehci_port_power_cycle(0); }
+int ums_quiesce(void)
+{
+	int r = ehci_async_quiesce();
+	if (r)
+		ehci_async_resume();
+	return r;
 }
 
 /* UMS_INIT, the keepalive's check and the dead state, for the tests */
