@@ -79,5 +79,9 @@ s32 EHCI_Init(void)
 	/* Release non USB2 ports */
         ehci_release_ports();
 
+	/* Leave a drive left mid-transfer by a previous reset clean: reset the
+	   ports that have a drive, power cycle them if the ports switch power */
+	ehci_startup_recover();
+
 	return 0;
 }

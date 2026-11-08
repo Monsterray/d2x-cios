@@ -55,7 +55,7 @@
 #define D2XDBG_E_BEGIN		'B'	/* request starts: x = cmd, a = arg (sector, offset), b = length */
 #define D2XDBG_E_END		'E'	/* request ends: a = result (< 0 counts an error) */
 #define D2XDBG_E_RETRY		'R'	/* a = attempt */
-#define D2XDBG_E_RESET		'Z'	/* recovery reset: x = kind (b BOT, p port, d device) */
+#define D2XDBG_E_RESET		'Z'	/* recovery reset: x = kind (b BOT, p port, d device; 3 rung 3 and 4 rung 4 of the ladder: a = 0 mounted; q/Q IAA wait and schedule halt: a = 0 ok, <0 timeout; C port power cycle: a = 0 back; c EHCI start: a = HCSPARAMS, b = PPC) */
 #define D2XDBG_E_TIMEOUT	'T'	/* a = what timed out */
 #define D2XDBG_E_ERROR		'X'	/* an error outside a request's result: a = code */
 #define D2XDBG_E_STEP		's'	/* a step inside a request: x = which ('f' fault point passed, 'd' deselected), a = its result, b = attempt */
