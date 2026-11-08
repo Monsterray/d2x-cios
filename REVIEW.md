@@ -101,14 +101,14 @@ From a read-only review (F1-F8); the fixed ones have host tests in `tests/host/f
 
 The DIP plugin has no host harness yet. Trigger: the next DIP change, or a bench failure in a game boot.
 
-### SD high speed (opt-in, `SDIO_HIGH_SPEED`)
+### SD high speed (on by default since 11.1.0-rc2; `-DSDIO_NO_HIGH_SPEED` opts out)
 
 | Kind | Change | Check |
 | --- | --- | --- |
 | Measurement | **What IOS does with the SD clock (ironic, running the real IOS from the dev Wii's NAND, 2026-11-04).** d2x's SD path (`cios-lib/sdio.c`) uses IOS's `/dev/sdio/slot0` ioctls: WRITEHCREG 1, READHCREG 2, SETCLK 6, SENDCMD 7. `SETCLK(n)` writes the clock control (0x2c) divisor field: clock = base / 2n, n = 0 the undivided base. d2x calls `SETCLK(1)`: base / 2. With the base at 48 MHz (bootmii-reborn's notes) the SD runs at 24 MHz, 4-bit, default speed. IOS never sets host control (0x28) bit 2 (high speed enable). SETCLK and SENDCMD touch only 0x2c and the command registers, never 0x28; ResetCard (ioctl 4) and a host soft reset clear 0x28 and set the divisor 0x80, so high speed has to be set after every reset or re-init. | ironic trace; the 48 MHz base is from bootmii-reborn, not measured here. |
-| Fix | Opt-in high speed (`docs/sd-high-speed.md`): CMD6 check and switch, then 0x28 bit 2 and `SETCLK(0)`; on a failed transfer at high speed, back to default speed for the session. Reference: bootmii-reborn `starlet/sdmmc.c`, `starlet/sdhc.c`, `docs/mini-plan.md`. | Host tests (`tests/host/sdio`, 12 tests, 3 mutations caught). First Wii run (2026-11-05): CMD6 answered all zero because it was sent with cmd_type ADTC; now BC as in libogc (`docs/sd-high-speed.md`), second Wii run pending. ironic has no CMD6, so it cannot show the switch. |
+| Fix | High speed (`docs/sd-high-speed.md`; opt-in until 11.1.0-rc1, on by default since 11.1.0-rc2): CMD6 check and switch, then 0x28 bit 2 and `SETCLK(0)`; on a failed transfer at high speed, back to default speed for the session. Reference: bootmii-reborn `starlet/sdmmc.c`, `starlet/sdhc.c`, `docs/mini-plan.md`. | Host tests (`tests/host/sdio`, 12 tests, 3 mutations caught). First Wii run (2026-11-05): CMD6 answered all zero because it was sent with cmd_type ADTC; now BC as in libogc (`docs/sd-high-speed.md`), second Wii run pending. ironic has no CMD6, so it cannot show the switch. |
 
-Trigger to make it the default: an attended run on 2-3 cards with no errors and a measured gain.
+Made the default for 11.1.0-rc2 on the owner's decision: `+next` ran on devwii and lrwii with the gains measured in docs/bench.md (9.97 against 6.85 MB/s, 6.23 against 4.87). `-DSDIO_NO_HIGH_SPEED` (with a `D2X_VARIANT`) builds without it. The 2-3 card attended run is still open.
 
 ### Debug build `+dbg` (2026-11-05)
 

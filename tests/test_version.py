@@ -72,7 +72,7 @@ class Variant(unittest.TestCase):
     def test_variants_fit_and_use_the_allowed_characters(self):
         v, m = parts()
         base = "-" + v.split(".", 1)[1].replace(".", "-")
-        for variant in ("sdhs", "usbs", "dbg", "trace", "gaperr", "sdhs-dbg"):
+        for variant in ("nohs", "usbs", "dbg", "trace", "gaperr", "sdhs-dbg"):
             rc, out, err = build_version(variant)
             if len(base + "+" + variant) > 15:
                 self.assertNotEqual(rc, 0, variant)
@@ -94,12 +94,12 @@ class Variant(unittest.TestCase):
             self.assertNotEqual(rc, 0, bad)
 
     def test_flagged_build_needs_a_variant(self):
-        rc, _, err = build_version(flags="-DSDIO_HIGH_SPEED")
+        rc, _, err = build_version(flags="-DSDIO_NO_HIGH_SPEED")
         self.assertNotEqual(rc, 0)
         self.assertIn("D2X_VARIANT", err)
-        rc, out, _ = build_version("sdhs", "-DSDIO_HIGH_SPEED")
+        rc, out, _ = build_version("nohs", "-DSDIO_NO_HIGH_SPEED")
         self.assertEqual(rc, 0)
-        self.assertIn("-DSDIO_HIGH_SPEED", out["info"])
+        self.assertIn("-DSDIO_NO_HIGH_SPEED", out["info"])
         # CI's -Werror does not change the code, so the release name stays
         rc, out, _ = build_version(flags="-Werror")
         self.assertEqual(rc, 0)

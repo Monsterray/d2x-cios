@@ -26,6 +26,11 @@ endif
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
 CFLAGS	+=	$(EXTRA_CFLAGS)
+# SD high speed is on in every build (docs/sd-high-speed.md); -DSDIO_NO_HIGH_SPEED turns it off.
+# cios-lib, fat-module and mload-module must all agree, so each Makefile has this block.
+ifeq ($(findstring -DSDIO_NO_HIGH_SPEED,$(EXTRA_CFLAGS)),)
+CFLAGS	+=	-DSDIO_HIGH_SPEED
+endif
 LDFLAGS	=	$(ARCH) -nostartfiles -nostdlib -Wl,-T,link.ld,-Map,$(TARGET).map -Wl,--gc-sections -Wl,-static
 
 # Libraries

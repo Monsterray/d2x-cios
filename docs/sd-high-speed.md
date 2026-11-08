@@ -1,10 +1,16 @@
-# SD high speed (opt-in)
+# SD high speed (on by default)
 
-By default d2x talks to the SD card the way Nintendo's IOS sets it up: 4-bit,
-default speed, clock `base / (2 * 1)`. With a 48 MHz base that is 24 MHz. High
-speed (the SD "50 MHz class", CMD6 function 1) is built only when asked for.
-A build without the flag has none of this code (`tests/host` and a byte
-comparison of the modules checked that).
+Nintendo's IOS sets the SD card up 4-bit, at default speed, clock `base / (2 * 1)`.
+With a 48 MHz base that is 24 MHz. d2x switches the card to high speed (the SD
+"50 MHz class", CMD6 function 1) after that, and falls back to default speed on
+the first failed transfer (below). It is on in every build, the release included,
+since 11.1.0-rc2. `-DSDIO_NO_HIGH_SPEED` builds without it (a build with that flag has
+none of this code); it needs a `D2X_VARIANT`, like any `EXTRA_CFLAGS`.
+
+The switch is in the Makefiles of `cios-lib`, `fat-module` and `mload-module`:
+`ifeq ($(findstring -DSDIO_NO_HIGH_SPEED,$(EXTRA_CFLAGS)),)` adds `-DSDIO_HIGH_SPEED`,
+so every translation unit that tests `SDIO_HIGH_SPEED` sees the same answer. A new
+module that includes `sdio.h` needs the same block.
 
 ## What it does
 
@@ -43,11 +49,12 @@ back up. Check the state in both modules when testing.
 ## Build
 
 ```
-D2XNAME=d2x-v11-rc1-sdhs EXTRA_CFLAGS=-DSDIO_HIGH_SPEED tools/build.sh 11 -rc1-sdhs
+tools/build.sh                                                     # high speed on
+D2X_VARIANT=nohs EXTRA_CFLAGS=-DSDIO_NO_HIGH_SPEED tools/build.sh   # off
 ```
 
-`D2XNAME` and the version string use only letters, digits and `+ - _ ( ) [ ]`
-(no dots), so the opt-in cIOS is a different title name from the release.
+The version string uses only letters, digits and `+ - _ ( ) [ ]` (no dots), so
+the `nohs` build is a different title name from the release.
 `tools/build.sh` builds from clean when `EXTRA_CFLAGS` changes.
 
 The debug ioctlv commands 0x21 and 0x22 (and the record behind 0x22) are
@@ -56,17 +63,16 @@ code region (0x3000 bytes) has no room for them next to the USBS fixes. A debug
 build:
 
 ```
-D2X_VARIANT=sdhsd EXTRA_CFLAGS="-DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG" tools/build.sh
+D2X_VARIANT=sdhsd EXTRA_CFLAGS="-DSDIO_HS_DEBUG" tools/build.sh
 ```
 
 Use the variant `sdhsd`: `sdhsdbg` or `sdhs-dbg` is too long for the 15-character
-version string next to `-rc1`. Command 0x20 (the state) needs only
-`SDIO_HIGH_SPEED`. `sdbench` prints "debug ioctls not in this build" for a -101
+version string next to `-rc1`. Command 0x20 (the state) is in every build with high speed. `sdbench` prints "debug ioctls not in this build" for a -101
 from 0x21 or 0x22.
 
 ## Seeing the state from a test app
 
-Only in builds with the flag (0x21 and 0x22 only with `SDIO_HS_DEBUG` too), the `/dev/sdio/sdhc` device (`sdhc_server.c`)
+Only in builds with high speed, the default (0x21 and 0x22 only with `SDIO_HS_DEBUG` too), the `/dev/sdio/sdhc` device (`sdhc_server.c`)
 answers three extra ioctlv commands:
 
 | Command | Vectors | Answer |
@@ -75,7 +81,7 @@ answers three extra ioctlv commands:
 | `0x21` | none | debug: fall back now (as a transfer error would), answer the state. Does nothing when high speed is not on |
 | `0x22` | one output vector, at least 32 bytes | return 0; the vector holds `struct sdhs_record` (below), the outcome of the last `__sd0_hs_try()` |
 
-A default build answers all of them with `IPC_EINVAL` (-101, `ipc.h`): they
+A `nohs` build answers all of them with `IPC_EINVAL` (-101, `ipc.h`): they
 fall into the `default:` of the ioctlv switch in `sdhc_server.c`. That is how an
 app tells the builds apart. (An earlier version of this page said -4.)
 
@@ -120,7 +126,7 @@ debug fallback. Run `tools/build.sh test`, or `make -C tests/host`.
 
 ## Attended Wii test plan (nothing here has run on a Wii)
 
-1. Install the opt-in cIOS in a spare slot only with the user at the Wii (never on prod or lrwii).
+1. Install the cIOS in a spare slot only with the user at the Wii (never on prod or lrwii).
    Slot 249 base 56 is staged on the dev Wii's plan; keep the release cIOS in another slot.
 2. On 2 or 3 cards (an SD 1.0/2.0 card, an SDHC high speed card, a card that is
    known slow), time sector reads and writes (64-sector and 1-sector, a 32 MB file)

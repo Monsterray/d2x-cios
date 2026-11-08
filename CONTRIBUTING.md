@@ -47,7 +47,7 @@ Inside the cIOS the version is stored the way loaders and ModMii read it: the ma
 
 - The release is `VERSION` and nothing else: `11.1.0-rc1` shows `-1-0-rc1`.
 - Any other build appends `+<variant>` to the name and to the version string: `D2X_VARIANT=sdhs tools/build.sh` makes `d2x-v11.1.0-rc1+sdhs`, shown as `-1-0-rc1+sdhs`. A variant is lower-case letters and digits, words joined by `-` (`sdhs`, `usbs`, `dbg`, `trace`, `sdhs-dbg`).
-- A build with `EXTRA_CFLAGS` (a debug or trace flag, `-DSDIO_HIGH_SPEED`) must name a variant, or `tools/build.sh` stops. Only CI's `-Werror` is exempt, since it changes no code. So a flagged build can never look like the release.
+- A build with `EXTRA_CFLAGS` (a debug or trace flag, `-DSDIO_NO_HIGH_SPEED`) must name a variant, or `tools/build.sh` stops. Only CI's `-Werror` is exempt, since it changes no code. So a flagged build can never look like the release.
 - The version string holds 15 characters (16 bytes with the NUL). If `VERSION` plus the variant is longer, the build stops with a message; it never truncates. With `-rc1` there are 7 characters for `+variant` (`+gaperr` fits, `+sdhs-dbg` does not); a release without `-rc1` has 11.
 - `tools/build.sh version` prints the name and string without building. `tests/test_version.py` checks the rule.
 - The 16 bytes cannot hold the commit. Every build also writes `build/BUILD.txt` and a `Build:` line in the generated `ReadMe.txt`: name, version string, git short hash (`-dirty` when tracked files differ), variant and flags. Keep that line (or a manifest like it) with a staged package.
@@ -101,7 +101,7 @@ Dolphin cannot test a cIOS: it emulates IOS at a high level and never runs the m
 
 Changing how the USB driver retries or gives up? Read [docs/usb-storage.md](docs/usb-storage.md) first: the layers, the error codes and the limits, in one page.
 
-Chasing a problem inside IOS? Build the debug variant: `D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG -DSDIO_HIGH_SPEED" tools/build.sh`. It keeps counters and one trace ring for EHCI, USBS, SD, FAT and DIP in a fixed MEM2 area the PowerPC can read live, keeps the previous IOS run's "last words", has an ARM watchdog that resets the console when a test app stops checking in, and takes injected faults through `/dev/d2xdbg`. The release build is byte-identical without it. See [docs/debug-build.md](docs/debug-build.md).
+Chasing a problem inside IOS? Build the debug variant: `D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh`. It keeps counters and one trace ring for EHCI, USBS, SD, FAT and DIP in a fixed MEM2 area the PowerPC can read live, keeps the previous IOS run's "last words", has an ARM watchdog that resets the console when a test app stops checking in, and takes injected faults through `/dev/d2xdbg`. The release build is byte-identical without it. See [docs/debug-build.md](docs/debug-build.md).
 
 Chasing a hang inside IOS, where nothing on the Wii can report? Build with `EXTRA_CFLAGS=-DDIP_DEBUG_TRACE`: the DIP plugin then logs each DI command, each call into Nintendo's DI module and each emulated read into a buffer a loader registers and shows on the TV ([source/dip-plugin/trace.h](source/dip-plugin/trace.h) has the layout and the loader side; USB Loader GX's bench build shows it with `--dip-trace`).
 

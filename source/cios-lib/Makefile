@@ -12,6 +12,11 @@ AR	=	$(PREFIX)ar
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wstrict-prototypes
 CFLAGS	+=	$(EXTRA_CFLAGS)
+# SD high speed is on in every build (docs/sd-high-speed.md); -DSDIO_NO_HIGH_SPEED turns it off.
+# cios-lib, fat-module and mload-module must all agree, so each Makefile has this block.
+ifeq ($(findstring -DSDIO_NO_HIGH_SPEED,$(EXTRA_CFLAGS)),)
+CFLAGS	+=	-DSDIO_HIGH_SPEED
+endif
 ARFLAGS	=	rcs
 
 # Libraries

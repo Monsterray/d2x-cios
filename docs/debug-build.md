@@ -3,7 +3,7 @@
 A d2x build for finding out what IOS was doing: counters for each module, one trace ring for all of them, the previous run's "last words", an ARM-side watchdog that resets the console when the PowerPC stops checking in, and faults you can inject to test the recovery paths on a real Wii. None of it is in a release build. The modules of a build without `-DD2X_DEBUG` are byte-identical to a build without this code: `tools/build.sh` with `SOURCE_DATE_EPOCH` pinned was compared hash for hash.
 
 ```sh
-D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG -DSDIO_HIGH_SPEED" tools/build.sh
+D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh
 make -C tests/wii/d2xdiag
 python tests/wii/d2xdiag.py -- --ios=250 --scenario=usb-csw-stall,sd-low
 ```
