@@ -267,6 +267,9 @@ void ehci_async_resume(void);
 int ehci_ports_have_ppc(void);
 int ehci_port_power_cycle(int port);
 void ehci_startup_recover(void);
+#ifdef D2X_DEBUG
+void ehci_trace_start(void);
+#endif
 
 extern struct ehci_hcd *ehci; /* @todo put ehci as a static global and remove ehci from APIs.. */
 extern int ehci_open_device(int vid,int pid,int fd);

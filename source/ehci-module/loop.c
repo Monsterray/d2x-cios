@@ -145,6 +145,13 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 	}
 
 	case USB_IOCTL_UMS_INIT: {
+#ifdef D2X_DEBUG
+		static int traced;
+
+		/* Repeat the start record once, now that the debug area is up */
+		if (!traced++)
+			ehci_trace_start();
+#endif
 		/* Initialize USB storage */
 		ret = USBStorage_Init();
 

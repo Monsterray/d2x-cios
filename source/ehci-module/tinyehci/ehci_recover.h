@@ -149,11 +149,22 @@ int ehci_port_power_cycle(int port)
  * Logs HCSPARAMS and PPC (D2X_DEBUG builds), so a bench run shows whether
  * Hollywood's EHCI can switch port power.
  */
+#ifdef D2X_DEBUG
+/* The 'c' record. At module start MLOAD may not have set the debug area up
+   yet, so the loop repeats it on the first UMS_INIT. */
+void ehci_trace_start(void)
+{
+	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'c', ehci->hcs_params, ehci_ports_have_ppc());
+}
+#endif
+
 void ehci_startup_recover(void)
 {
 	int i, ppc = ehci_ports_have_ppc();
 
-	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'c', ehci->hcs_params, ppc);
+#ifdef D2X_DEBUG
+	ehci_trace_start();
+#endif
 	for (i = 0; i < ehci->num_port; i++) {
 		u32 s = ehci_readl(&ehci->regs->port_status[i]);
 		if (!(s & PORT_CONNECT) || (s & PORT_OWNER))
