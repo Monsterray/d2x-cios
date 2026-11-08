@@ -64,6 +64,12 @@ struct sim {
 	int stall_csw;          /* the next CSW read STALLs; after the clear-halt the
 	                           CSW is there (BOT 6.7.2: the host reads it again) */
 
+	/* the port (PORTSC): the drive can be unplugged and come back */
+	bool disconnected;      /* CCS = 0 */
+	bool csc;               /* PORTSC.CSC, write-1-to-clear */
+	u64 replug_at_us;       /* when it comes back (0: never by itself) */
+	u32 portsc_writes, port_xfers_gone;
+
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;
 	u32 writes_ok, reads_ok, senses, toggle_losses;
@@ -78,6 +84,9 @@ extern struct sim sim;
 
 void sim_reset(void);           /* a fresh drive, no faults, time 0 */
 const char *sim_summary(void);
+void sim_unplug_for(u64 us);    /* unplug now; it is back (CSC set) after us */
+u32 sim_portsc_read(void);
+void sim_portsc_write(u32 v);
 
 /* ums_unit.c: the module code under test */
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
@@ -85,6 +94,9 @@ void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
 extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */
+s32 ums_init(void);             /* USBStorage_Init(): UMS_INIT on a mounted drive */
+int ums_keepalive_ready(void);  /* USBStorage_Keepalive_Ready() */
+int ums_is_dead(void);
 s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer);
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer);
 

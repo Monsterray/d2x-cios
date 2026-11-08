@@ -66,6 +66,7 @@ s32 USBStorage_Inquiry(usbstorage_handle *dev, u8 lun);
 
 s32 USBStorage_Try_Device(struct ehci_device *fd);
 void USBStorage_Umount(void);
+int USBStorage_Keepalive_Ready(void);
 
 #ifdef __cplusplus
    }

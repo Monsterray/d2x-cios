@@ -10,8 +10,30 @@
 
 struct ehci_regs { u32 status; u32 port_status[4]; };
 struct ehci_hcd { struct ehci_regs *regs; int num_port; struct ehci_device devices[4]; };
-struct ehci_hcd *ehci;
-#define ehci_readl(a) (*(volatile u32 *)(a))
+static struct ehci_regs sim_regs;
+static struct ehci_hcd sim_hcd = { .regs = &sim_regs, .num_port = 1 };
+struct ehci_hcd *ehci = &sim_hcd;
+/* PORTSC (port 0) is the simulated port: sim.c keeps it, write-1-to-clear */
+static u32 sim_rd(volatile u32 *a)
+{
+	return a == &sim_regs.port_status[0] ? sim_portsc_read() : *a;
+}
+static void sim_wr(u32 v, volatile u32 *a)
+{
+	if (a == &sim_regs.port_status[0])
+		sim_portsc_write(v);
+	else
+		*a = v;
+}
+#define ehci_readl(a) sim_rd((volatile u32 *)(a))
+#define ehci_writel(v, a) sim_wr((v), (volatile u32 *)(a))
+#define PORT_CONNECT (1 << 0)
+#define PORT_CSC     (1 << 1)
+#define PORT_PE      (1 << 2)
+#define PORT_PEC     (1 << 3)
+#define PORT_OCC     (1 << 5)
+#define PORT_OWNER   (1 << 13)
+#define PORT_RWC_BITS (PORT_CSC | PORT_PEC | PORT_OCC)
 #define printk(...) ((void)0)
 
 /* Globals that ehci.c and the module define. */
@@ -67,7 +89,14 @@ void ums_unplug(void)
 	handshake_mode = 0;
 	usb_timeout = 1000 * 1000;
 	sim_dev.toggles = 0;
+	ums_dead = 0;
+	ums_fail_n = 0;
 }
+
+/* UMS_INIT, the keepalive's check and the dead state, for the tests */
+s32 ums_init(void) { return USBStorage_Init(); }
+int ums_keepalive_ready(void) { return USBStorage_Keepalive_Ready(); }
+int ums_is_dead(void) { return ums_dead; }
 
 u32 ums_sector_size(void)
 {

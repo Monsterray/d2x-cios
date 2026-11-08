@@ -25,6 +25,61 @@ static void tick(u64 us)
 void ehci_usleep(int us) { tick(us); }
 void ehci_msleep(int ms) { tick((u64)ms * 1000); }
 
+/* PORTSC of port 0: CCS follows sim.disconnected; a replug sets CSC, which
+ * only a write of 1 clears. */
+#define P_CCS 0x1
+#define P_CSC 0x2
+#define P_PE  0x4
+#define P_PP  0x1000
+
+static void port_update(void)
+{
+	if (sim.disconnected && sim.replug_at_us && sim.now_us >= sim.replug_at_us) {
+		sim.disconnected = false;
+		sim.replug_at_us = 0;
+		sim.csc = true;
+		sim.phase = SIM_CBW;            /* a new connection: bus reset */
+		sim.halt_in = sim.halt_out = false;
+		sim.toggle_in = sim.toggle_out = 0;
+		if (sim.dev)
+			sim.dev->toggles = 0;
+	}
+}
+
+u32 sim_portsc_read(void)
+{
+	port_update();
+	return P_PP | (sim.disconnected ? 0 : P_CCS | P_PE) | (sim.csc ? P_CSC : 0);
+}
+
+void sim_portsc_write(u32 v)
+{
+	port_update();
+	sim.portsc_writes++;
+	if (v & P_CSC)
+		sim.csc = false;
+}
+
+void sim_unplug_for(u64 us)
+{
+	sim.disconnected = true;
+	sim.csc = true;
+	sim.replug_at_us = us ? sim.now_us + us : 0;
+}
+
+/* Transfers and resets on an unplugged port fail at once with -ENODEV, as
+ * tinyehci's handshake() and ehci_reset_port_old() do. */
+static bool port_gone(void)
+{
+	port_update();
+	if (sim.disconnected) {
+		sim.port_xfers_gone++;
+		unplug_device = 1;
+		return true;
+	}
+	return false;
+}
+
 /* A bus reset: the drive forgets its state and its toggles; tinyehci zeroes
  * the host's toggles when it resets the port or the device (ehci.c). */
 /* A reset ends a lost-CSW command (see lose_write_csw) */
@@ -46,9 +101,9 @@ static void bus_reset(void)
 		sim.dev->toggles = 0;
 }
 
-int ehci_reset_port(int port) { (void)port; sim.port_resets++; tick(60000); bus_reset(); return 0; }
-int ehci_reset_port2(int port) { (void)port; sim.port_resets++; tick(60000); bus_reset(); return 0; }
-int ehci_reset_device(struct ehci_device *dev) { (void)dev; sim.dev_resets++; tick(60000); bus_reset(); return 0; }
+int ehci_reset_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); bus_reset(); return 0; }
+int ehci_reset_port2(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); bus_reset(); return 0; }
+int ehci_reset_device(struct ehci_device *dev) { (void)dev; if (port_gone()) return -ENODEV; sim.dev_resets++; tick(60000); bus_reset(); return 0; }
 
 void *USB_Alloc(int size) { return calloc(1, size + 32); }
 void USB_Free(void *ptr) { free(ptr); }
@@ -117,6 +172,8 @@ s32 ehci_control_message(struct ehci_device *dev, u8 type, u8 req, u16 value, u1
 			 u16 len, void *buf)
 {
 	sim.dev = dev;
+	if (port_gone())
+		return -ENODEV;
 	tick(XFER_US);
 	if (type == 0x02 && req == USB_REQ_CLEARFEATURE && value == USB_FEATURE_ENDPOINT_HALT) {
 		/* USB 2.0 9.4.5: the halt clears and the toggle goes to DATA0 */
@@ -344,6 +401,8 @@ s32 ehci_bulk_message(struct ehci_device *dev, u8 ep, u16 len, void *data)
 	u8 *drive_toggle = in ? &sim.toggle_in : &sim.toggle_out;
 	u8 *p = data;
 	sim.dev = dev;
+	if (port_gone())
+		return -ENODEV;
 	if (sim.timeout_xfers > 0) {
 		sim.timeout_xfers--;
 		return no_answer();
