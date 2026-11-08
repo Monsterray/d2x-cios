@@ -22,7 +22,10 @@ import wii_targets as wt  # noqa: E402
 
 DOL = here.parent / "sdbench" / "sdbench.dol"
 REPORT = "sd:/sdbench.txt"
-WIICAP = os.environ.get("WIICAP", "C:/tools/wii-capture/wiicap.py")
+try:        # the capture card's wiicap.py ($WIICAP or ~/.wii-paths.json); none: no recording
+    WIICAP = str(wt.wii_paths.wiicap())
+except wt.wii_paths.NotFound:
+    WIICAP = ""
 
 
 def main():
@@ -38,7 +41,7 @@ def main():
     wt.hbc(wii, "rm", REPORT, timeout=30)            # an old report must not count
     outdir = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
     cap = None
-    if a.video and pathlib.Path(WIICAP).is_file():
+    if a.video and WIICAP:
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
                                 str(outdir / "sdbench.mp4"), "--label", "sdbench"])
     r = wt.hbc(wii, "run", "--timeout", str(a.timeout), str(DOL), *a.args,

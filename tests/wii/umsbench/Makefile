@@ -4,7 +4,7 @@
 #                                       the devkitPro MSYS2 shell)
 #     hbc.py run tests/wii/umsbench/umsbench.dol --ios=249 [--write-back]
 #
-# hbc_netlog.h is hbc-reborn's public-domain header (sdk/hbc_netlog.h).
+# hbc_netlog.h is hbc-reborn's public-domain header (sdk/hbc_netlog/hbc_netlog.h).
 
 ifeq ($(strip $(DEVKITPPC)),)
 $(error "Set DEVKITPPC in your environment.")

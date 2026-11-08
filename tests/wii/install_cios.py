@@ -29,8 +29,11 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 import wii_targets as wt  # noqa: E402
 
-# The shared HDMI capture card on the bench Wii (this workstation's tools).
-WIICAP = os.environ.get("WIICAP", "C:/tools/wii-capture/wiicap.py")
+# The shared HDMI capture card on the bench Wii: $WIICAP or ~/.wii-paths.json; without it no recording.
+try:
+    WIICAP = str(wt.wii_paths.wiicap())
+except wt.wii_paths.NotFound:
+    WIICAP = ""
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -61,7 +64,7 @@ def main():
     # its network log does not reach the PC, so send it and wait for HBC.
     out = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
     cap = None
-    if a.video and pathlib.Path(WIICAP).is_file():
+    if a.video and WIICAP:
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
                                 str(out / "install.mp4"), "--label", f"install {group}"])
     args = ["--auto", f"--dir={dest}"] + (["--dry-run"] if a.dry_run else [])
