@@ -23,7 +23,7 @@ transfer must stay below 64 KB).
 
 | Code | From | Meaning | What happens next |
 | --- | --- | --- | --- |
-| `-ENODEV` (-1) | `handshake()` | Port disconnected, port owner lost, fatal controller error, or a timeout outside set-up code | `unplug_device = 1`; the request waits for the drive (rule 1 below) |
+| `-ENODEV` (-1) | `handshake()` | Port disconnected, port owner lost, fatal controller error, or a timeout outside set-up code | `unplug_device = 1`; the request waits for the drive if PORTSC shows none (rule 1 below), else it keeps its deadline (rule 2) |
 | `-ETIMEDOUT` (-2) | `handshake()` in `handshake_mode` 1 | Timeout during set-up or recovery | The command's reset recovery |
 | `-EPIPE` (-5) | `ehci_do_urb()` | A control request STALLed | The caller's error path |
 | short count | `ehci_do_urb()` | A bulk transfer STALLed (or the device sent a short packet) | `__cycle()` clears the halt and reads the CSW (BOT 6.7.2, 6.7.3) |
@@ -38,14 +38,50 @@ never ran on hardware (REVIEW.md, EHCI item 7).
 
 `__USBStorage_Sectors()` applies these rules, in order:
 
-1. **The drive is gone** (`unplug_procedure()` cannot set it up): wait for
-   it without limit, so a game survives a replug. Once it is back, the
-   request starts afresh.
-2. **The drive answers but the request keeps failing:** after
+0. **The drive is dead** (see below): fail at once, no USB traffic.
+1. **The port shows no drive** (PORTSC CCS 0, or PORT_OWNER set: the drive is
+   unplugged): wait for it without limit, polling PORTSC every 100 ms and
+   resetting nothing, so a game survives a replug. Once it is back, the
+   request starts afresh: new tries, new deadline. Only PORTSC decides this.
+   A drive that is present but cannot be mounted (`unplug_procedure()`
+   fails) is not "gone": it falls to rule 2.
+2. **The drive is present but the request keeps failing:** after
    `USBSTORAGE_SECTOR_TRIES` attempts, or once `USBSTORAGE_REQUEST_MS` has
    passed, return failure. `__cycle()` checks the same deadline and starts
-   no new reset recovery after it.
+   no new reset recovery after it. This includes remounts that fail.
 3. Otherwise, try again.
+
+### The dead state
+
+Before 2026-11, a present drive that would not mount hung the loader: a
+failed `USBStorage_Try_Device()` runs `USBStorage_Close()`, which wipes
+`__usbfd` and sets `__mounted = 0`. After the first failed remount
+`unplug_procedure()` only slept 100 ms and returned 1 for ever (rule 1 waited
+for a drive that was there), and GET_CAPACITY returned 0. Also
+`ehci_reset_port_old()` wrote PORT_OWNER on every 100 ms poll with CCS 0.
+Now `unplug_procedure()` saves and restores `__usbfd`, `__lun` and
+`__mounted` when a remount fails, and:
+
+- After `UMS_DEAD_FAILS` failed remounts with the port connected, and
+  `UMS_DEAD_MIN_MS` since the start of the request in which the first one
+  failed, the drive is **dead**: sector requests return failure at once
+  (rule 0) with no USB traffic. Capacity stays valid (USB Loader GX ignores
+  the UMS_INIT result and only tests GET_CAPACITY != 0).
+- Dead ends on a replug (PORTSC CCS 0, or CSC set after it died), on
+  `UMS_INIT` (with the drive still unmountable it is dead again and the call
+  returns -ENODEV), or on the keepalive's retry, one remount try every
+  `UMS_DEAD_RETRY_MS`.
+- The keepalive (`__EHCI_Watchdog`, `loop.c`) reads a sector only when
+  `USBStorage_Keepalive_Ready()` says so: not while the drive is dead, and
+  not while PORTSC shows it unplugged, because the wait of rule 1 would hold
+  the module's single thread and the SD card with it.
+
+How callers see it: USB Loader GX (`usbstorage2.c`), d2x FAT
+(`fat-module/diskio.c`, `cios-lib/usbstorage.c`) and the DIP/WBFS reads
+(`wbfs.c`, `loop.c`) return the error at once, with no tight retry loop.
+Not verified: libfat's cache and a game's own DI retries after such errors.
+Not tested in the host harness: SD requests after the drive died (no SD
+card in it); the keepalive tests stand for that.
 
 The limits:
 
@@ -55,6 +91,9 @@ The limits:
 | Reset recoveries per command (`USBSTORAGE_CYCLE_RETRIES`) | 10 | `usbstorage.c` |
 | Attempts per sector request (`USBSTORAGE_SECTOR_TRIES`) | 4 | `usbstorage.c` |
 | Time per sector request (`USBSTORAGE_REQUEST_MS`) | 8000 ms | `usbstorage.c` |
+| Failed remounts before dead (`UMS_DEAD_FAILS`) | 2 | `usbstorage.c` |
+| Time since the first failed request before dead (`UMS_DEAD_MIN_MS`) | 15000 ms | `usbstorage.c` |
+| Dead drive: keepalive remount retry (`UMS_DEAD_RETRY_MS`) | 20000 ms | `usbstorage.c` |
 
 A drive that takes a write's data but never sends its status (the bench's
 SanDisk "USB 3.2Gen1") now fails in about 8.5 s, with no remount. Before
@@ -74,7 +113,11 @@ was mostly waiting for IOS.
 - **Host tests:** `tools/build.sh test` runs `tests/host/ums`, the real
   `usb.c` and `usbstorage.c` against a simulated drive (`sim.c`) with a
   simulated clock. Faults are fields in `struct sim`: `stall_write_data`,
-  `fail_write_csw`, `timeout_xfers`, `lose_write_csw`. Add a fault there
+  `fail_write_csw`, `timeout_xfers`, `lose_write_csw`, `stall_csw` (every CSW
+  STALLs: a present drive that never recovers). The port: `disconnected`
+  (CCS 0), `csc` (write-1-to-clear), `replug_at_us`, `sim_unplug_for(us)`;
+  counters `portsc_writes` and `port_xfers_gone` (transfers tried on an
+  unplugged port). Add a fault there
   and a test in `test_ums.c` for any new failure mode.
 - **Event log:** build with `EXTRA_CFLAGS=-DEHCI_DEBUG_LOG` and run
   `tests/wii/umsbench.py -- --log`. The log shows each CBW, transfer, qTD

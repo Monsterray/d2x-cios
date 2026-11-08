@@ -39,3 +39,14 @@ The release build of `develop` (11.1.0-rc2, with the `/dev/mload` fix), the end 
 Host tests added for the refactor (`tests/host/usbs`): direct-buffer write recovering from a STALL, and short data transfers (the module's residue paths) for a read and a write, bounce and direct. They pass on the old and the new `__cycle`. The tests already covered 16 KB chunking and bounce/direct both ways.
 
 Not done: `-Os` is already on everywhere; Thumb is already on everywhere (only the syscall stubs, `start.s` and `.init` are ARM); there are no debug strings in release (`.rodata` is 196 bytes in the data region). The WBFS ioctls are live (USB Loader GX), so wbfs.c stays. Next candidates if room is needed again: `sdio_Startup` (952 bytes, cold), `wbfs_open_partition`'s reset-only branch (about 150 bytes, needs a compile-time switch in the shared lib).
+
+## EHCI with the USB recovery (feat/usb-recovery, 2026-11-08)
+
+The dead-drive state and the PORTSC-based wait (REVIEW.md, EHCI item 11), end of the loaded segment in the `exe` region (0x5000 = 20480), read from the ELFs:
+
+| Build | Used | Free |
+| --- | --- | --- |
+| Release | 16968 | 3512 |
+| `+dbg` | 18024 | 2456 |
+
+The release build was 16432 (4048 free) before: +536 bytes.
