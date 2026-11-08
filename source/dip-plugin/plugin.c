@@ -33,6 +33,9 @@
 #include "frag.h"
 #include "string.h"
 #include "trace.h"
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#endif
 
 
 /* Global config */
@@ -246,6 +249,14 @@ s32 DI_EmulateCmd(u32 *inbuf, u32 *outbuf, u32 size)
 
 	DI_Printf("DIP: DI_EmulateCmd(0x%x)\n", cmd);
 	DIP_TRACE(DIP_T_CMD, cmd, inbuf[1], inbuf[2]);
+
+#ifdef D2X_DEBUG
+	/* A fault set through /dev/d2xdbg (d2xdbg.h): the command fails unrun */
+	if (D2XDBG_POINT(D2XDBG_M_DIP, D2XDBG_P_DI, cmd)) {
+		DIP_TRACE(DIP_T_CMD_END, cmd, DIP_EIO, 0);
+		return DIP_EIO;
+	}
+#endif
 
 	/* Reset error */
 	if (cmd != IOCTL_DI_REQERROR)
@@ -733,6 +744,15 @@ s32 DI_EmulateIoctl(ioctl *buffer, s32 fd)
 
 	DI_Printf("DIP: DI_EmulateIoctl(0x%x)\n", cmd);
 	DIP_TRACE(DIP_T_IOCTL, cmd, fd, 0);
+
+#ifdef D2X_DEBUG
+	/* The same fault for a DI ioctl (d2xdiag's di-error asks for the cover
+	   status, which never reaches DI_EmulateCmd): the ioctl fails unrun */
+	if (D2XDBG_POINT(D2XDBG_M_DIP, D2XDBG_P_DI, cmd)) {
+		DIP_TRACE(DIP_T_IOCTL_END, cmd, DIP_EIO, 0);
+		return DIP_EIO;
+	}
+#endif
 
 	/* Parse command */
 	switch (cmd) {

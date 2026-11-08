@@ -52,6 +52,8 @@ shell|clean|test) ;;
     fi
     commit=$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
     [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ] && commit="$commit-dirty"
+    # A debug build (-DD2X_DEBUG) answers this through /dev/d2xdbg
+    D2X_IDENT="$vstring@$commit"
     D2XINFO="${D2XNAME:-d2x-v$major-$vstring}: version $major, version string $vstring, commit $commit, variant ${variant:-none}, flags ${flags:-none}"
     if [ "${1:-}" = "version" ]; then
         echo "name=${D2XNAME:-d2x-v$major-$vstring}"
@@ -92,7 +94,8 @@ run() {
     docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp \
         ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} \
         ${EXTRA_CFLAGS:+-e EXTRA_CFLAGS="$EXTRA_CFLAGS"} \
-        ${D2XNAME:+-e D2XNAME="$D2XNAME"} ${D2XINFO:+-e D2XINFO="$D2XINFO"} "$@"
+        ${D2XNAME:+-e D2XNAME="$D2XNAME"} ${D2XINFO:+-e D2XINFO="$D2XINFO"} \
+        ${D2X_IDENT:+-e D2X_IDENT="$D2X_IDENT"} "$@"
 }
 
 case "${1:-}" in

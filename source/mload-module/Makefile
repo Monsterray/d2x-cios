@@ -47,6 +47,17 @@ OBJS	=	debug.o		\
 		swi_asm.o	\
 		tid.o
 
+# Debug builds (-DD2X_DEBUG): the debug area, /dev/d2xdbg and the watchdog
+# (d2xdbg.h). d2xdbg_ident.h names the build; it is rewritten only when the
+# name changes, so the object's dependencies stay right.
+ifneq ($(findstring -DD2X_DEBUG,$(EXTRA_CFLAGS)),)
+OBJS	+=	dbg.o		\
+		dbg_core.o
+D2X_IDENT ?= unknown
+$(shell printf '#define D2X_IDENT "%s"\n' '$(D2X_IDENT)' > d2xdbg_ident.h.new; \
+	cmp -s d2xdbg_ident.h.new d2xdbg_ident.h || mv d2xdbg_ident.h.new d2xdbg_ident.h; rm -f d2xdbg_ident.h.new)
+endif
+
 
 $(TARGET).elf: $(OBJS) $(LIBS)
 	@printf ' LD\t%s\n' $@

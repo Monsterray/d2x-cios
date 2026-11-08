@@ -21,7 +21,8 @@ LIBS	=
 TARGET	=	cios-lib
 
 # Objects
-OBJS	=	direct_syscalls.o	\
+OBJS	=	d2xdbg.o		\
+		direct_syscalls.o	\
 		fat_tools.o		\
 		ios.o			\
 		ipc.o			\

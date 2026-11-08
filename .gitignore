@@ -10,6 +10,7 @@
 build/
 dist/
 /stripios
+source/mload-module/d2xdbg_ident.h
 
 # Host test binaries (tests/host): any test_* except its sources, plus sanitizer and coverage output
 tests/host/*/test_*

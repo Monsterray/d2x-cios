@@ -22,12 +22,16 @@
 
 	.text
 
-	.code 16
+/* An exception always enters in ARM state, so the vector is ARM code from
+   its first word. The Thumb "bx pc" that used to start it was executed as
+   the ARM instruction 0x47780000, "ldrmibt r0, [r8], r0": whenever the
+   caller's N flag was set at the svc (a negative result just compared),
+   it replaced arg0 with a byte read through r8, added arg0 to the caller's
+   r8, and could abort on an unmapped r8 with IRQs off, stopping IOS. */
+	.code 32
+	.balign 4
 	.global SwiVector
 SwiVector:
-	bx	 pc
-
-	.code 32
 	ldr	sp, =swi_stack
 	nop
 	stmfd	sp!, {r1-r12,lr}

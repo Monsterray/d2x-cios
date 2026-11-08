@@ -31,6 +31,11 @@
 #include "tid.h"
 #include "types.h"
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#include "dbg.h"
+#endif
+
 s32 running_title = 0;
 s32 es_request    = 0;
 
@@ -197,6 +202,15 @@ s32 Swi_Handler(u32 arg0, u32 arg1, u32 arg2, u32 arg3)
 
 		break;
 	}
+
+#ifdef D2X_DEBUG
+	/** Debug area: events, fault points, watchdog, device **/
+	case D2XDBG_SWI_EVENT:
+	case D2XDBG_SWI_POINT:
+	case D2XDBG_SWI_WDTICK:
+	case D2XDBG_SWI_CTRL:
+		return Dbg_Swi(arg0, arg1, arg2, arg3);
+#endif
 
 	default:
 		break;
