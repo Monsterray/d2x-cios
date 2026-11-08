@@ -30,6 +30,8 @@ The release build of `develop` (11.1.0-rc2, with the `/dev/mload` fix), the end 
 | ES | 8192 | 2872 | 5320 |
 | FFSP | 12288 | 6700 | 5588 |
 
+USBS with bounded transfers (`usb2.c`, branch `feat/usbs-async`, 2026-11-08): release 11548 used, 740 free (was 11196, 1092 free); +dbg 11932 used, 356 free.
+
 | Change | Bytes (USBS) | Why it does not change speed |
 | --- | --- | --- |
 | `cios-lib/syscalls.s`, `tools.s`: one section per stub (`.text.NAME`), so `--gc-sections` drops the stubs a module never calls (the whole file, 55 stubs of 8 bytes, was one section). All modules link it. | -396 (MLOAD -316, FAT -360, EHCI -400, DIPP -404, ES -392, FFSP -404) | The same instructions, only unused stubs go; no call path changes. |

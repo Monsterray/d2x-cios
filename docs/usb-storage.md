@@ -55,6 +55,8 @@ The limits:
 | Reset recoveries per command (`USBSTORAGE_CYCLE_RETRIES`) | 10 | `usbstorage.c` |
 | Attempts per sector request (`USBSTORAGE_SECTOR_TRIES`) | 4 | `usbstorage.c` |
 | Time per sector request (`USBSTORAGE_REQUEST_MS`) | 8000 ms | `usbstorage.c` |
+| One USBS transfer (`USBS_XFER_TIMEOUT_MS`) | 4000 ms, then a cancel | `usb2.c` |
+| Wait for the cancelled USBS transfer (`USB_CANCEL_WAIT_US`) | 1 s, then an orphan | `usb2.c` |
 
 A drive that takes a write's data but never sends its status (the bench's
 SanDisk "USB 3.2Gen1") now fails in about 8.5 s, with no remount. Before
@@ -109,8 +111,33 @@ same rules as the EHCI module:
     the same way, but only EHCI has run it);
   - whether `USB_CancelEndpoint()`, which USBS uses as clear-halt, also clears
     the halt on the drive;
-  - an IOS transfer that never returns: the deadline is checked between
-    transfers only, so a blocked ioctl blocks the request.
+  - the bounded transfer (below): `os_ioctlv_async()` with a queue, a timer and
+    `USB_CancelEndpoint()` has run only against the host model
+    (`tests/host/usbs/test_usbs_async.c`); what real IOS58 sends back after
+    the cancel is not verified.
+
+### USBS: a transfer that never returns
+
+Each bulk or interrupt transfer (`usb2.c`) goes to IOS with
+`os_ioctlv_async()` and waits on a private queue for its own reply or for a
+one-shot timer. The queue and the timer are made once, in `USB_Init()`.
+
+- After `USBS_XFER_TIMEOUT_MS` (4000 ms; a build option) with no reply, the
+  module sends `USB_CancelEndpoint()` (USBV5 ioctl 17) for that endpoint and
+  returns `USBSTORAGE_ETIMEDOUT`. `usbstorage.c` then runs the same timeout
+  and recovery path as for an EHCI timeout.
+- It then waits at most 1 s (`USB_CANCEL_WAIT_US`) for the cancelled request to
+  come back. If it does not, the request's message is kept as an orphan and
+  never reused; the next transfer waits again up to 1 s for it, and frees it
+  when its reply arrives.
+- Each wait ends by sending a flush marker and reading up to it, so a timer
+  message or an old reply left in the queue is never taken for the next
+  transfer's. A transfer is identified by the address of its reply.
+- The 16 KB per-transfer limit stays. This bounds a drive that stops
+  answering. It does not help when IOS itself hangs, and the BOT reset
+  recovery in `usbstorage.c` is still a synchronous call.
+- The 4 s is a guess: a drive that spins up slowly can take longer on its first
+  transfer, and would then see a cancel and a recovery.
 
 ### USBS transfer sizes
 
@@ -132,10 +159,10 @@ path did (65024, `USBS_MAX_DIRECT`). **That hangs IOS on a real Wii**: umsbench'
 64-sector read (32 KB, one direct transfer into an aligned MEM2 buffer) never
 returned from `/dev/usb/ven` on base 58 (IOS58 v6175); the console froze and
 needed a power cycle. The 8 s deadline could not help, because the IPC call
-itself blocks. 16 KB transfers work. The per-transfer limit of IOS58's
+itself blocked (it is now bounded by the transfer timeout above). 16 KB transfers work. The per-transfer limit of IOS58's
 `/dev/usb/ven` looks like 16 KB, which matches libogc's `MAX_TRANSFER_SIZE_V5`.
 So the separate direct size is gone. **Do not try a bigger transfer again
-without a timeout that IOS itself enforces**: a hang needs a power cycle. The
+without an attended test**: a hang needs a power cycle. The
 callers (`wbfs.c`) do the cache invalidate and flush over the whole request. A
 64-sector read is 2 data transfers (4 with CBW and CSW), a 127-sector one 4, a
 200-sector one 7, on either path.
