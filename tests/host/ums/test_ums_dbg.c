@@ -134,13 +134,12 @@ static void test_hang_fault_never_returns(void)
 	CHECK(DBG_MOD(EHCI)->cur_start != 0, "the request is still open: last words show where it stopped");
 }
 
-/* KNOWN BUG. A CSW that STALLs every time should end the request with an
- * error once its time is up. It does not: when __cycle() runs out of reset
- * recoveries it forces an unplug (-ENODEV), the remount's own commands fail
- * the same way, and a drive that cannot be mounted again is waited for
- * without limit (rule 1 of __USBStorage_Sectors(), meant for a replug). The
- * loader's IPC call never returns. REVIEW.md, "A present drive that cannot
- * mount again". (A CSW lost every time, -ETIMEDOUT, ends the same way.) */
+/* A CSW that STALLs every time ends the request with an error once its time
+ * is up. When __cycle() runs out of reset recoveries it forces an unplug
+ * (-ENODEV); the remount's own commands fail the same way, but the port still
+ * shows the drive, so the wait keeps the request deadline (rule 1 of
+ * __USBStorage_Sectors()) and the drive is then marked dead. (A CSW lost every
+ * time, -ETIMEDOUT, ends the same way.) docs/usb-storage.md. */
 static void test_csw_stall_every_time_fails_in_time(void)
 {
 	d2xdbg_mod *m = DBG_MOD(EHCI);
@@ -158,6 +157,32 @@ static void test_csw_stall_every_time_fails_in_time(void)
 	      sim_summary());
 }
 
+/* The start-up traces the controller (HCSPARAMS, PPC) and each power cycle, so
+ * a bench run shows whether Hollywood's EHCI can switch port power. */
+static void test_startup_traces_ppc_and_the_power_cycle(void)
+{
+	dbg_host_now = now_ticks;
+	dbg_host_sleep_ms = sleep_ms;
+	dbg_host_reset();
+	sim.ppc = false;
+	ums_startup();
+	CHECK(dbg_host_count(EHCI, D2XDBG_E_RESET) == 1, "PPC 0: %u events", dbg_host_count(EHCI, D2XDBG_E_RESET));
+	dbg_host_reset();
+	sim.ppc = true;
+	ums_startup();
+	CHECK(dbg_host_count(EHCI, D2XDBG_E_RESET) == 2, "PPC 1: %u events", dbg_host_count(EHCI, D2XDBG_E_RESET));
+}
+
+/* A request whose transfers all fail waits for the doorbell, in a +dbg build too */
+static void test_quiesce_traces_the_doorbell(void)
+{
+	dbg_host_now = now_ticks;
+	dbg_host_sleep_ms = sleep_ms;
+	dbg_host_reset();
+	CHECK(ums_quiesce() == 0, "needed a halt");
+	CHECK(dbg_host_count(EHCI, D2XDBG_E_RESET) == 1, "the wait was not traced");
+}
+
 static const struct hc_test tests[] = {
 	{ "read_counts_a_request", test_read_counts_a_request, false },
 	{ "csw_stall_fault_clears_halt", test_csw_stall_fault_clears_halt, false },
@@ -167,7 +192,9 @@ static const struct hc_test tests[] = {
 	{ "skip_lets_the_first_through", test_skip_lets_the_first_through, false },
 	{ "delay_fault_waits", test_delay_fault_waits, false },
 	{ "hang_fault_never_returns", test_hang_fault_never_returns, false },
-	{ "csw_stall_every_time_fails_in_time", test_csw_stall_every_time_fails_in_time, true },
+	{ "csw_stall_every_time_fails_in_time", test_csw_stall_every_time_fails_in_time, false },
+	{ "startup_traces_ppc_and_the_power_cycle", test_startup_traces_ppc_and_the_power_cycle, false },
+	{ "quiesce_traces_the_doorbell", test_quiesce_traces_the_doorbell, false },
 };
 
 static void setup(void)

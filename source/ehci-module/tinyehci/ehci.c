@@ -181,6 +181,7 @@ static void ums_log_event(u8 what, u8 ep, u32 len, s32 ret);
 #endif
 #include "ums_quirks.h"
 #define get_timer()  (*(((vu32*)HW_TIMER)))
+#include "ehci_recover.h"
 
 /* handshake() polls this long (Hollywood timer ticks, about 0.53 us each)
    before it sleeps between checks: most transfers finish within it, and an
@@ -545,6 +546,7 @@ u32 usb_timeout=1000*1000;
 		int			maxp = 0;
         int retval=0;
         int halted;
+        int async_halted = 0;
 
 		//writel (INTR_MASK, &ehci->regs->intr_enable); // try interrupt
 
@@ -675,9 +677,16 @@ u32 usb_timeout=1000*1000;
         if(retval>=0)
         // wait hc really stopped
                 retval = handshake(&ehci->regs->port_status[dev->port],&ehci->regs->async_next,~0,ehci->async->qh_dma,20*1000);
+        else
+        // A failed transfer: the controller may still hold the unlinked QH.
+        // Wait for the async advance doorbell, or halt the schedule, before
+        // the qTDs are freed and the QH is reused (ehci_recover.h).
+                async_halted = ehci_async_quiesce();
         //release memory, and actualise urb->actual_length
         UMS_LOG('a', urb->ep, 0, retval);
         qh_end_transfer();
+        if(async_halted)
+                ehci_async_resume();
 
 		//writel (0, &ehci->regs->intr_enable);  // try interrupt
         

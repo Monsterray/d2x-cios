@@ -315,16 +315,21 @@ void __EHCI_Watchdog(void)
 
 		/* Device available */
 		if (nbSectors) {
-			/* Allocate buffer */
-			buffer = Mem_Alloc(sectorSz);
-			if (!buffer)
-				return;
+			/* Not while the drive is dead (retried slowly instead) or
+			   unplugged (the wait for a replug would hold up this
+			   thread and the SD card with it) */
+			if (USBStorage_Keepalive_Ready()) {
+				/* Allocate buffer */
+				buffer = Mem_Alloc(sectorSz);
+				if (!buffer)
+					return;
 
-			/* Read random sector */
-			USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
+				/* Read random sector */
+				USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
 
-			/* Free buffer */
-			Mem_Free(buffer);
+				/* Free buffer */
+				Mem_Free(buffer);
+			}
 
 			/* Restart watchdog timer */
 			os_restart_timer(timerId, WATCHDOG_TIMER, 0);

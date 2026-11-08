@@ -16,6 +16,8 @@
 
 #define SECTOR SIM_SECTOR_SIZE
 
+extern int unplug_device;
+
 static u8 buf[128 * SECTOR], back[128 * SECTOR];
 
 static void fill(u8 *p, size_t n, u8 seed)
@@ -230,6 +232,332 @@ static void test_write_with_one_lost_status_recovers(void)
 	CHECK(sim.port_resets == 0, "a lost status cost a port reset (a remount): %s", sim_summary());
 }
 
+/* ---- the port: a drive that is gone, and a drive that is there but dead ----
+ * "Stall every time" is sim.stall_csw = 1000000: every CSW STALLs, so every
+ * request, reset recovery and remount fails while the port shows the drive. */
+
+/* Make the drive dead: two failed requests, the second 15 s after the first
+ * remount failed. Leaves the fault on. */
+static void make_dead_mounted(void)
+{
+	sim.stall_csw = 1000000;
+	CHECK(!USBStorage_Read_Sectors(19, 1, buf), "request 1 succeeded");
+	CHECK(!ums_is_dead(), "dead after one failed request");
+	CHECK(!USBStorage_Read_Sectors(19, 1, buf), "request 2 succeeded");
+	CHECK(ums_is_dead(), "not dead after two failed requests, %.1f s: %s", sim.now_us / 1e6, sim_summary());
+}
+
+static void make_dead(void)
+{
+	mount();
+	CHECK_OK();
+	make_dead_mounted();
+}
+
+/* A drive that is unplugged is waited for without limit, however long, and
+ * the request then succeeds. */
+static void test_unplug_waits_until_replug(void)
+{
+	mount();
+	CHECK_OK();
+	sim_unplug_for(60 * 1000000ull);
+	CHECK(USBStorage_Read_Sectors(10, 1, buf), "read failed after the replug: %s", sim_summary());
+	CHECK(sim.now_us >= 60 * 1000000ull && sim.now_us < 70 * 1000000ull, "took %.1f s", sim.now_us / 1e6);
+	CHECK(memcmp(buf, sim.data + 10 * SECTOR, SECTOR) == 0, "other data");
+	CHECK(!ums_is_dead(), "dead after a replug");
+}
+
+/* A drive that is there but never answers: request 1 fails at its 8 s
+ * deadline, request 2 makes it dead (15 s after the first failed remount),
+ * and from then on requests fail at once with no USB traffic. */
+static void test_dead_drive_fails_fast(void)
+{
+	u64 t;
+	u32 cbws;
+	make_dead();
+	CHECK(sim.now_us >= 15 * 1000000ull && sim.now_us <= 25 * 1000000ull, "dead after %.1f s", sim.now_us / 1e6);
+	t = sim.now_us;
+	cbws = sim.cbws;
+	sim.port_xfers_gone = 0;
+	for (int i = 0; i < 5; i++) {
+		CHECK(!USBStorage_Read_Sectors(19 + i, 1, buf), "dead drive read ok");
+	}
+	CHECK(!USBStorage_Write_Sectors(30, 1, buf), "dead drive write ok");
+	CHECK(sim.now_us - t < 100000, "a dead drive took %.3f s", (sim.now_us - t) / 1e6);
+	CHECK(sim.cbws == cbws && sim.port_xfers_gone == 0, "USB traffic to a dead drive: %s", sim_summary());
+	/* GX asks for the capacity and ignores UMS_INIT's result: it stays valid */
+	CHECK(ums_sector_size() == SECTOR, "capacity lost: %u", ums_sector_size());
+}
+
+/* A replug (CSC after it died, or CCS 0) ends the dead state. */
+static void test_replug_clears_dead(void)
+{
+	make_dead();
+	sim.stall_csw = 0;
+	sim.csc = true;                 /* unplugged and back between two requests */
+	CHECK(USBStorage_Read_Sectors(21, 1, buf), "read failed after the replug: %s", sim_summary());
+	CHECK(!ums_is_dead(), "still dead after a replug");
+
+	/* and again, by the other way: CCS 0 for a while */
+	sim.stall_csw = 1000000;
+	sim.now_us += 100 * 1000000ull;
+	CHECK(!USBStorage_Read_Sectors(19, 1, buf), "request succeeded");
+	CHECK(!USBStorage_Read_Sectors(19, 1, buf), "request succeeded");
+	CHECK(ums_is_dead(), "not dead again: %s", sim_summary());
+	sim.stall_csw = 0;
+	sim_unplug_for(3 * 1000000ull);
+	CHECK(USBStorage_Read_Sectors(22, 1, buf), "read failed after the second replug: %s", sim_summary());
+	CHECK(!ums_is_dead(), "still dead after the second replug");
+}
+
+/* UMS_INIT ends the dead state; with the fault still on the drive is dead
+ * again and the call is non-zero. */
+static void test_ums_init_clears_dead(void)
+{
+	make_dead();
+	CHECK(ums_init() != 0, "UMS_INIT succeeded on a drive that cannot mount");
+	CHECK(ums_is_dead(), "not dead after a failed UMS_INIT");
+	CHECK(ums_sector_size() == SECTOR, "capacity lost");
+	sim.stall_csw = 0;
+	CHECK(ums_init() == 0, "UMS_INIT failed on a working drive: %s", sim_summary());
+	CHECK(!ums_is_dead(), "still dead after UMS_INIT");
+	CHECK(USBStorage_Read_Sectors(23, 1, buf), "read failed: %s", sim_summary());
+}
+
+/* The keepalive does not touch a dead drive (no timed retry: it would stall
+ * the module's one thread, and the SD card with it, at random moments) and
+ * does not start the wait for an unplugged one, for the same reason. */
+static void test_keepalive_skips_dead_and_unplugged(void)
+{
+	u32 cbws;
+	mount();
+	CHECK_OK();
+	CHECK(ums_keepalive_ready(), "a healthy drive is not kept alive");
+	unplug_device = 1;
+	sim_unplug_for(0);
+	CHECK(!ums_keepalive_ready(), "the keepalive would wait for an unplugged drive");
+	sim.disconnected = false;
+	sim.csc = true;
+	CHECK(ums_keepalive_ready(), "a drive that is back is not kept alive");
+	unplug_device = 0;
+
+	make_dead_mounted();
+	cbws = sim.cbws;
+	sim.port_xfers_gone = 0;
+	for (int i = 0; i < 12; i++) {
+		CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive");
+		sim.now_us += 10 * 1000000ull;
+	}
+	CHECK(ums_is_dead(), "something ended the dead state without a replug or UMS_INIT");
+	CHECK(sim.cbws == cbws && sim.port_xfers_gone == 0,
+	      "USB traffic to a dead drive in 2 minutes: %s", sim_summary());
+}
+
+/* A dead drive that recovers on its own stays dead (no timed retry) until
+ * the loader asks again with UMS_INIT, or the drive is replugged. */
+static void test_dead_needs_init_or_replug(void)
+{
+	u32 cbws;
+	make_dead();
+	sim.stall_csw = 0;
+	cbws = sim.cbws;
+	sim.now_us += 60 * 1000000ull;
+	CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive");
+	CHECK(ums_is_dead(), "revived with no replug or UMS_INIT");
+	CHECK(sim.cbws == cbws, "USB traffic to a dead drive: %s", sim_summary());
+	CHECK(ums_init() == 0, "UMS_INIT failed on a working drive: %s", sim_summary());
+	CHECK(ums_keepalive_ready(), "not ready after UMS_INIT");
+	CHECK(USBStorage_Read_Sectors(24, 1, buf), "read failed: %s", sim_summary());
+}
+
+/* --- Step 3: a failed transfer's QH is released through the doorbell --- */
+
+/* The controller answers the async advance doorbell: ehci_async_quiesce()
+ * rings it, waits for IAA, clears it (W1C) and the doorbell bit, and leaves
+ * the schedule running. */
+static void test_quiesce_waits_for_iaa(void)
+{
+	CHECK(ums_quiesce() == 0, "needed the schedule halted");
+	CHECK(sim.doorbells == 1, "%u doorbells", sim.doorbells);
+	CHECK(sim.ase_clears == 0, "halted the schedule although IAA came");
+	CHECK(!sim.iaa_set, "IAA left set (it is write-1-to-clear)");
+	CHECK(!(sim.hc_cmd & 0x40), "IAAD left set");
+	CHECK(sim.now_us < 20000, "took %.1f ms", sim.now_us / 1e3);
+}
+
+/* No doorbell: the schedule is halted (CMD_ASE cleared, STS_ASS waited for),
+ * the caller frees, and the schedule is enabled again. It is bounded. */
+static void test_quiesce_without_iaa_halts_the_schedule(void)
+{
+	sim.iaa_never = true;
+	CHECK(ums_quiesce() == 1, "did not fall back to halting the schedule");
+	CHECK(sim.doorbells == 1 && sim.ase_clears == 1 && sim.ase_sets == 1, "doorbells %u, ASE cleared %u, set %u",
+	      sim.doorbells, sim.ase_clears, sim.ase_sets);
+	CHECK((sim.hc_cmd & 0x20) && sim.hc_ass, "the schedule is not running again");
+	CHECK(sim.async_next == 0x1000, "the list address was not set to the head: %x", sim.async_next);
+	CHECK(sim.now_us < 25000, "took %.1f ms", sim.now_us / 1e3);
+}
+
+/* Not even STS_ASS clears: still bounded (IAA wait + ASS wait). */
+static void test_quiesce_is_bounded_when_the_controller_is_wedged(void)
+{
+	sim.iaa_never = true;
+	sim.ass_stuck = true;
+	CHECK(ums_quiesce() == 1, "returned %d", 1);
+	CHECK(sim.now_us < 45000, "took %.1f ms", sim.now_us / 1e3);
+	CHECK(sim.now_us >= 39000, "gave up after %.1f ms", sim.now_us / 1e3);
+}
+
+/* Nothing holds a QH when the schedule is off */
+static void test_quiesce_skips_an_idle_schedule(void)
+{
+	sim.hc_ass = false;
+	CHECK(ums_quiesce() == 0 && sim.doorbells == 0 && sim.now_us == 0, "rang the doorbell of an idle controller");
+}
+
+/* --- Step 4: the ports are reset at start --- */
+
+static void test_startup_resets_a_connected_port(void)
+{
+	sim.ppc = false;
+	ums_startup();
+	CHECK(sim.port_resets == 1, "%u port resets", sim.port_resets);
+	CHECK(sim.power_offs == 0 && sim.power_cycles == 0, "a port without power switches was power cycled");
+	printf("    added at start, PPC 0: %.0f ms\n", sim.now_us / 1e3);
+}
+
+static void test_startup_power_cycles_with_ppc(void)
+{
+	sim.ppc = true;
+	ums_startup();
+	CHECK(sim.power_offs == 1 && sim.power_cycles == 1, "power off %u, on %u", sim.power_offs, sim.power_cycles);
+	CHECK(sim.port_resets == 1, "%u port resets", sim.port_resets);
+	CHECK(!sim.disconnected && !sim.unpowered, "the drive is not back");
+	CHECK(!sim.csc, "the power cycle's own connect change was left set");
+	CHECK(sim.now_us < 1500000, "added %.0f ms", sim.now_us / 1e3);
+	printf("    added at start, PPC 1: %.0f ms\n", sim.now_us / 1e3);
+}
+
+static void test_startup_skips_an_empty_port(void)
+{
+	sim.ppc = true;
+	sim.disconnected = true;
+	ums_startup();
+	CHECK(sim.port_resets == 0 && sim.power_offs == 0 && sim.now_us == 0, "touched a port with no drive");
+}
+
+/* Without PPC a power cycle is refused and writes nothing */
+static void test_power_cycle_needs_ppc(void)
+{
+	sim.ppc = false;
+	CHECK(ums_power_cycle() < 0, "power cycled without PPC");
+	CHECK(sim.portsc_writes == 0, "wrote PORTSC");
+}
+
+/* A drive that an earlier reset left stuck mounts after the start-up reset */
+static void test_stuck_drive_mounts_after_a_port_reset(void)
+{
+	sim.stuck = 1;
+	sim.ppc = false;
+	CHECK(ums_plug() != 0, "a stuck drive mounted without the start-up reset");
+	ums_unplug();
+	ums_startup();
+	CHECK(sim.stuck == 0, "the start-up reset did not restart the drive");
+	CHECK(ums_plug() == 0, "mount failed after the start-up reset: %s", sim_summary());
+}
+
+static void test_stuck_drive_mounts_after_a_power_cycle(void)
+{
+	sim.stuck = 2;
+	sim.ppc = true;
+	ums_startup();
+	CHECK(sim.stuck == 0, "the power cycle did not restart the drive");
+	CHECK(ums_plug() == 0, "mount failed after the start-up power cycle: %s", sim_summary());
+	CHECK(USBStorage_Read_Sectors(5, 1, buf), "read failed: %s", sim_summary());
+}
+
+/* Without power switches that drive stays stuck: the limit, stated */
+static void test_power_stuck_drive_stays_stuck_without_ppc(void)
+{
+	sim.stuck = 2;
+	sim.ppc = false;
+	ums_startup();
+	CHECK(sim.stuck == 2, "restarted without a power cycle");
+	CHECK(ums_plug() != 0, "mounted");
+}
+
+/* --- Step 5: the ladder within one request's deadline --- */
+
+#define IN_TIME(what) CHECK(sim.now_us <= (u64)(ums_request_ms + 2000) * 1000, "%s: %.1f s", what, sim.now_us / 1e6)
+
+/* A fault that only a port reset clears: rung 3 */
+static void test_ladder_port_reset_clears_the_fault(void)
+{
+	mount();
+	CHECK_OK();
+	sim.stuck = 1;
+	CHECK(USBStorage_Read_Sectors(40, 4, buf), "read failed: %s", sim_summary());
+	CHECK(memcmp(buf, sim.data + 40 * SECTOR, 4 * SECTOR) == 0, "other data");
+	CHECK(sim.port_resets >= 1 && sim.power_cycles == 0, "resets %u, power cycles %u", sim.port_resets, sim.power_cycles);
+	IN_TIME("recovered");
+}
+
+/* Only a power cycle clears it, and the ports have power switches: rung 4 */
+static void test_ladder_power_cycle_clears_the_fault(void)
+{
+	mount();
+	CHECK_OK();
+	sim.ppc = true;
+	sim.stuck = 2;
+	CHECK(USBStorage_Read_Sectors(41, 4, buf), "read failed: %s", sim_summary());
+	CHECK(memcmp(buf, sim.data + 41 * SECTOR, 4 * SECTOR) == 0, "other data");
+	CHECK(sim.power_cycles == 1, "%u power cycles", sim.power_cycles);
+	IN_TIME("recovered");
+}
+
+/* The same, but the drive mounts after the port reset and only reads and
+ * writes stay stuck: the second failure in the request escalates. */
+static void test_ladder_escalates_when_the_remount_works(void)
+{
+	mount();
+	CHECK_OK();
+	sim.ppc = true;
+	sim.stuck = 2;
+	sim.stuck_io_only = true;
+	fill(buf, 8 * SECTOR, 9);
+	CHECK(USBStorage_Write_Sectors(42, 8, buf), "write failed: %s", sim_summary());
+	CHECK(memcmp(sim.data + 42 * SECTOR, buf, 8 * SECTOR) == 0, "the data did not land");
+	CHECK(sim.port_resets >= 1 && sim.power_cycles == 1, "resets %u, power cycles %u", sim.port_resets, sim.power_cycles);
+	IN_TIME("recovered");
+}
+
+/* Without PPC there is no rung 4: the request fails at its deadline, not later */
+static void test_ladder_without_ppc_fails_in_time(void)
+{
+	mount();
+	CHECK_OK();
+	sim.ppc = false;
+	sim.stuck = 2;
+	CHECK(!USBStorage_Read_Sectors(43, 4, buf), "read succeeded");
+	CHECK(sim.power_cycles == 0 && sim.power_offs == 0, "power cycled without PPC");
+	IN_TIME("gave up");
+}
+
+/* A fault nothing clears, with PPC: one power cycle, then the deadline */
+static void test_ladder_unfixable_fault_fails_in_time(void)
+{
+	mount();
+	CHECK_OK();
+	sim.ppc = true;
+	sim.stall_csw = 1000000;
+	CHECK(!USBStorage_Read_Sectors(44, 4, buf), "read succeeded");
+	CHECK(sim.power_cycles <= 1, "%u power cycles in one request", sim.power_cycles);
+	IN_TIME("gave up");
+}
+
+/* Not tested here: a request to the SD card after the drive died. The host
+ * harness has no SD card; the keepalive tests above stand for it. */
+
 static const struct hc_test tests[] = {
 	{ "mount", test_mount, false },
 	{ "read", test_read, false },
@@ -243,6 +571,28 @@ static const struct hc_test tests[] = {
 	{ "cbw_carries_command_length", test_cbw_carries_command_length, false },
 	{ "write_with_lost_status_fails_in_time", test_write_with_lost_status_fails_in_time, false },
 	{ "write_with_one_lost_status_recovers", test_write_with_one_lost_status_recovers, false },
+	{ "unplug_waits_until_replug", test_unplug_waits_until_replug, false },
+	{ "dead_drive_fails_fast", test_dead_drive_fails_fast, false },
+	{ "replug_clears_dead", test_replug_clears_dead, false },
+	{ "ums_init_clears_dead", test_ums_init_clears_dead, false },
+	{ "keepalive_skips_dead_and_unplugged", test_keepalive_skips_dead_and_unplugged, false },
+	{ "dead_needs_init_or_replug", test_dead_needs_init_or_replug, false },
+	{ "quiesce_waits_for_iaa", test_quiesce_waits_for_iaa, false },
+	{ "quiesce_without_iaa_halts_the_schedule", test_quiesce_without_iaa_halts_the_schedule, false },
+	{ "quiesce_is_bounded_when_the_controller_is_wedged", test_quiesce_is_bounded_when_the_controller_is_wedged, false },
+	{ "quiesce_skips_an_idle_schedule", test_quiesce_skips_an_idle_schedule, false },
+	{ "startup_resets_a_connected_port", test_startup_resets_a_connected_port, false },
+	{ "startup_power_cycles_with_ppc", test_startup_power_cycles_with_ppc, false },
+	{ "startup_skips_an_empty_port", test_startup_skips_an_empty_port, false },
+	{ "power_cycle_needs_ppc", test_power_cycle_needs_ppc, false },
+	{ "stuck_drive_mounts_after_a_port_reset", test_stuck_drive_mounts_after_a_port_reset, false },
+	{ "stuck_drive_mounts_after_a_power_cycle", test_stuck_drive_mounts_after_a_power_cycle, false },
+	{ "power_stuck_drive_stays_stuck_without_ppc", test_power_stuck_drive_stays_stuck_without_ppc, false },
+	{ "ladder_port_reset_clears_the_fault", test_ladder_port_reset_clears_the_fault, false },
+	{ "ladder_power_cycle_clears_the_fault", test_ladder_power_cycle_clears_the_fault, false },
+	{ "ladder_escalates_when_the_remount_works", test_ladder_escalates_when_the_remount_works, false },
+	{ "ladder_without_ppc_fails_in_time", test_ladder_without_ppc_fails_in_time, false },
+	{ "ladder_unfixable_fault_fails_in_time", test_ladder_unfixable_fault_fails_in_time, false },
 };
 
 static void setup(void)

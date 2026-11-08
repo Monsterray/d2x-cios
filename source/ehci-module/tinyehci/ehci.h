@@ -261,6 +261,13 @@ int ehci_get_device_list(u8 maxdev,u8 b0,u8*num,u16*buf);
 
 int ehci_reset_port2(int port);
 
+/* ehci_recover.h */
+int ehci_async_quiesce(void);
+void ehci_async_resume(void);
+int ehci_ports_have_ppc(void);
+int ehci_port_power_cycle(int port);
+void ehci_startup_recover(void);
+
 extern struct ehci_hcd *ehci; /* @todo put ehci as a static global and remove ehci from APIs.. */
 extern int ehci_open_device(int vid,int pid,int fd);
 extern int ehci_close_device(struct ehci_device *dev);
