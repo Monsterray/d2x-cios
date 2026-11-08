@@ -1677,15 +1677,13 @@ int unplug_procedure(void)
  * alone never takes that long (USBSTORAGE_REQUEST_MS), so a slow USB-SATA
  * bridge that needs more than a few seconds to spin up gets its chances.
  * A dead drive comes back on a replug (PORTSC CCS 0, or CSC set after it
- * died), on UMS_INIT, or from the keepalive's slow retry. While the port
+ * died) or on UMS_INIT; nothing retries it on a timer. While the port
  * shows no drive (CCS 0 or PORT_OWNER) the request waits, as before.
  */
 #define UMS_DEAD_FAILS		2
 #define UMS_DEAD_MIN_MS		15000
-#define UMS_DEAD_RETRY_MS	20000
 
 static int ums_dead;
-static u32 ums_dead_since;	/* timer: dead since, or the last retry */
 static int ums_fail_n;		/* failed remounts with the drive present */
 static u32 ums_fail_t0;		/* timer at the start of the request of the first */
 
@@ -1715,7 +1713,6 @@ static void ums_dead_enter(void)
 	   way Linux does (write 1 to CSC, the other change bits as 0). */
 	ehci_writel((s & ~PORT_RWC_BITS) | PORT_CSC, &ehci->regs->port_status[0]);
 	ums_dead = 1;
-	ums_dead_since = get_timer();
 	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'd', ums_fail_n, 0);
 }
 
@@ -1746,20 +1743,15 @@ static s32 ums_init_dead(void)
 	return 0;
 }
 
-/* For the keepalive: 1 when it may read a sector. It does not read a dead
-   drive (one retry of the mount every UMS_DEAD_RETRY_MS instead), and it does
-   not start the wait for a drive that is unplugged: that wait would hold up
-   the module's one thread, and the SD card with it. */
+/* For the keepalive: 1 when it may read a sector. It does not touch a dead
+   drive at all (no timed retry: a remount can take seconds, and it would stall
+   the module's one thread, and the SD card with it, at random moments; only a
+   replug or the loader's UMS_INIT ends the dead state), and it does not start
+   the wait for a drive that is unplugged, for the same reason. */
 int USBStorage_Keepalive_Ready(void)
 {
-	if (ums_dead && ums_dead_still()) {
-		if ((s32)(get_timer() - ums_dead_since) >= UMS_DEAD_RETRY_MS * UMS_TICKS_PER_MS) {
-			ums_dead_since = get_timer();
-			if (unplug_procedure() == 0)
-				ums_dead_clear();
-		}
+	if (ums_dead && ums_dead_still())
 		return 0;
-	}
 	return !(unplug_device && !ums_port_present());
 }
 

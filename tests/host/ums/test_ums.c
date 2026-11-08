@@ -324,9 +324,9 @@ static void test_ums_init_clears_dead(void)
 	CHECK(USBStorage_Read_Sectors(23, 1, buf), "read failed: %s", sim_summary());
 }
 
-/* The keepalive does not read a dead drive (one remount try every 20 s
- * instead) and does not start the wait for an unplugged one: that wait would
- * hold up the module's one thread, and the SD card with it. */
+/* The keepalive does not touch a dead drive (no timed retry: it would stall
+ * the module's one thread, and the SD card with it, at random moments) and
+ * does not start the wait for an unplugged one, for the same reason. */
 static void test_keepalive_skips_dead_and_unplugged(void)
 {
 	u32 cbws;
@@ -344,31 +344,29 @@ static void test_keepalive_skips_dead_and_unplugged(void)
 	make_dead_mounted();
 	cbws = sim.cbws;
 	sim.port_xfers_gone = 0;
-	CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive");
-	sim.now_us += 10 * 1000000ull;
-	CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive after 10 s");
-	CHECK(sim.cbws == cbws, "USB traffic before the retry time: %s", sim_summary());
-	/* the retry time: one remount try, the fault is still on, so still dead */
-	sim.now_us += 11 * 1000000ull;
-	CHECK(!ums_keepalive_ready(), "ready after a failed retry");
-	CHECK(ums_is_dead(), "a failed retry ended the dead state");
-	cbws = sim.cbws;
-	sim.now_us += 10 * 1000000ull;
-	CHECK(!ums_keepalive_ready(), "ready 10 s after a retry");
-	CHECK(sim.cbws == cbws, "a retry less than 20 s after the last: %s", sim_summary());
+	for (int i = 0; i < 12; i++) {
+		CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive");
+		sim.now_us += 10 * 1000000ull;
+	}
+	CHECK(ums_is_dead(), "something ended the dead state without a replug or UMS_INIT");
+	CHECK(sim.cbws == cbws && sim.port_xfers_gone == 0,
+	      "USB traffic to a dead drive in 2 minutes: %s", sim_summary());
 }
 
-/* The drive recovers: the keepalive's next retry remounts it. */
-static void test_keepalive_retry_revives(void)
+/* A dead drive that recovers on its own stays dead (no timed retry) until
+ * the loader asks again with UMS_INIT, or the drive is replugged. */
+static void test_dead_needs_init_or_replug(void)
 {
+	u32 cbws;
 	make_dead();
 	sim.stall_csw = 0;
+	cbws = sim.cbws;
+	sim.now_us += 60 * 1000000ull;
 	CHECK(!ums_keepalive_ready(), "the keepalive reads a dead drive");
-	CHECK(ums_is_dead(), "revived before the retry time");
-	sim.now_us += 21 * 1000000ull;
-	CHECK(!ums_keepalive_ready(), "the retry call itself reads nothing");
-	CHECK(!ums_is_dead(), "the retry did not revive the drive: %s", sim_summary());
-	CHECK(ums_keepalive_ready(), "not ready after the revival");
+	CHECK(ums_is_dead(), "revived with no replug or UMS_INIT");
+	CHECK(sim.cbws == cbws, "USB traffic to a dead drive: %s", sim_summary());
+	CHECK(ums_init() == 0, "UMS_INIT failed on a working drive: %s", sim_summary());
+	CHECK(ums_keepalive_ready(), "not ready after UMS_INIT");
 	CHECK(USBStorage_Read_Sectors(24, 1, buf), "read failed: %s", sim_summary());
 }
 
@@ -578,7 +576,7 @@ static const struct hc_test tests[] = {
 	{ "replug_clears_dead", test_replug_clears_dead, false },
 	{ "ums_init_clears_dead", test_ums_init_clears_dead, false },
 	{ "keepalive_skips_dead_and_unplugged", test_keepalive_skips_dead_and_unplugged, false },
-	{ "keepalive_retry_revives", test_keepalive_retry_revives, false },
+	{ "dead_needs_init_or_replug", test_dead_needs_init_or_replug, false },
 	{ "quiesce_waits_for_iaa", test_quiesce_waits_for_iaa, false },
 	{ "quiesce_without_iaa_halts_the_schedule", test_quiesce_without_iaa_halts_the_schedule, false },
 	{ "quiesce_is_bounded_when_the_controller_is_wedged", test_quiesce_is_bounded_when_the_controller_is_wedged, false },

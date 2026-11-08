@@ -69,8 +69,9 @@ Now `unplug_procedure()` saves and restores `__usbfd`, `__lun` and
   the UMS_INIT result and only tests GET_CAPACITY != 0).
 - Dead ends on a replug (PORTSC CCS 0, or CSC set after it died), on
   `UMS_INIT` (with the drive still unmountable it is dead again and the call
-  returns -ENODEV), or on the keepalive's retry, one remount try every
-  `UMS_DEAD_RETRY_MS`.
+  returns -ENODEV). Nothing retries a dead drive on a timer: a remount can
+  take seconds, and on the module's single thread it would stall USB and SD
+  at random moments, a hitch nobody could explain.
 - The keepalive (`__EHCI_Watchdog`, `loop.c`) reads a sector only when
   `USBStorage_Keepalive_Ready()` says so: not while the drive is dead, and
   not while PORTSC shows it unplugged, because the wait of rule 1 would hold
@@ -93,7 +94,6 @@ The limits:
 | Time per sector request (`USBSTORAGE_REQUEST_MS`) | 8000 ms | `usbstorage.c` |
 | Failed remounts before dead (`UMS_DEAD_FAILS`) | 2 | `usbstorage.c` |
 | Time since the first failed request before dead (`UMS_DEAD_MIN_MS`) | 15000 ms | `usbstorage.c` |
-| Dead drive: keepalive remount retry (`UMS_DEAD_RETRY_MS`) | 20000 ms | `usbstorage.c` |
 | Deadline left for a power cycle (`UMS_POWER_CYCLE_MIN_MS`) | 2500 ms | `usbstorage.c` |
 | Async advance doorbell, then schedule halt (`EHCI_IAA_US`, `EHCI_ASS_US`) | 20 ms each | `ehci_recover.h` |
 | Port power: off, wait for the drive, settle (`EHCI_POWER_*`) | 300 ms, 1000 ms, 100 ms | `ehci_recover.h` |
