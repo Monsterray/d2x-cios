@@ -112,11 +112,14 @@ static void __Dbg_Spin(u32 ms)
    stayed that way, and IOS58 on the next boot waited on it until the drive
    was unplugged (devwii, 2026-11-06 and 2026-11-08). A port reset alone left
    the port enabled (0x1005) and IOS58 still wedged; clearing the port's
-   enable bit freed IOS58 (HBC, run 20261108-145722-5c8ed0). So: bus reset
-   every EHCI port with a device (default state), then leave the port
-   disabled, as at power on: no transaction reaches the drive any more, and
-   IOS58 resets and enumerates it itself. The controller keeps running: a
-   port reset may stay asserted while it is halted (EHCI 2.3.9).
+   enable bit at run time freed IOS58 (HBC, run 20261108-145722-5c8ed0).
+   Here: bus reset every EHCI port with a device, then leave the port
+   disabled, as at power on. This does NOT stop the wedge on the next boot:
+   with the port left disabled IOS58 still wedged (run 20261108-151117-a5b4d6,
+   HBC usb_stuck at 1574 ms). The drive stays stuck through any reset; only
+   power or HBC's run-time PE clear gets past it. Kept because it leaves no
+   transaction going to the drive across the reset. The controller keeps
+   running: a port reset may stay asserted while it is halted (EHCI 2.3.9).
    Traced as U: a = HCSPARAMS, b = port 0 before. */
 #define EHCI_BASE	0x0D040000
 #define EHCI_PORT_CONNECT	(1 << 0)
