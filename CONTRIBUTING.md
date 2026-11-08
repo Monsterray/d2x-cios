@@ -72,6 +72,7 @@ tools/build.sh test
 | Check | Where | Needs |
 | --- | --- | --- |
 | Line endings and `.gitattributes` coverage | `tests/test_line_endings.py` | Python |
+| No workstation paths in tracked files (shared tools go through `tools/wii_paths.py`) | `tests/test_workstation_paths.py` | Python, git |
 | EHCI USB storage driver (Bulk-Only Transport, data toggles, retries, errors) against a simulated drive | `tests/host/ums/` | a C compiler (in the image) |
 | USBS USB storage driver against the same drive | `tests/host/usbs/` | a C compiler (in the image) |
 | The modules build, with no warnings | `EXTRA_CFLAGS=-Werror tools/build.sh` (CI does this) | Docker |
