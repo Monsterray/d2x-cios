@@ -32,10 +32,11 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 .PHONY: all test clean
 all: test
 
-test: ums/test_ums usbs/test_usbs fat/test_fat fat/test_diskio sdio/test_sdio dbg/test_dbg \
+test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_diskio sdio/test_sdio dbg/test_dbg \
 		ums/test_ums_dbg usbs/test_usbs_dbg sdio/test_sdio_dbg  fat/test_fat_dbg
 	$(RUN) ./ums/test_ums
 	$(RUN) ./usbs/test_usbs
+	$(RUN) ./usbs/test_usbs_async
 	$(RUN) ./fat/test_fat
 	$(RUN) ./fat/test_diskio
 	$(RUN) ./sdio/test_sdio
@@ -87,6 +88,12 @@ usbs/test_usbs: usbs/test_usbs.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h 
 		-c -o usbs/usbs_unit.o usbs/usbs_unit.c
 	$(CC) $(ALL_CFLAGS) -o $@ usbs/test_usbs.o usbs/sim.o usbs/glue_sim.o usbs/usbs_unit.o
 
+# usb2.c's asynchronous bulk transfers over a model of IOS (queue, timer,
+# cancel); real cios-lib headers, not usbs/stub.
+usbs/test_usbs_async: usbs/test_usbs_async.c hostcheck.h $(USBS)/usb2.c $(USBS)/usb2.h \
+		$(USBS)/usbstorage.h
+	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -I. -I$(USBS) -I$(CIOSLIB) -o $@ usbs/test_usbs_async.c
+
 # The FAT module's main.c (its IPC handlers), fat_wrapper.c and FatFs on two
 # RAM disks. -no-pie: file descriptors are FIL pointers cast to u32
 # (fat/fat_unit.c).
@@ -131,4 +138,4 @@ fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h f
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
 		fat/test_fat fat/test_diskio fat/*.o sdio/test_sdio dbg/test_dbg ums/test_ums_dbg \
-		usbs/test_usbs_dbg sdio/test_sdio_dbg fat/test_fat_dbg
+		usbs/test_usbs_dbg usbs/test_usbs_async sdio/test_sdio_dbg fat/test_fat_dbg
