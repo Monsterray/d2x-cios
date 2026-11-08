@@ -267,6 +267,10 @@ void ehci_async_resume(void);
 int ehci_ports_have_ppc(void);
 int ehci_port_power_cycle(int port);
 void ehci_startup_recover(void);
+/* ehci_enum.h */
+void ehci_enum_arm(int ms);
+void ehci_enum_disarm(void);
+int ehci_enum_expired(void);
 #ifdef D2X_DEBUG
 void ehci_trace_start(void);
 #endif

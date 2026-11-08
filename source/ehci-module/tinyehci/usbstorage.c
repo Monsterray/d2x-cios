@@ -527,6 +527,11 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
     if(ums_in_remount && ums_deadline_passed())
           return USBSTORAGE_ETIMEDOUT;
 
+    // The same for UMS_INIT's mount, whose time is limited as a whole
+    // (USBStorage_Init)
+    if(ehci_enum_expired())
+          return USBSTORAGE_ETIMEDOUT;
+
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
     {
@@ -1473,14 +1478,35 @@ void USBStorage_Umount(void)
 
 static s32 ums_init_dead(void);
 
+static s32 __USBStorage_Init(void);
+
+/*
+ * UMS_INIT. With a drive that never answers (one left stuck by a console reset
+ * in the middle of a transfer) every enumeration step costs a transfer
+ * timeout, so the whole call has a time budget (EHCI_ENUM_INIT_MS, ehci_enum.h):
+ * it returns an error instead of retrying for ever. The drive is then not
+ * mounted, so sector requests fail at once with no USB traffic, until the
+ * next UMS_INIT or a replug (the loader asks again; nothing retries on a timer).
+ */
 s32 USBStorage_Init(void)
 {
-	int i;
+	s32 ret;
+
 	debug_printf("usbstorage init %d\n", ums_init_done);
 	if(ums_init_done)
 		return ums_init_dead();
 
-	try_status=-1;      
+	ehci_enum_arm(EHCI_ENUM_INIT_MS);
+	ret = __USBStorage_Init();
+	ehci_enum_disarm();
+	return ret;
+}
+
+static s32 __USBStorage_Init(void)
+{
+	int i;
+
+	try_status=-1;
 
 #ifdef MEM_PRINT
 s_printf("\n***************************************************\nUSBStorage_Init()\n***************************************************\n\n");

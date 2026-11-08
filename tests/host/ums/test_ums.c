@@ -370,6 +370,77 @@ static void test_dead_needs_init_or_replug(void)
 	CHECK(USBStorage_Read_Sectors(24, 1, buf), "read failed: %s", sim_summary());
 }
 
+/* --- A drive that never answers: UMS_INIT and the open return an error --- */
+
+#define TEN_S 10000000ull
+
+/* A drive left stuck by a console reset answers no transfer at all and a port
+ * reset does not help (devwii, 2026-11-08). UMS_INIT used to retry without
+ * end; it must fail within 10 s, and the drive stays unmounted, so requests
+ * fail at once with no USB traffic. */
+static void test_init_silent_drive_fails_in_time(void)
+{
+	s32 r;
+	u32 xfers;
+	sim.silent = true;
+	r = ums_init();
+	CHECK(r < 0, "UMS_INIT succeeded on a silent drive: %s", sim_summary());
+	CHECK(sim.now_us < TEN_S, "UMS_INIT took %s", sim_summary());
+	CHECK(sim.now_us > 1000000, "gave up before trying: %s", sim_summary());
+	CHECK(!ums_mounted(), "mounted a silent drive");
+	xfers = sim.silent_xfers;
+	CHECK(!USBStorage_Read_Sectors(1, 1, buf), "read from an unmounted drive");
+	CHECK(sim.silent_xfers == xfers && sim.now_us < TEN_S, "traffic to an unmounted drive: %s", sim_summary());
+}
+
+/* The same when the module already enumerated the drive once (its id is
+ * set): UMS_INIT resets the port and enumerates again. */
+static void test_init_silent_drive_with_id_fails_in_time(void)
+{
+	sim.silent = true;
+	ums_set_dev_id(1);
+	CHECK(ums_init() < 0, "UMS_INIT succeeded on a silent drive: %s", sim_summary());
+	CHECK(sim.now_us < TEN_S, "UMS_INIT took %s", sim_summary());
+	CHECK(!ums_mounted(), "mounted a silent drive");
+}
+
+/* A second UMS_INIT after the drive woke up works: no budget is left armed */
+static void test_init_after_a_silent_drive_works(void)
+{
+	sim.silent = true;
+	CHECK(ums_init() < 0, "UMS_INIT succeeded on a silent drive");
+	sim.silent = false;
+	ums_set_dev_id(1);      /* enumerated by the port reset the first call ended with */
+	CHECK(ums_init() == 0, "UMS_INIT failed on a working drive: %s", sim_summary());
+	CHECK(ums_mounted(), "not mounted");
+}
+
+/* The loop in ehci_init_port() after the descriptor: a drive that gives its
+ * descriptor but takes no address kept it for ever (cnt never grew). It is
+ * bounded by its tries even with no time budget armed (the recovery ladder's
+ * port reset, the open of /dev/usb2 before the first budget). */
+static void test_enumeration_without_set_address_ends(void)
+{
+	sim.no_setaddr = true;
+	CHECK(ums_enum_port() < 0, "enumerated a drive that takes no address");
+	CHECK(sim.now_us < 60 * 1000000ull, "took %s", sim_summary());
+}
+
+/* A silent drive with no budget armed: counted retries only, but they end */
+static void test_enumeration_of_a_silent_drive_ends(void)
+{
+	sim.silent = true;
+	CHECK(ums_enum_port() < 0, "enumerated a silent drive");
+	CHECK(sim.silent_xfers <= 3 + 3 + 3 + 1, "%u transfers", sim.silent_xfers);
+}
+
+/* A healthy drive enumerates at once */
+static void test_enumeration_of_a_healthy_drive(void)
+{
+	CHECK(ums_enum_port() >= 0, "healthy drive did not enumerate");
+	CHECK(sim.now_us < 2000000, "took %s", sim_summary());
+}
+
 /* --- Step 3: a failed transfer's QH is released through the doorbell --- */
 
 /* The controller answers the async advance doorbell: ehci_async_quiesce()
@@ -577,6 +648,12 @@ static const struct hc_test tests[] = {
 	{ "ums_init_clears_dead", test_ums_init_clears_dead, false },
 	{ "keepalive_skips_dead_and_unplugged", test_keepalive_skips_dead_and_unplugged, false },
 	{ "dead_needs_init_or_replug", test_dead_needs_init_or_replug, false },
+	{ "init_silent_drive_fails_in_time", test_init_silent_drive_fails_in_time, false },
+	{ "init_silent_drive_with_id_fails_in_time", test_init_silent_drive_with_id_fails_in_time, false },
+	{ "init_after_a_silent_drive_works", test_init_after_a_silent_drive_works, false },
+	{ "enumeration_without_set_address_ends", test_enumeration_without_set_address_ends, false },
+	{ "enumeration_of_a_silent_drive_ends", test_enumeration_of_a_silent_drive_ends, false },
+	{ "enumeration_of_a_healthy_drive", test_enumeration_of_a_healthy_drive, false },
 	{ "quiesce_waits_for_iaa", test_quiesce_waits_for_iaa, false },
 	{ "quiesce_without_iaa_halts_the_schedule", test_quiesce_without_iaa_halts_the_schedule, false },
 	{ "quiesce_is_bounded_when_the_controller_is_wedged", test_quiesce_is_bounded_when_the_controller_is_wedged, false },

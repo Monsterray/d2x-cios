@@ -177,6 +177,28 @@ HCSPARAMS and b = PPC, `C` for a power cycle (a = 0 drive back, -1 not), `q` and
 `Q` for the doorbell wait and the schedule halt (a = 0 ok, -1 timeout), `3` and
 `4` for rungs 3 and 4 (a = 0 mounted).
 
+## Enumeration of a drive that never answers
+
+A drive left stuck by a console reset (devwii's SanDisk, 2026-11-08) answers no
+transfer, and a port reset does not help. Each failed transfer costs about 1 s
+(`usb_timeout`) plus the doorbell wait (`q`). The retries of `ehci_init_port()`
+(`ehci_enum.h`) are all counted now. Its SET_ADDRESS loop (`while (retval < 0 &&
+cnt < 20)`, with `cnt` never changed) had no limit at all: with a drive that took
+the descriptor request but nothing after it, `ehci_discover()`, `UMS_INIT` and the
+recovery ladder's port reset never returned, and the PowerPC watchdog reset the
+console. Now it makes `EHCI_SETADDR_TRIES` (3) tries.
+
+The two calls that answer a loader also have a time budget (rule 1 still holds:
+unlimited only while nothing is connected, and these end with an error, not a
+wait): `UMS_INIT` 8 s (`EHCI_ENUM_INIT_MS`, port reset, enumeration and mount) and
+the open of `/dev/usb2` 4 s per port (`EHCI_ENUM_DISCOVER_MS`). The budget is
+checked after each failed attempt, so the call ends one transfer timeout after it
+(under 10 s in all). A failed `UMS_INIT` leaves the drive unmounted: sector requests
+fail at once, with no traffic, until the next `UMS_INIT` or a replug. Nothing
+retries on a timer. `+dbg` builds trace `e` (E_RESET) when enumeration gives up:
+a = the phase (1 descriptor, 2 after a reset, 3 after re-acquiring the port,
+4 summary, 5 SET_ADDRESS), b = the attempt or result.
+
 ## Waiting for a transfer
 
 `handshake()` polls the controller's status. It checks first, polls without

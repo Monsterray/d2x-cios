@@ -76,6 +76,12 @@ struct sim {
 	                           reset, 2 until a power cycle (a drive left mid-
 	                           transfer by an earlier reset) */
 	bool stuck_io_only;     /* ... only READ(10) and WRITE(10) commands */
+	bool silent;            /* the drive answers no transfer at all, control or
+	                           bulk, and a reset does not help (a drive left
+	                           stuck by a console reset, devwii 2026-11-08) */
+	bool no_setaddr;        /* the first descriptor request is answered, but
+	                           SET_ADDRESS and everything after it are not */
+	u32 silent_xfers;       /* transfers that got no answer for those two */
 
 	/* the controller: USBCMD and USBSTS as ehci_recover.h uses them */
 	u32 hc_cmd;             /* USBCMD */
@@ -99,6 +105,10 @@ struct sim {
 
 extern struct sim sim;
 
+/* sim.c calls this from ehci_reset_port() when sim.silent or sim.no_setaddr:
+   the enumeration that ehci_reset_port() does after the bus reset (ums_unit.c) */
+extern int (*sim_enum_hook)(int port);
+
 void sim_reset(void);           /* a fresh drive, no faults, time 0 */
 const char *sim_summary(void);
 void sim_unplug_for(u64 us);    /* unplug now; it is back (CSC set) after us */
@@ -112,6 +122,9 @@ void sim_hc_write(int reg, u32 v);
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
 void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
+int ums_enum_port(void);        /* ehci_init_port(0), as ehci_reset_port() ends */
+void ums_set_dev_id(int id);    /* the id of the device USBStorage_Init() sees on port 0 */
+int ums_mounted(void);
 extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */
 s32 ums_init(void);             /* USBStorage_Init(): UMS_INIT on a mounted drive */

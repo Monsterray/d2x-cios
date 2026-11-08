@@ -86,6 +86,8 @@ void USB_FreeDescriptors(usb_devdesc *udd);
 #define get_timer() ((u32)(sim.now_us * 1898 / 1000))
 
 #include "ehci_recover.h"
+#define ehci_dbg(...) ((void)0)
+#include "ehci_enum.h"
 #include "usbstorage.h"
 #include "usbstorage.c"
 
@@ -105,6 +107,16 @@ int ums_plug(void)
 	return 0;
 }
 
+/* The enumeration ehci_reset_port() does, with the real ehci_init_port() */
+static int enum_hook(int port) { return ehci_init_port(port); }
+int ums_enum_port(void)
+{
+	sim.dev = &ehci->devices[0];
+	return ehci_init_port(0);
+}
+void ums_set_dev_id(int id) { ehci->devices[0].id = id; }
+int ums_mounted(void) { return __mounted == 1; }
+
 /* Forget the device without talking to it, for the next test. */
 void ums_unplug(void)
 {
@@ -121,6 +133,9 @@ void ums_unplug(void)
 	sim_dev.toggles = 0;
 	ums_dead = 0;
 	ums_fail_n = 0;
+	ehci->devices[0].id = 0;
+	ehci_enum_disarm();
+	sim_enum_hook = enum_hook;
 }
 
 /* The recovery helpers of ehci_recover.h, on the simulated controller */

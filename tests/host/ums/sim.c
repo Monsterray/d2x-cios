@@ -184,8 +184,18 @@ static void port_reset(void)
 	bus_reset();
 }
 
-int ehci_reset_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return 0; }
-int ehci_reset_port2(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return 0; }
+int (*sim_enum_hook)(int port);
+/* the end of ehci_reset_port(): enumerate with the real ehci_init_port() when
+   the drive is a difficult one */
+static int enumerate(int port)
+{
+	if ((sim.silent || sim.no_setaddr) && sim_enum_hook)
+		return sim_enum_hook(port);
+	return 0;
+}
+int ehci_reset_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
+int ehci_reset_port2(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
+void ehci_adquire_port(int port) { (void)port; tick(15000); }
 int ehci_reset_device(struct ehci_device *dev) { (void)dev; if (port_gone()) return -ENODEV; sim.dev_resets++; tick(60000); port_reset(); return 0; }
 /* ehci_reset_usb_port(): the bus reset of ehci.c, about 110 ms */
 int ehci_reset_usb_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(110000); port_reset(); return 0; }
@@ -259,6 +269,10 @@ s32 ehci_control_message(struct ehci_device *dev, u8 type, u8 req, u16 value, u1
 	sim.dev = dev;
 	if (port_gone())
 		return -ENODEV;
+	if (sim.silent || (sim.no_setaddr && (dev->id != 0 || req == USB_REQ_SETADDRESS))) {
+		sim.silent_xfers++;
+		return no_answer();
+	}
 	tick(XFER_US);
 	if (type == 0x02 && req == USB_REQ_CLEARFEATURE && value == USB_FEATURE_ENDPOINT_HALT) {
 		/* USB 2.0 9.4.5: the halt clears and the toggle goes to DATA0 */
@@ -501,6 +515,10 @@ s32 ehci_bulk_message(struct ehci_device *dev, u8 ep, u16 len, void *data)
 	sim.dev = dev;
 	if (port_gone())
 		return -ENODEV;
+	if (sim.silent) {
+		sim.silent_xfers++;
+		return no_answer();
+	}
 	if (sim.timeout_xfers > 0) {
 		sim.timeout_xfers--;
 		return no_answer();
