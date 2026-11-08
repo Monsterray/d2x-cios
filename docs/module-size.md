@@ -16,7 +16,19 @@ Every module is Thumb, `-Os`, `-ffunction-sections`, `--gc-sections` already, so
 | ES | 0x2000 (8192) | 3264 | 4928 | 2872 | 5320 |
 | FFSP | 0x3000 (12288) | 7104 | 5184 | 6700 | 5588 |
 
-The plain release build (no SD high speed) has 1436 free in USBS and 4392 in EHCI.
+SD high speed is now in every build, so the table's "after" column is the release build. (Before 11.1.0-rc2 the plain release had none: 1436 free in USBS and 4392 in EHCI.)
+
+The release build of `develop` (11.1.0-rc2, with the `/dev/mload` fix), the end of the loaded segment in each `exe` region read from the ELFs:
+
+| Module | Region | Used | Free |
+| --- | --- | --- | --- |
+| MLOAD | 8192 | 5456 | 2736 |
+| FAT | 20480 | 18032 | 2448 |
+| EHCI | 20480 | 16432 | 4048 |
+| USBS | 12288 | 11196 | 1092 |
+| DIPP | 8192 | 6448 | 1744 |
+| ES | 8192 | 2872 | 5320 |
+| FFSP | 12288 | 6700 | 5588 |
 
 | Change | Bytes (USBS) | Why it does not change speed |
 | --- | --- | --- |

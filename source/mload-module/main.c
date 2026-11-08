@@ -356,6 +356,10 @@ int main(void)
 
 			/* Update offset */
 			offset += len;
+
+			/* Bytes read; without this break a read fell into IOS_WRITE and IOS_SEEK */
+			ret = len;
+			break;
 		}
 
 		case IOS_WRITE: {
@@ -368,6 +372,10 @@ int main(void)
 
 			/* Update offset */
 			offset += len;
+
+			/* Bytes written */
+			ret = len;
+			break;
 		}
 
 		case IOS_SEEK: {

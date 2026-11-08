@@ -47,6 +47,34 @@ SwiFunc SwiTable[256] = { NULL };
 u8 *SwiAddr = NULL;
 
 
+/* cios-lib's DCFlushRange (clean) and DCInvalidateRange (tools.s) take a count of
+   32-byte lines, not bytes, and a count of 0 would loop 2^32 times. These take
+   bytes, cover every line the range touches, and do nothing for a length of 0. */
+static void __Clean(void *p, u32 len)
+{
+	u32 a = (u32)p & ~31;
+
+	if (len)
+		DCFlushRange((void *)a, ((u32)p + len - a + 31) >> 5);
+}
+
+static void __Invalidate(void *p, u32 len)
+{
+	u32 a = (u32)p & ~31;
+	u32 end = (u32)p + len;
+
+	if (!len)
+		return;
+
+	/* A partly covered first or last line may hold neighbours' dirty data:
+	   write it back before it is thrown away */
+	DCFlushRange((void *)a, 1);
+	DCFlushRange((void *)((end - 1) & ~31), 1);
+
+	DCInvalidateRange((void *)a, (end - a + 31) >> 5);
+}
+
+
 static void __MemCopy(u32 fromUncached, void *dst, void *src, u32 len)
 {
 	u32 perms;
@@ -57,13 +85,13 @@ static void __MemCopy(u32 fromUncached, void *dst, void *src, u32 len)
 
 	/* Invalidate data cache */
 	if (fromUncached)
-		DCInvalidateRange(src, len);
+		__Invalidate(src, len);
 
 	/* Copy data */
 	memcpy(dst, src, len);
 
 	/* Flush data cache */
-	DCFlushRange(dst, len);
+	__Clean(dst, len);
 
 	/* Restore permissions */
 	Perms_Write(perms);
@@ -146,7 +174,7 @@ s32 Swi_Handler(u32 arg0, u32 arg1, u32 arg2, u32 arg3)
 
 		/* Copy IOS info */
 		memcpy(buffer, &ios, sizeof(ios));
-		DCFlushRange(buffer, sizeof(ios));
+		__Clean(buffer, sizeof(ios));
 
 		break;
 	}
