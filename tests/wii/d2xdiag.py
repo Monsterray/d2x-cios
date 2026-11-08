@@ -29,7 +29,11 @@ import wii_targets as wt  # noqa: E402
 DOL = here.parent / "d2xdiag" / "d2xdiag.dol"
 REPORT = "sd:/d2xdiag.txt"
 PRE = "sd:/d2xdiag-pre.txt"
-WIICAP = os.environ.get("WIICAP", "C:/tools/wii-capture/wiicap.py")
+# The shared HDMI capture card on the bench Wii: $WIICAP or ~/.wii-paths.json; without it no recording.
+try:
+    WIICAP = str(wt.wii_paths.wiicap())
+except wt.wii_paths.NotFound:
+    WIICAP = ""
 HANGS = {"hang-block", "hang-spin", "hang-top", "usb-spin", "usbs-big"}
 
 
@@ -78,7 +82,7 @@ def main():
     outdir = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
     cap, stop = None, outdir / "video.stop"
     stop.unlink(missing_ok=True)
-    if a.video and pathlib.Path(WIICAP).is_file():
+    if a.video and WIICAP and pathlib.Path(WIICAP).is_file():
         # --video is the longest it records: it ends a few seconds after the run is over and
         # the Wii is back in HBC, so the job does not sit out the rest of it
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
