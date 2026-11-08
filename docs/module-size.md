@@ -50,3 +50,14 @@ The dead-drive state and the PORTSC-based wait (REVIEW.md, EHCI item 11), end of
 | `+dbg` | 18024 | 2456 |
 
 The release build was 16432 (4048 free) before: +536 bytes.
+
+## EHCI with the recovery ladder, the doorbell wait and the start-up reset (feat/usb-recovery, 2026-11-08)
+
+Same measure (`PT_LOAD` file size at 0x13780000 in `ehci-module.elf`):
+
+| Build | Used | Free |
+| --- | --- | --- |
+| Release | 17864 | 2616 |
+| `+dbg` | 19032 | 1448 |
+
+Against the entry above: +896 bytes release, +1008 `+dbg`.
