@@ -98,10 +98,19 @@ distribution.
 static u32 ums_deadline;
 static int ums_deadline_on;
 
+/* The recovery ladder's state for the request in progress (see
+   unplug_procedure): port resets already done, and whether the port was
+   power cycled. */
+static int ums_port_resets_req;
+static int ums_power_tried;
+static int ums_in_remount;	/* set while a remount's commands run */
+
 static void ums_deadline_start(void)
 {
 	ums_deadline = get_timer() + USBSTORAGE_REQUEST_MS * UMS_TICKS_PER_MS;
 	ums_deadline_on = 1;
+	ums_port_resets_req = 0;
+	ums_power_tried = 0;
 }
 
 static void ums_deadline_stop(void)
@@ -512,6 +521,11 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
     // caller gives up (__USBStorage_Sectors, rule 2)
     if(retval < 0 && ums_deadline_passed())
           break;
+
+    // A remount (unplug_procedure) that starts, or goes on, after the
+    // deadline sends nothing more: each command would cost a transfer timeout
+    if(ums_in_remount && ums_deadline_passed())
+          return USBSTORAGE_ETIMEDOUT;
 
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
@@ -1549,35 +1563,105 @@ u32 USBStorage_Get_Capacity(u32*sector_size)
    still get it. unplug_procedure() puts them back. */
 static usbstorage_handle ums_saved;
 
+/* Mount the drive again after its port was reset and enumerated. 0 on success;
+   on failure the old state is back (see ums_saved). */
+static int ums_remount(int budget_ms)
+{
+	u8 lun = __lun;
+	u32 deadline = ums_deadline;
+	int ok;
+
+	if(__usbfd.buffer != NULL)
+		USB_Free(__usbfd.buffer);
+	__usbfd.buffer= NULL;
+	ums_saved = __usbfd;
+	// A mount that cannot finish ends at the request's deadline, which would
+	// leave no time for the next rung: give it its own, earlier deadline.
+	if(budget_ms > 0 && ums_deadline_on &&
+	   (s32)(get_timer() + budget_ms * UMS_TICKS_PER_MS - ums_deadline) < 0)
+		ums_deadline = get_timer() + budget_ms * UMS_TICKS_PER_MS;
+	handshake_mode=1;
+	ums_in_remount = 1;
+	ok = USBStorage_Try_Device(__usbfd.usb_fd)==0;
+	ums_in_remount = 0;
+	ums_deadline = deadline;
+	if(!ok) {
+		__usbfd = ums_saved;
+		__lun = lun;
+		__mounted = 1;
+	}
+	handshake_mode=0;
+	return ok ? 0 : 1;
+}
+
+/* A power cycle needs PPC, at most one per request, and time left in the
+   request's deadline: it takes about 0.6 s and the enumeration after it. */
+#define UMS_POWER_CYCLE_MIN_MS	2500
+
+static int ums_power_ok(void)
+{
+	if(ums_power_tried || !ehci_ports_have_ppc())
+		return 0;
+	if(ums_deadline_on &&
+	   (s32)(ums_deadline - get_timer()) < UMS_POWER_CYCLE_MIN_MS * UMS_TICKS_PER_MS)
+		return 0;
+	return 1;
+}
+
+/* How long rung 3's mount may take when a power cycle could follow: what is
+   left of the deadline minus the time the power cycle needs, but at least
+   1.5 s (a healthy mount takes well under one). 0: no limit of its own. */
+static int ums_rung3_budget_ms(void)
+{
+	int left;
+
+	if(!ums_deadline_on || !ums_power_ok())
+		return 0;
+	left = (s32)(ums_deadline - get_timer()) / UMS_TICKS_PER_MS - UMS_POWER_CYCLE_MIN_MS
+	       - 1200;	// a transfer that times out as the budget ends
+	return left < 1500 ? 1500 : left;
+}
+
+/*
+ * The recovery ladder. A command that fails is first handled in __cycle():
+ * clear-halt (rung 1) and Bulk-Only reset recovery (rung 2), each between two
+ * transfers. When that gives up (a timeout is an unplug here), this is
+ * rung 3: a port reset, enumerate again, mount again. A command that fails
+ * again after a port reset within the same request goes to rung 4, if the
+ * ports switch power (HCSPARAMS.PPC): power cycle the port, enumerate, mount.
+ * The same goes for a drive that does not mount after the port reset. Without
+ * PPC, or with less than UMS_POWER_CYCLE_MIN_MS left, the request fails at its
+ * deadline (__USBStorage_Sectors, rule 2).
+ */
 int unplug_procedure(void)
 {
 	int retval=1;
 
 	if(unplug_device!=0 )
 	{
+		if(!ums_deadline_on) {		/* keepalive, UMS_INIT: rung 3 first */
+			ums_port_resets_req = 0;
+			ums_power_tried = 0;
+		}
 
-		if(__usbfd.usb_fd)
-			if(ehci_reset_port2(/*__usbfd.usb_fd->port*/0)>=0)
-			{
-				if(__usbfd.buffer != NULL)
-					USB_Free(__usbfd.buffer);
-				__usbfd.buffer= NULL;
-
-				if(ehci_reset_port(0)>=0)
-				{
-					u8 lun = __lun;
-					ums_saved = __usbfd;
-					handshake_mode=1;
-					if(USBStorage_Try_Device(__usbfd.usb_fd)==0) {retval=0;unplug_device=0;}
-					else {
-						__usbfd = ums_saved;
-						__lun = lun;
-						__mounted = 1;
-					}
-					handshake_mode=0;
-				}
-
+		if(__usbfd.usb_fd) {
+			// rung 3, unless a port reset did not help this request already
+			if(!(ums_port_resets_req > 0 && ums_power_ok())) {
+				ums_port_resets_req++;
+				if(ehci_reset_port2(/*__usbfd.usb_fd->port*/0)>=0 && ehci_reset_port(0)>=0)
+					retval = ums_remount(ums_rung3_budget_ms());
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '3', retval, 0);
 			}
+			// rung 4
+			if(retval != 0 && ums_power_ok()) {
+				ums_power_tried = 1;
+				if(ehci_port_power_cycle(0)>=0 && ehci_reset_port(0)>=0)
+					retval = ums_remount(0);
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '4', retval, 0);
+			}
+			if(retval == 0)
+				unplug_device=0;
+		}
 		ehci_msleep(100);
 	}
 
