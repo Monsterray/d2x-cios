@@ -106,13 +106,18 @@ static void __Dbg_Spin(u32 ms)
 		;
 }
 
-/* Before the watchdog's reset: a USB bus reset on every EHCI port with a
-   device, then the ports' power off where the controller switches it.
-   Port power survives a console reset, so a drive left in the middle of a
-   transfer stayed that way, and the next boot (System Menu, before
-   Priiloader) waited on it with a black screen until the drive was
-   unplugged (devwii, 2026-11-06). A bus reset puts any USB device back in
-   its default state. Traced as U: a = HCSPARAMS, b = port 0 before. */
+/* Before the watchdog's reset: leave EHCI the way a cold boot finds it.
+   Port power survives a console reset and Hollywood's EHCI cannot switch it
+   (HCSPARAMS 0x2204: PPC 0), so a drive left in the middle of a transfer
+   stayed that way, and IOS58 on the next boot waited on it until the drive
+   was unplugged (devwii, 2026-11-06 and 2026-11-08). A port reset alone left
+   the port enabled (0x1005) and IOS58 still wedged; clearing the port's
+   enable bit freed IOS58 (HBC, run 20261108-145722-5c8ed0). So: bus reset
+   every EHCI port with a device (default state), then leave the port
+   disabled, as at power on: no transaction reaches the drive any more, and
+   IOS58 resets and enumerates it itself. The controller keeps running: a
+   port reset may stay asserted while it is halted (EHCI 2.3.9).
+   Traced as U: a = HCSPARAMS, b = port 0 before. */
 #define EHCI_BASE	0x0D040000
 #define EHCI_PORT_CONNECT	(1 << 0)
 #define EHCI_PORT_RWC		((1 << 1) | (1 << 3) | (1 << 5))
@@ -145,11 +150,9 @@ static void __Dbg_UsbOff(void)
 			if (reset & (1 << i))
 				port[i] = port[i] & ~(EHCI_PORT_RESET | EHCI_PORT_RWC);
 		__Dbg_Spin(20);
-	}
-	if (hcs & (1 << 4)) {			/* HCS_PPC: the ports switch power */
-		for (i = 0; i < n; i++)
-			port[i] = port[i] & ~(EHCI_PORT_POWER | EHCI_PORT_RWC);
-		__Dbg_Spin(300);
+		for (i = 0; i < n; i++)		/* disabled, as at power on */
+			if (reset & (1 << i))
+				port[i] = port[i] & ~(EHCI_PORT_PE | EHCI_PORT_RWC);
 	}
 }
 
