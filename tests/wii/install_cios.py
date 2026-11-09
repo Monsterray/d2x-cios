@@ -63,13 +63,25 @@ def main():
     # The installer draws its progress on the TV and writes auto-result.txt;
     # its network log does not reach the PC, so send it and wait for HBC.
     out = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
-    cap = None
-    if a.video and WIICAP:
+    cap, stop = None, out / "video.stop"
+    stop.unlink(missing_ok=True)
+    if a.video and WIICAP and pathlib.Path(WIICAP).is_file():
+        # --video is the longest it records: it ends a few seconds after the Wii is back in
+        # HBC, so the job does not sit out the rest of it
         cap = subprocess.Popen([sys.executable, WIICAP, "video", str(a.video), "--out",
-                                str(out / "install.mp4"), "--label", f"install {group}"])
+                                str(out / "install.mp4"), "--label", f"install {group}",
+                                "--stop-file", str(stop)])
+
+    def end_video():
+        if cap:
+            stop.touch()
+            cap.wait(timeout=a.video + 60)
+            print(f"install_cios: TV recording in {out / 'install.mp4'}", flush=True)
+
     args = ["--auto", f"--dir={dest}"] + (["--dry-run"] if a.dry_run else [])
     r = wt.hbc(wii, "send", str(a.installer), *args, timeout=120, show=True)
     if r.rc:
+        end_video()
         sys.exit("install_cios: sending the installer failed")
 
     end = time.monotonic() + a.timeout
@@ -77,8 +89,9 @@ def main():
     while not wt.in_hbc(wii):
         if time.monotonic() > end:
             print(f"install_cios: the Wii did not return to HBC in {a.timeout} s", flush=True)
+            end_video()
             return 1
-        time.sleep(5)
+        time.sleep(2)
 
     got = out / "auto-result.txt"
     r = wt.hbc(wii, "get", result, str(got), timeout=60)
@@ -88,9 +101,7 @@ def main():
     want = "DRYRUN" if a.dry_run else "OK"
     ok = bool(text) and all(line.startswith(want) for line in text.splitlines())
     print(f"install_cios: {'OK' if ok else 'FAILED'}", flush=True)
-    if cap:
-        cap.wait(timeout=a.video + 60)
-        print(f"install_cios: TV recording in {out / 'install.mp4'}", flush=True)
+    end_video()
     return 0 if ok else 1
 
 

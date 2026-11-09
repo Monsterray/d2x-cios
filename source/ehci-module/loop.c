@@ -145,6 +145,13 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 	}
 
 	case USB_IOCTL_UMS_INIT: {
+#ifdef D2X_DEBUG
+		static int traced;
+
+		/* Repeat the start record once, now that the debug area is up */
+		if (!traced++)
+			ehci_trace_start();
+#endif
 		/* Initialize USB storage */
 		ret = USBStorage_Init();
 
@@ -315,16 +322,21 @@ void __EHCI_Watchdog(void)
 
 		/* Device available */
 		if (nbSectors) {
-			/* Allocate buffer */
-			buffer = Mem_Alloc(sectorSz);
-			if (!buffer)
-				return;
+			/* Not while the drive is dead (retried slowly instead) or
+			   unplugged (the wait for a replug would hold up this
+			   thread and the SD card with it) */
+			if (USBStorage_Keepalive_Ready()) {
+				/* Allocate buffer */
+				buffer = Mem_Alloc(sectorSz);
+				if (!buffer)
+					return;
 
-			/* Read random sector */
-			USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
+				/* Read random sector */
+				USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
 
-			/* Free buffer */
-			Mem_Free(buffer);
+				/* Free buffer */
+				Mem_Free(buffer);
+			}
 
 			/* Restart watchdog timer */
 			os_restart_timer(timerId, WATCHDOG_TIMER, 0);

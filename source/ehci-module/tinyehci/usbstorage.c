@@ -98,10 +98,19 @@ distribution.
 static u32 ums_deadline;
 static int ums_deadline_on;
 
+/* The recovery ladder's state for the request in progress (see
+   unplug_procedure): port resets already done, and whether the port was
+   power cycled. */
+static int ums_port_resets_req;
+static int ums_power_tried;
+static int ums_in_remount;	/* set while a remount's commands run */
+
 static void ums_deadline_start(void)
 {
 	ums_deadline = get_timer() + USBSTORAGE_REQUEST_MS * UMS_TICKS_PER_MS;
 	ums_deadline_on = 1;
+	ums_port_resets_req = 0;
+	ums_power_tried = 0;
 }
 
 static void ums_deadline_stop(void)
@@ -118,6 +127,12 @@ static int ums_deadline_passed(void)
    doubles it and counts Hollywood timer ticks of about 0.53 us, so 1000*1000
    is about 1.05 s). */
 static u32 ums_io_timeout = 1000*1000;
+
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#else
+#define D2XDBG_EV(mod, ev, x, a, b)	do {} while (0)
+#endif
 
 #ifdef EHCI_DEBUG_LOG
 /* A ring of the last Bulk-Only steps, read with USB_IOCTL_UMS_DEBUG_LOG:
@@ -177,8 +192,33 @@ s32 USBStorage_SetQuirks(u32 quirks)
 	ums_quirks = quirks;
 	return 0;
 }
+#elif defined(D2X_DEBUG)
+/* Debug builds: each Bulk-Only step goes to the d2x trace ring (d2xdbg.h)
+   as event 'u', x = the letter above << 8 | ep, a = len, b = ret. ehci.c's
+   own steps (above this file in the unit) stay out: the ring is short. */
+#undef UMS_LOG
+#define UMS_LOG(what, ep, len, ret) D2XDBG_EV(D2XDBG_M_EHCI, 'u', ((what) << 8) | (ep), len, ret)
 #else
 #define UMS_LOG(what, ep, len, ret) do {} while (0)
+#endif
+
+#ifdef D2X_DEBUG
+/* A fault set through /dev/d2xdbg for this point (d2xdbg.h): the transfer's
+   result in its place, or 1 to run the transfer. A STALL moves nothing (a
+   short transfer, as tinyehci reports one); a timeout or a lost CSW is
+   -ETIMEDOUT; an error is -ENODEV, the device gone. Delays and hangs happen
+   in Dbg_Point() itself. */
+static s32 __ums_fault(u32 point, u32 arg)
+{
+	u32 f = D2XDBG_POINT(D2XDBG_M_EHCI, point, arg);
+
+	switch (D2XDBG_FAULT_ACTION(f)) {
+	case 0:			return 1;
+	case D2XDBG_F_STALL:	return 0;
+	case D2XDBG_F_ERROR:	return -ENODEV;
+	default:		return USBSTORAGE_ETIMEDOUT;
+	}
+}
 #endif
 
 static int ums_init_done = 0;
@@ -403,6 +443,10 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
         //debug_printf("send cb of size %d\n",dev->buffer[14]);
 	memcpy(dev->buffer + 15, cb, cbLen);
         //hexdump(dev->buffer,CBW_SIZE);
+#ifdef D2X_DEBUG
+	retval = __ums_fault(D2XDBG_P_CMD, cb[0]);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_out, CBW_SIZE, (void *)dev->buffer);
 
 	UMS_LOG('C', dev->ep_out, cb[0], retval);
@@ -419,6 +463,10 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 
 	memset(dev->buffer, 0xff, CSW_SIZE);
 
+#ifdef D2X_DEBUG
+	retval = __ums_fault(D2XDBG_P_CSW, 0);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_in, CSW_SIZE, dev->buffer);
         //print_hex_dump_bytes("csv resp:",DUMP_PREFIX_OFFSET,dev->buffer,CSW_SIZE);
 
@@ -474,9 +522,22 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
     if(retval < 0 && ums_deadline_passed())
           break;
 
+    // A remount (unplug_procedure) that starts, or goes on, after the
+    // deadline sends nothing more: each command would cost a transfer timeout
+    if(ums_in_remount && ums_deadline_passed())
+          return USBSTORAGE_ETIMEDOUT;
+
+    // The same for UMS_INIT's mount, whose time is limited as a whole
+    // (USBStorage_Init)
+    if(ehci_enum_expired())
+          return USBSTORAGE_ETIMEDOUT;
+
     // reset recovery (BOT 5.3.4) before the command is sent again
     if(retval < 0)
+    {
+          D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'b', retval, retries);
           retval=__usbstorage_reset(dev,retries < USBSTORAGE_CYCLE_RETRIES);
+    }
     if(retval != USBSTORAGE_OK || retries <= USBSTORAGE_CYCLE_RETRIES)
           UMS_LOG('R', 0, retries, retval);
 	
@@ -499,6 +560,10 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		while(len > 0)
 		{
 			thisLen=len;
+#ifdef D2X_DEBUG
+			retval = __ums_fault(D2XDBG_P_DATA, thisLen);
+			if(retval == 1)
+#endif
 			retval = __USB_BlkMsgTimeout(dev, write ? dev->ep_out : dev->ep_in, thisLen, buffer);
 			UMS_LOG('D', write ? dev->ep_out : dev->ep_in, thisLen, retval);
 			if(retval < 0)
@@ -1391,6 +1456,8 @@ s32 USBStorage_Try_Device(struct ehci_device *fd)
        return -EINVAL;
 }
 
+static void ums_dead_clear(void);
+
 void USBStorage_Umount(void)
 {
 	if(!ums_init_done) return;
@@ -1405,17 +1472,41 @@ void USBStorage_Umount(void)
 	__mounted=0;
 	ums_init_done=0;
 	unplug_device=0;
+	ums_dead_clear();
 }
 
 
+static s32 ums_init_dead(void);
+
+static s32 __USBStorage_Init(void);
+
+/*
+ * UMS_INIT. With a drive that never answers (one left stuck by a console reset
+ * in the middle of a transfer) every enumeration step costs a transfer
+ * timeout, so the whole call has a time budget (EHCI_ENUM_INIT_MS, ehci_enum.h):
+ * it returns an error instead of retrying for ever. The drive is then not
+ * mounted, so sector requests fail at once with no USB traffic, until the
+ * next UMS_INIT or a replug (the loader asks again; nothing retries on a timer).
+ */
 s32 USBStorage_Init(void)
 {
-	int i;
+	s32 ret;
+
 	debug_printf("usbstorage init %d\n", ums_init_done);
 	if(ums_init_done)
-		return 0;
+		return ums_init_dead();
 
-	try_status=-1;      
+	ehci_enum_arm(EHCI_ENUM_INIT_MS);
+	ret = __USBStorage_Init();
+	ehci_enum_disarm();
+	return ret;
+}
+
+static s32 __USBStorage_Init(void)
+{
+	int i;
+
+	try_status=-1;
 
 #ifdef MEM_PRINT
 s_printf("\n***************************************************\nUSBStorage_Init()\n***************************************************\n\n");
@@ -1492,37 +1583,207 @@ u32 USBStorage_Get_Capacity(u32*sector_size)
 	return 0;
 }
 
+/* USBStorage_Try_Device() wipes __usbfd (usb_fd, the capacity) and clears
+   __mounted when it fails. A failed remount must not forget the drive: the
+   next attempt needs usb_fd, and a loader that asks for the capacity must
+   still get it. unplug_procedure() puts them back. */
+static usbstorage_handle ums_saved;
+
+/* Mount the drive again after its port was reset and enumerated. 0 on success;
+   on failure the old state is back (see ums_saved). */
+static int ums_remount(int budget_ms)
+{
+	u8 lun = __lun;
+	u32 deadline = ums_deadline;
+	int ok;
+
+	if(__usbfd.buffer != NULL)
+		USB_Free(__usbfd.buffer);
+	__usbfd.buffer= NULL;
+	ums_saved = __usbfd;
+	// A mount that cannot finish ends at the request's deadline, which would
+	// leave no time for the next rung: give it its own, earlier deadline.
+	if(budget_ms > 0 && ums_deadline_on &&
+	   (s32)(get_timer() + budget_ms * UMS_TICKS_PER_MS - ums_deadline) < 0)
+		ums_deadline = get_timer() + budget_ms * UMS_TICKS_PER_MS;
+	handshake_mode=1;
+	ums_in_remount = 1;
+	ok = USBStorage_Try_Device(__usbfd.usb_fd)==0;
+	ums_in_remount = 0;
+	ums_deadline = deadline;
+	if(!ok) {
+		__usbfd = ums_saved;
+		__lun = lun;
+		__mounted = 1;
+	}
+	handshake_mode=0;
+	return ok ? 0 : 1;
+}
+
+/* A power cycle needs PPC, at most one per request, and time left in the
+   request's deadline: it takes about 0.6 s and the enumeration after it. */
+#define UMS_POWER_CYCLE_MIN_MS	2500
+
+static int ums_power_ok(void)
+{
+	if(ums_power_tried || !ehci_ports_have_ppc())
+		return 0;
+	if(ums_deadline_on &&
+	   (s32)(ums_deadline - get_timer()) < UMS_POWER_CYCLE_MIN_MS * UMS_TICKS_PER_MS)
+		return 0;
+	return 1;
+}
+
+/* How long rung 3's mount may take when a power cycle could follow: what is
+   left of the deadline minus the time the power cycle needs, but at least
+   1.5 s (a healthy mount takes well under one). 0: no limit of its own. */
+static int ums_rung3_budget_ms(void)
+{
+	int left;
+
+	if(!ums_deadline_on || !ums_power_ok())
+		return 0;
+	left = (s32)(ums_deadline - get_timer()) / UMS_TICKS_PER_MS - UMS_POWER_CYCLE_MIN_MS
+	       - 1200;	// a transfer that times out as the budget ends
+	return left < 1500 ? 1500 : left;
+}
+
+/*
+ * The recovery ladder. A command that fails is first handled in __cycle():
+ * clear-halt (rung 1) and Bulk-Only reset recovery (rung 2), each between two
+ * transfers. When that gives up (a timeout is an unplug here), this is
+ * rung 3: a port reset, enumerate again, mount again. A command that fails
+ * again after a port reset within the same request goes to rung 4, if the
+ * ports switch power (HCSPARAMS.PPC): power cycle the port, enumerate, mount.
+ * The same goes for a drive that does not mount after the port reset. Without
+ * PPC, or with less than UMS_POWER_CYCLE_MIN_MS left, the request fails at its
+ * deadline (__USBStorage_Sectors, rule 2).
+ */
 int unplug_procedure(void)
 {
 	int retval=1;
 
 	if(unplug_device!=0 )
 	{
-			
-		if(__usbfd.usb_fd)
-			if(ehci_reset_port2(/*__usbfd.usb_fd->port*/0)>=0)	
-			{
-				if(__usbfd.buffer != NULL)
-					USB_Free(__usbfd.buffer);
-				__usbfd.buffer= NULL;
+		if(!ums_deadline_on) {		/* keepalive, UMS_INIT: rung 3 first */
+			ums_port_resets_req = 0;
+			ums_power_tried = 0;
+		}
 
-				if(ehci_reset_port(0)>=0)
-				{
-					handshake_mode=1;
-					if(USBStorage_Try_Device(__usbfd.usb_fd)==0) {retval=0;unplug_device=0;}
-					handshake_mode=0;
-				}
-
+		if(__usbfd.usb_fd) {
+			// rung 3, unless a port reset did not help this request already
+			if(!(ums_port_resets_req > 0 && ums_power_ok())) {
+				ums_port_resets_req++;
+				if(ehci_reset_port2(/*__usbfd.usb_fd->port*/0)>=0 && ehci_reset_port(0)>=0)
+					retval = ums_remount(ums_rung3_budget_ms());
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '3', retval, 0);
 			}
+			// rung 4
+			if(retval != 0 && ums_power_ok()) {
+				ums_power_tried = 1;
+				if(ehci_port_power_cycle(0)>=0 && ehci_reset_port(0)>=0)
+					retval = ums_remount(0);
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '4', retval, 0);
+			}
+			if(retval == 0)
+				unplug_device=0;
+		}
 		ehci_msleep(100);
 	}
 
 	return retval;
 }
 
+/*
+ * A drive that is present but cannot be mounted again ("dead"). The first
+ * remount failure of an episode starts a clock (at the start of its request);
+ * after UMS_DEAD_FAILS failed remounts with the port connected AND
+ * UMS_DEAD_MIN_MS since that start, the
+ * drive is dead: sector requests fail at once, with no USB traffic. A request
+ * alone never takes that long (USBSTORAGE_REQUEST_MS), so a slow USB-SATA
+ * bridge that needs more than a few seconds to spin up gets its chances.
+ * A dead drive comes back on a replug (PORTSC CCS 0, or CSC set after it
+ * died) or on UMS_INIT; nothing retries it on a timer. While the port
+ * shows no drive (CCS 0 or PORT_OWNER) the request waits, as before.
+ */
+#define UMS_DEAD_FAILS		2
+#define UMS_DEAD_MIN_MS		15000
+
+static int ums_dead;
+static int ums_fail_n;		/* failed remounts with the drive present */
+static u32 ums_fail_t0;		/* timer at the start of the request of the first */
+
+static u32 ums_portsc(void)
+{
+	return ehci_readl(&ehci->regs->port_status[0]);
+}
+
+/* A drive on the port, owned by EHCI. Reads PORTSC only; CSC is
+   write-1-to-clear, so nothing here writes it back. */
+static int ums_port_present(void)
+{
+	u32 s = ums_portsc();
+	return (s & PORT_CONNECT) && !(s & PORT_OWNER);
+}
+
+static void ums_dead_clear(void)
+{
+	ums_dead = 0;
+	ums_fail_n = 0;
+}
+
+static void ums_dead_enter(void)
+{
+	u32 s = ums_portsc();
+	/* Forget an old CSC so that a later one means a replug: clear it the
+	   way Linux does (write 1 to CSC, the other change bits as 0). */
+	ehci_writel((s & ~PORT_RWC_BITS) | PORT_CSC, &ehci->regs->port_status[0]);
+	ums_dead = 1;
+	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'd', ums_fail_n, 0);
+}
+
+/* 1 while the drive is dead. A replug ends it. */
+static int ums_dead_still(void)
+{
+	u32 s = ums_portsc();
+	if (!(s & PORT_CONNECT) || (s & (PORT_OWNER | PORT_CSC))) {
+		ums_dead_clear();
+		return 0;
+	}
+	return 1;
+}
+
+/* UMS_INIT on a drive that is already set up: an explicit request ends the
+   dead state. If the drive is present and still will not mount, it stays
+   dead and the call fails (loaders that ignore the result see the same
+   capacity as before). */
+static s32 ums_init_dead(void)
+{
+	if (!ums_dead)
+		return 0;
+	ums_dead_clear();
+	if (unplug_device && ums_port_present() && unplug_procedure() != 0) {
+		ums_dead_enter();
+		return -ENODEV;
+	}
+	return 0;
+}
+
+/* For the keepalive: 1 when it may read a sector. It does not touch a dead
+   drive at all (no timed retry: a remount can take seconds, and it would stall
+   the module's one thread, and the SD card with it, at random moments; only a
+   replug or the loader's UMS_INIT ends the dead state), and it does not start
+   the wait for a drive that is unplugged, for the same reason. */
+int USBStorage_Keepalive_Ready(void)
+{
+	if (ums_dead && ums_dead_still())
+		return 0;
+	return !(unplug_device && !ums_port_present());
+}
+
 // How many times a read or write is tried while the device answers. A device
-// that has gone away is still waited for without a limit, as before, so a
-// game can survive the drive being plugged in again.
+// that has gone away (PORTSC shows no drive) is still waited for without a
+// limit, so a game survives the drive being plugged in again.
 #define USBSTORAGE_SECTOR_TRIES	4
 
 /*
@@ -1530,12 +1791,14 @@ int unplug_procedure(void)
  * USBSTORAGE_SECTOR_TRIES attempts or USBSTORAGE_REQUEST_MS, whichever comes
  * first. The rules, in order:
  *
- *  1. The drive is gone (unplug_procedure() cannot set it up again): wait
- *     for it without limit, so a game survives a replug. Once it is back
- *     the request starts afresh: new tries, new deadline.
- *  2. The drive answers but this request has failed and its time is used
+ *  0. The drive is dead (see UMS_DEAD_FAILS): fail at once, no USB traffic.
+ *  1. The port shows no drive (CCS 0 or PORT_OWNER): wait for it without
+ *     limit, polling PORTSC every 100 ms and resetting nothing. Once it is
+ *     back the request starts afresh: new tries, new deadline.
+ *  2. The drive is present but this request has failed and its time is used
  *     up: no new attempt and no new reset recovery (__cycle() checks the
- *     same deadline), return false.
+ *     same deadline), return false. This includes a drive that is present
+ *     and cannot be mounted again: its remounts also end at the deadline.
  *  3. Otherwise try again.
  */
 static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buffer)
@@ -1547,7 +1810,14 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 	if(__mounted != 1)
 		return false;
 
+	if(ums_dead && ums_dead_still()) {      // rule 0
+		UMS_LOG('E', 0, 0, -2);
+		D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, -2, 0);
+		return false;
+	}
+
 	UMS_LOG(write ? 'W' : 'r', 0, numSectors, sector);
+	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_BEGIN, write ? 0x2A : 0x28, sector, numSectors);
 	ums_deadline_start();
 
 	for(;;)
@@ -1556,10 +1826,11 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		// sets it up again once it answers.
 		if(unplug_device!=0)
 		{
-			int replugged = unplug_procedure();
-			UMS_LOG('P', 0, 0, replugged);
-			if(replugged != 0) {
-				gone = 1;               // rule 1: still gone, keep waiting
+			int replugged;
+			if(!ums_port_present()) {
+				gone = 1;               // rule 1: no drive, keep waiting
+				ums_fail_n = 0;
+				ehci_msleep(100);
 				continue;
 			}
 			if(gone) {
@@ -1567,8 +1838,32 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 				gone = 0;
 				tries = 0;
 				ums_deadline_start();
-			} else if(tries && ums_deadline_passed()) {
+			}
+			replugged = unplug_procedure();
+			UMS_LOG('P', 0, 0, replugged);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'p', replugged, tries);
+			if(replugged != 0) {
+				if(!ums_port_present())
+					continue;       // it went away again: rule 1
+				// Present but not mountable: count it (rule 0), else the
+				// deadline (rule 2)
+				if(ums_fail_n++ == 0)
+					ums_fail_t0 = ums_deadline - USBSTORAGE_REQUEST_MS * UMS_TICKS_PER_MS;	// this request's start
+				if(ums_fail_n >= UMS_DEAD_FAILS &&
+				   (s32)(get_timer() - ums_fail_t0) >= UMS_DEAD_MIN_MS * UMS_TICKS_PER_MS)
+					ums_dead_enter();
+				if(ums_dead || ums_deadline_passed()) {
+					UMS_LOG('E', 0, tries, -1);
+					D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, -1, tries);
+					ums_deadline_stop();
+					return false;
+				}
+				continue;
+			}
+			ums_fail_n = 0;
+			if(tries && ums_deadline_passed()) {
 				UMS_LOG('E', 0, tries, -1);
+				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, -1, tries);
 				ums_deadline_stop();
 				return false;           // rule 2
 			}
@@ -1583,22 +1878,29 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		usb_timeout=1000*1000;
 
 		if(retval >= 0) {
+			ums_fail_n = 0;
 			UMS_LOG('E', 0, tries, retval);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, 0, tries);
 			ums_deadline_stop();
 			return true;
 		}
 
 		// a timeout is handled as an unplug, as before
 		if(retval == USBSTORAGE_ETIMEDOUT)
+		{
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_TIMEOUT, 0, sector, tries);
 			unplug_device=1;
+		}
 
 		// The device answers but the command fails (a write-protected or
 		// failing drive): give up, so the caller sees an error (rule 2).
 		if(++tries >= USBSTORAGE_SECTOR_TRIES || ums_deadline_passed()) {
 			UMS_LOG('E', 0, tries, retval);
+			D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, retval, tries);
 			ums_deadline_stop();
 			return false;
 		}
+		D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RETRY, 0, tries, retval);
 	}
 }
 

@@ -64,6 +64,35 @@ struct sim {
 	int stall_csw;          /* the next CSW read STALLs; after the clear-halt the
 	                           CSW is there (BOT 6.7.2: the host reads it again) */
 
+	/* the port (PORTSC): the drive can be unplugged and come back */
+	bool disconnected;      /* CCS = 0 */
+	bool csc;               /* PORTSC.CSC, write-1-to-clear */
+	u64 replug_at_us;       /* when it comes back (0: never by itself) */
+	u32 portsc_writes, port_xfers_gone;
+	bool ppc;               /* HCSPARAMS.PPC: the ports switch power */
+	bool unpowered;         /* port power is off (PORT_POWER 0, no drive seen) */
+	u32 power_offs, power_cycles;   /* PORT_POWER 1 -> 0, and back to 1 */
+	int stuck;              /* the drive answers no bulk transfer: 1 until a port
+	                           reset, 2 until a power cycle (a drive left mid-
+	                           transfer by an earlier reset) */
+	bool stuck_io_only;     /* ... only READ(10) and WRITE(10) commands */
+	bool silent;            /* the drive answers no transfer at all, control or
+	                           bulk, and a reset does not help (a drive left
+	                           stuck by a console reset, devwii 2026-11-08) */
+	bool no_setaddr;        /* the first descriptor request is answered, but
+	                           SET_ADDRESS and everything after it are not */
+	u32 silent_xfers;       /* transfers that got no answer for those two */
+
+	/* the controller: USBCMD and USBSTS as ehci_recover.h uses them */
+	u32 hc_cmd;             /* USBCMD */
+	bool hc_ass;            /* USBSTS.ASS follows CMD_ASE unless ass_stuck */
+	bool ass_stuck;         /* the schedule does not stop when CMD_ASE clears */
+	bool iaa_never;         /* the doorbell is never answered */
+	bool iaa_set;           /* USBSTS.IAA, write-1-to-clear */
+	bool iaa_pending;       /* a doorbell was rung and not answered yet */
+	u64 iaa_at_us;
+	u32 doorbells, ase_clears, ase_sets, async_next;
+
 	/* counters */
 	u32 cbws, csws, bot_resets, clear_halts, port_resets, dev_resets;
 	u32 writes_ok, reads_ok, senses, toggle_losses;
@@ -76,15 +105,34 @@ struct sim {
 
 extern struct sim sim;
 
+/* sim.c calls this from ehci_reset_port() when sim.silent or sim.no_setaddr:
+   the enumeration that ehci_reset_port() does after the bus reset (ums_unit.c) */
+extern int (*sim_enum_hook)(int port);
+
 void sim_reset(void);           /* a fresh drive, no faults, time 0 */
 const char *sim_summary(void);
+void sim_unplug_for(u64 us);    /* unplug now; it is back (CSC set) after us */
+u32 sim_portsc_read(void);
+void sim_portsc_write(u32 v);
+enum { SIM_HC_CMD, SIM_HC_STS, SIM_HC_ASYNC_NEXT };
+u32 sim_hc_read(int reg);
+void sim_hc_write(int reg, u32 v);
 
 /* ums_unit.c: the module code under test */
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
 void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
+int ums_enum_port(void);        /* ehci_init_port(0), as ehci_reset_port() ends */
+void ums_set_dev_id(int id);    /* the id of the device USBStorage_Init() sees on port 0 */
+int ums_mounted(void);
 extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */
+s32 ums_init(void);             /* USBStorage_Init(): UMS_INIT on a mounted drive */
+int ums_keepalive_ready(void);  /* USBStorage_Keepalive_Ready() */
+int ums_is_dead(void);
+void ums_startup(void);         /* ehci_startup_recover(), as EHCI_Init() calls it */
+int ums_power_cycle(void);      /* ehci_port_power_cycle(0) */
+int ums_quiesce(void);          /* ehci_async_quiesce(), then ehci_async_resume() if it asks */
 s32 USBStorage_Read_Sectors(u32 sector, u32 numSectors, void *buffer);
 s32 USBStorage_Write_Sectors(u32 sector, u32 numSectors, const void *buffer);
 

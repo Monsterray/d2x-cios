@@ -7,6 +7,7 @@
 #include "syscalls.h"
 #include "types.h"
 #include "usb2.h"
+#include "usbstorage.h"
 
 /* Constants */
 #define USB_MAX_DEVICES		32
@@ -68,6 +69,9 @@ struct _usb_msg {
         void *userdata;
 
 	ioctlv vec[7];
+
+	/* IOS writes the result of an asynchronous request here */
+	areply reply;
 };
 
 /* IOCTL commands */
@@ -86,6 +90,61 @@ struct _usb_msg {
 
 /* Variables */
 static struct _usbv5_host *host = NULL;
+
+/* Bulk and interrupt transfers go to IOS asynchronously, with a timer, so a
+   drive that stops answering cannot block the module (docs/usb-storage.md).
+   Each transfer waits on a private queue for its own reply or for the timer.
+
+   Anything IOS posts later (a timer message that fired as the reply came, the
+   reply of a request that was abandoned) stays in the queue, so every wait
+   ends by sending USB_MSG_FLUSH and reading up to it: what is left in front
+   of it is old. A transfer is identified by the address of its reply, and an
+   abandoned request's memory is never reused until its reply has come. */
+#ifndef USBS_XFER_TIMEOUT_MS
+#define USBS_XFER_TIMEOUT_MS	4000
+#endif
+#define USB_XFER_TIMEOUT_US	(USBS_XFER_TIMEOUT_MS * 1000)
+#define USB_CANCEL_WAIT_US	1000000		/* for the cancelled request to return */
+#define USB_MSG_TIMER		0x75B50001	/* not an address: odd */
+#define USB_MSG_FLUSH		0x75B50003
+
+static s32 xq = -1;				/* the private queue */
+static s32 xtimer = -1;
+static struct _usb_msg *xorphan;		/* a request IOS still holds */
+
+/* A message came in: if it is the reply of the abandoned request, free it. */
+static void __xfer_seen(u32 m)
+{
+	if (xorphan && m == (u32)&xorphan->reply) {
+		Mem_Free(xorphan);
+		xorphan = NULL;
+	}
+}
+
+/* Wait for the reply at address want, at most us. Returns 1 if it came. */
+static int __xfer_wait(u32 want, u32 us)
+{
+	u32 m;
+	int got;
+
+	os_restart_timer(xtimer, us, 0);
+	do {
+		os_message_queue_receive(xq, &m, 0);
+		__xfer_seen(m);
+	} while (m != want && m != USB_MSG_TIMER);
+	got = m == want;
+	os_stop_timer(xtimer);
+
+	os_message_queue_send(xq, USB_MSG_FLUSH, 0);
+	do {
+		os_message_queue_receive(xq, &m, 0);
+		__xfer_seen(m);
+		if (m == want)
+			got = 1;
+	} while (m != USB_MSG_FLUSH);
+
+	return got;
+}
 
 
 static s32 __usb_control_message(s32 devId, u8 bmRequestType, u8 bmRequest, u16 wValue, u16 wIndex, u16 wLength, void *rpData)
@@ -138,6 +197,10 @@ static inline s32 __usb_interrupt_bulk_message(s32 devId, u8 ioctl, u8 bEndpoint
 	if(wLength && !rpData) return IPC_EINVAL;
 	if(!wLength && rpData) return IPC_EINVAL;
 
+	/* IOS may still be using the buffer of a request that was abandoned */
+	if (xorphan && !__xfer_wait((u32)&xorphan->reply, USB_CANCEL_WAIT_US))
+		return USBSTORAGE_ETIMEDOUT;
+
 	/* Allocate memory */
 	msg = Mem_Alloc(sizeof(struct _usb_msg));
 	if (!msg)
@@ -166,7 +229,21 @@ static inline s32 __usb_interrupt_bulk_message(s32 devId, u8 ioctl, u8 bEndpoint
 	msg->vec[1].len  = wLength;
 
 	/* Send bulk message */
-	ret = os_ioctlv(host->fd, ioctl, 2 - adjust, adjust, msg->vec);
+	ret = os_ioctlv_async(host->fd, ioctl, 2 - adjust, adjust, msg->vec, xq, (u32)&msg->reply);
+	if (ret >= 0) {
+		if (__xfer_wait((u32)&msg->reply, USB_XFER_TIMEOUT_US))
+			ret = msg->reply.result;
+		else {
+			/* The drive does not answer: cancel the request, and keep its
+			   memory until IOS has given it back */
+			ret = USBSTORAGE_ETIMEDOUT;
+			USB_CancelEndpoint(devId, bEndpoint);
+			if (!__xfer_wait((u32)&msg->reply, USB_CANCEL_WAIT_US)) {
+				xorphan = msg;
+				return ret;
+			}
+		}
+	}
 
 	/* Free memory */
 	Mem_Free(msg);
@@ -279,6 +356,20 @@ s32 USB_Init(void)
 		/* Free memory */
 		Mem_Free(host);
 		host = NULL;
+		Mem_Free(ver);
+
+		return ret ? ret : IPC_EINVAL;
+	}
+
+	/* The transfers' queue and timer, made once (as Timer_Init does) */
+	if (xq < 0) {
+		void *qbuf = Mem_Alloc(0x20);
+
+		xq = qbuf ? os_message_queue_create(qbuf, 8) : -1;
+		xtimer = os_create_timer(1000000, 1, xq, USB_MSG_TIMER);
+		if (xq < 0 || xtimer < 0)
+			return IPC_ENOMEM;	/* init fails: the module does not run */
+		os_stop_timer(xtimer);
 	}
 
 	/* Get device changes */

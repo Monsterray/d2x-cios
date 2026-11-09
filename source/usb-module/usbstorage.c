@@ -35,6 +35,12 @@ distribution.
 #include "usb2.h"
 #include "usbstorage.h"
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#else
+#define D2XDBG_EV(mod, ev, x, a, b)	do {} while (0)
+#endif
+
 #define ROUNDDOWN32(v)			(((u32)(v)-0x1f)&~0x1f)
 
 #define	HEAP_SIZE			(32*1024)
@@ -147,6 +153,25 @@ static s32 __usbstorage_reset(usbstorage_handle *dev);
 static s32 __usbstorage_clearerrors(usbstorage_handle *dev, u8 lun);
 
 
+#ifdef D2X_DEBUG
+/* A fault set through /dev/d2xdbg for this point (d2xdbg.h): the transfer's
+   result in its place, or 1 to run the transfer. A STALL is IOS's -7004; a
+   timeout or a lost CSW is USBSTORAGE_ETIMEDOUT; an error is -1. Delays and
+   hangs happen in Dbg_Point() itself. *big is set for D2XDBG_F_BIG. */
+static s32 __usbs_fault(u32 point, u32 arg, int *big)
+{
+	u32 f = D2XDBG_POINT(D2XDBG_M_USBS, point, arg);
+
+	switch (D2XDBG_FAULT_ACTION(f)) {
+	case 0:			return 1;
+	case D2XDBG_F_BIG:	if (big) *big = 1; return 1;
+	case D2XDBG_F_STALL:	return -7004;
+	case D2XDBG_F_ERROR:	return -1;
+	default:		return USBSTORAGE_ETIMEDOUT;
+	}
+}
+#endif
+
 static s32 __USB_BlkMsgTimeout(usbstorage_handle *dev, u8 bEndpoint, u16 wLength, void *rpData)
 {
 	s32 retval;
@@ -194,6 +219,10 @@ static s32 __send_cbw(usbstorage_handle *dev, u8 lun, u32 len, u8 flags, const u
 		dev->suspended = 0;
 	}
 
+#ifdef D2X_DEBUG
+	retval = __usbs_fault(D2XDBG_P_CMD, cb[0], NULL);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_out, CBW_SIZE, (void *)dev->buffer);
 
 	if(retval == CBW_SIZE) return USBSTORAGE_OK;
@@ -210,6 +239,10 @@ static s32 __read_csw(usbstorage_handle *dev, u8 *status, u32 *dataResidue)
 
 	memset(dev->buffer, 0, CSW_SIZE);
 
+#ifdef D2X_DEBUG
+	retval = __usbs_fault(D2XDBG_P_CSW, 0, NULL);
+	if(retval == 1)
+#endif
 	retval = __USB_BlkMsgTimeout(dev, dev->ep_in, CSW_SIZE, dev->buffer);
 	if(retval > 0 && retval != CSW_SIZE) return USBSTORAGE_ESHORTREAD;
 	else if(retval < 0) return retval;
@@ -247,6 +280,20 @@ static s32 __data_phase(usbstorage_handle *dev, u8 *buffer, u32 len, u8 write)
 	while(len > 0)
 	{
 		thisLen = len > MAX_TRANSFER_SIZE ? MAX_TRANSFER_SIZE : len;
+#ifdef D2X_DEBUG
+		{
+			int big = 0;
+
+			retval = __usbs_fault(D2XDBG_P_DATA, thisLen, &big);
+			/* the whole data phase as one transfer, past IOS58's 16 KB
+			   limit: the real /dev/usb/ven hang (REVIEW.md) */
+			if (big && usbs_buffer_direct(buffer))
+				thisLen = len;
+		}
+		if (retval != 1) {
+			/* the fault's result stands in for the transfer */
+		} else
+#endif
 		if (usbs_buffer_direct(buffer)) {
 			retval = __USB_BlkMsgTimeout(dev, ep, thisLen, buffer);
 		} else {
@@ -331,6 +378,7 @@ static s32 __cycle(usbstorage_handle *dev, u8 lun, u8 *buffer, u32 len, u8 *cb, 
 		continue;
 
 recover:
+		D2XDBG_EV(D2XDBG_M_USBS, D2XDBG_E_RESET, 'b', retval, retries);
 		if(__usbstorage_reset(dev) == USBSTORAGE_ETIMEDOUT)
 			retval = USBSTORAGE_ETIMEDOUT;
 	} while(retval < 0 && retries > 0);
@@ -686,6 +734,7 @@ static s32 __USBStorage_Sectors(usbstorage_handle *dev, u8 lun, u32 sector, u16 
 		return IPC_EINVAL;
 
 	__deadline_start();
+	D2XDBG_EV(D2XDBG_M_USBS, D2XDBG_E_BEGIN, write ? 0x2A : 0x28, sector, n_sectors);
 
 	for(;;)
 	{
@@ -697,10 +746,15 @@ static s32 __USBStorage_Sectors(usbstorage_handle *dev, u8 lun, u32 sector, u16 
 		if(retval >= 0)
 			break;
 
+		if(retval == USBSTORAGE_ETIMEDOUT)
+			D2XDBG_EV(D2XDBG_M_USBS, D2XDBG_E_TIMEOUT, 0, sector, tries);
+
 		if(++tries >= USBSTORAGE_SECTOR_TRIES || __deadline_passed())
 			break;
+		D2XDBG_EV(D2XDBG_M_USBS, D2XDBG_E_RETRY, 0, tries, retval);
 	}
 
+	D2XDBG_EV(D2XDBG_M_USBS, D2XDBG_E_END, 0, retval, tries);
 	usbs_deadline_on = 0;
 	return retval;
 }

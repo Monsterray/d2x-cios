@@ -10,7 +10,7 @@ description: Build, test, review and hardware-check the d2x cIOS modules (EHCI, 
 - Trace the path from the caller (a loader's ioctl) to the hardware before changing code. The usual chain for USB storage: `ehci-module/loop.c` (ioctl) -> `tinyehci/usbstorage.c` (Bulk-Only Transport) -> `tinyehci/ehci.c` (EHCI queue heads, `handshake()`, `qh_end_transfer()`).
 - Know how errors travel. In tinyehci a STALLed transfer comes back as a short byte count, not an error code. A transfer with no answer returns `-ENODEV` and sets `unplug_device` (`handshake_mode` 0), or `-ETIMEDOUT` (`handshake_mode` 1).
 - Fix the smallest shared cause. Write the test first: a host test that shows the bug, marked `known_bug`. Then fix the code and remove the mark.
-- Keep verified defects apart from ideas. Ideas go in `REVIEW.md` with evidence and a trigger.
+- Keep verified defects apart from ideas. Ideas go in `docs/roadmap.md` with evidence and a trigger.
 
 ## Build
 
@@ -55,7 +55,7 @@ Hardware runs go through the shared bench queue (`wiibench.py add ... -- CMD`, t
 - A job must leave the Wii in the Homebrew Channel and collect its own logs.
 - Test with the kind of drive the bug was seen on, and record the drive (vendor, product, size, file system) with the result.
 
-The bench test program (a DOL that opens the cIOS's USB device, times sector reads and writes, and reports through the HBC log) is the next piece to build; see REVIEW.md.
+The bench test program (a DOL that opens the cIOS's USB device, times sector reads and writes, and reports through the HBC log) is the next piece to build; see docs/roadmap.md.
 
 ## Review and release
 

@@ -39,6 +39,13 @@
 #include "sdio_hs.h"
 #endif
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#define SD_EV(ev, x, a, b)	D2XDBG_EV(D2XDBG_M_SD, ev, x, a, b)
+#else
+#define SD_EV(ev, x, a, b)	do {} while (0)
+#endif
+
 
 /* Page size */
 #define PAGE_SIZE512			512
@@ -427,9 +434,23 @@ static void __sd0_hs_fallback(void)
 	__sd0_hs_on = 0;
 	__sd0_hs_dead = 1;
 
+#ifdef D2X_DEBUG
+	{
+		s32 r;
+
+		SD_EV(D2XDBG_E_STEP, 'g', 0, 0);
+		r = __sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc);
+		SD_EV(D2XDBG_E_STEP, 'h', r, hc);
+		if (r >= 0)
+			SD_EV(D2XDBG_E_STEP, 'c', __sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc)), 0);
+		SD_EV(D2XDBG_E_STEP, 'k', __sdio_setclock(1), 0);
+	}
+#else
 	if (__sdio_gethcr(SDIOHCR_HOSTCONTROL, 1, &hc) >= 0)
 		__sdio_sethcr(SDIOHCR_HOSTCONTROL, 1, sdhs_hostctl_disable(hc));
 	__sdio_setclock(1);
+#endif
+	SD_EV(D2XDBG_E_SDHS, 0, 2, 0);
 }
 
 /* Card selected, 4-bit mode on. Any failure leaves default speed, silently;
@@ -658,6 +679,7 @@ static	bool __sd0_initio(void)
 
 #ifdef SDIO_HIGH_SPEED
 	__sd0_hs_try();
+	SD_EV(D2XDBG_E_SDHS, 0, (__sd0_hs_on ? 1 : 0) | (__sd0_hs_dead ? 2 : 0), 0);
 #endif
 
 	/* Deselect card */
@@ -735,6 +757,28 @@ bool sdio_Shutdown(void)
 	return true;
 }
  
+#ifdef D2X_DEBUG
+/* A fault set for an SD request through /dev/d2xdbg (d2xdbg.h): -1 fails
+   this attempt; D2XDBG_F_SDLOW falls back from high speed first, as a
+   failed transfer would. Delays and hangs happen in Dbg_Point(). */
+static s32 __sd0_fault(u32 sector)
+{
+	u32 f = D2XDBG_POINT(D2XDBG_M_SD, D2XDBG_P_REQ, sector);
+
+	switch (D2XDBG_FAULT_ACTION(f)) {
+	case 0:
+		return 0;
+#ifdef SDIO_HIGH_SPEED
+	case D2XDBG_F_SDLOW:
+		__sd0_hs_fallback();
+		return 0;
+#endif
+	default:
+		return -1;
+	}
+}
+#endif
+
 bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 {
 	u32 i;
@@ -744,9 +788,17 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 	if (!buffer)
 		return false;
 
+	SD_EV(D2XDBG_E_BEGIN, 0x28, sector, numSectors);
+
+	/* SDSC cards take a byte address. Once, outside the retry loop: inside it,
+	   every retry multiplied the address again. */
+	if (!__sd0_sdhc)
+		sector *= PAGE_SIZE512;
+
 	/* Read loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
+		SD_EV(D2XDBG_E_STEP, 's', 0, i);
 		ret = __sd0_select();
 		if (ret < 0) {
 #ifdef SDIO_HIGH_SPEED
@@ -755,23 +807,36 @@ bool sdio_ReadSectors(sec_t sector, sec_t numSectors,void* buffer)
 			continue;
 		}
 
-		/* Check if SDHC */
-		if (!__sd0_sdhc)
-			sector *= PAGE_SIZE512;
-
 		/* Send command */
 		ret = __sdio_sendcommand(SDIO_CMD_READMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), ret);
+#else
 		__sd0_deselect();
+#endif
 
-		if (ret >= 0)
+#ifdef D2X_DEBUG
+		/* An injected fault marks a finished transfer failed, so the
+		   card sees the same commands as on a real failure (a select
+		   and deselect with nothing between them stopped IOS on devwii) */
+		if (ret >= 0 && __sd0_fault(sector) < 0)
+			ret = -1;
+#endif
+
+		if (ret >= 0) {
+			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
+		}
+		SD_EV(D2XDBG_E_STEP, 'r', ret, i);
+		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
 		__sd0_hs_fallback();
 #endif
 	}
+	SD_EV(D2XDBG_E_END, 0, -1, i);
 
 	return false;
 }
@@ -785,9 +850,17 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 	if (!buffer)
 		return false;
 
+	SD_EV(D2XDBG_E_BEGIN, 0x2A, sector, numSectors);
+
+	/* SDSC cards take a byte address. Once, outside the retry loop: inside it,
+	   every retry multiplied the address again. */
+	if (!__sd0_sdhc)
+		sector *= PAGE_SIZE512;
+
 	/* Write loop */
 	for (i = 0; i < 10; i++) {
 		/* Select card */
+		SD_EV(D2XDBG_E_STEP, 's', 0, i);
 		ret = __sd0_select();
 		if (ret < 0) {
 #ifdef SDIO_HIGH_SPEED
@@ -796,23 +869,36 @@ bool sdio_WriteSectors(sec_t sector, sec_t numSectors,const void* buffer)
 			continue;
 		}
 
-		/* Check if SDHC */
-		if (!__sd0_sdhc)
-			sector *= PAGE_SIZE512;
-
 		/* Send command */
 		ret = __sdio_sendcommand(SDIO_CMD_WRITEMULTIBLOCK, SDIOCMD_TYPE_AC, SDIO_RESPONSE_R1, sector, numSectors, PAGE_SIZE512, (char *)buffer, NULL, 0);
 
 		/* Deselect card */
+#ifdef D2X_DEBUG
+		SD_EV(D2XDBG_E_STEP, 'd', __sd0_deselect(), ret);
+#else
 		__sd0_deselect();
+#endif
 
-		if (ret >= 0)
+#ifdef D2X_DEBUG
+		/* An injected fault marks a finished transfer failed, so the
+		   card sees the same commands as on a real failure (a select
+		   and deselect with nothing between them stopped IOS on devwii) */
+		if (ret >= 0 && __sd0_fault(sector) < 0)
+			ret = -1;
+#endif
+
+		if (ret >= 0) {
+			SD_EV(D2XDBG_E_END, 0, 0, i);
 			return true;
+		}
+		SD_EV(D2XDBG_E_STEP, 'r', ret, i);
+		SD_EV(D2XDBG_E_RETRY, 0, i + 1, ret);
 
 #ifdef SDIO_HIGH_SPEED
 		__sd0_hs_fallback();
 #endif
 	}
+	SD_EV(D2XDBG_E_END, 0, -1, i);
  
 	return false;
 }

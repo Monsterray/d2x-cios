@@ -181,6 +181,7 @@ static void ums_log_event(u8 what, u8 ep, u32 len, s32 ret);
 #endif
 #include "ums_quirks.h"
 #define get_timer()  (*(((vu32*)HW_TIMER)))
+#include "ehci_recover.h"
 
 /* handshake() polls this long (Hollywood timer ticks, about 0.53 us each)
    before it sleeps between checks: most transfers finish within it, and an
@@ -545,6 +546,7 @@ u32 usb_timeout=1000*1000;
 		int			maxp = 0;
         int retval=0;
         int halted;
+        int async_halted = 0;
 
 		//writel (INTR_MASK, &ehci->regs->intr_enable); // try interrupt
 
@@ -675,9 +677,16 @@ u32 usb_timeout=1000*1000;
         if(retval>=0)
         // wait hc really stopped
                 retval = handshake(&ehci->regs->port_status[dev->port],&ehci->regs->async_next,~0,ehci->async->qh_dma,20*1000);
+        else
+        // A failed transfer: the controller may still hold the unlinked QH.
+        // Wait for the async advance doorbell, or halt the schedule, before
+        // the qTDs are freed and the QH is reused (ehci_recover.h).
+                async_halted = ehci_async_quiesce();
         //release memory, and actualise urb->actual_length
         UMS_LOG('a', urb->ep, 0, retval);
         qh_end_transfer();
+        if(async_halted)
+                ehci_async_resume();
 
 		//writel (0, &ehci->regs->intr_enable);  // try interrupt
         
@@ -777,6 +786,7 @@ int ehci_reset_port_old(int port)
 
 		for(i=0;i<4;i++)  //4 retries
 		{ 
+		if (i && ehci_enum_expired()) {retval=-ETIMEDOUT; break;}  // the caller's time is used up
 		u32 status = ehci_readl(status_reg);
 		status &= ~PORT_PE;
 		status |= PORT_RESET | PORT_POWER;       
@@ -910,127 +920,7 @@ int ehci_reset_usb_port(int port)
 }
 
 
-int ehci_init_port(int port)
-{	
-        struct ehci_device *dev = &ehci->devices[port];
-        int retval = 0;
-        dev->id = 0;
-	int i;
-	ehci_msleep(50);
-	for(i=0;i<3;i++)
-	{
-        
-        
-        //my_sprint("getting USB_REQ_GETDESCRIPTOR",NULL);ehci_msleep(50);
-        // sdlog("getting USB_REQ_GETDESCRIPTOR\n");   
-        // now the device has the default device id
-        retval = ehci_control_message(dev,USB_CTRLTYPE_DIR_DEVICE2HOST,
-                             USB_REQ_GETDESCRIPTOR,USB_DT_DEVICE<<8,0,sizeof(dev->desc),&dev->desc);
-        //retval=-1;
-        if (retval < 0) {
-        		//my_sprint("unable to get device desc...",NULL);ehci_msleep(50);
-        		// sdlog("error getting USB_REQ_GETDESCRIPTOR\n");
-                //ehci_dbg ( "unable to get device desc...\n");
-                retval=-2201;
-                ehci_msleep(100);
-                //return retval;
-        }
-        else break;
-    }
-    if (retval < 0)
-    {
-		for(i=0;i<3;i++)
-		{
-	        
-	        ehci_reset_usb_port(port);
-	        ehci_msleep(100);
-	        //my_sprint("getting USB_REQ_GETDESCRIPTOR",NULL);ehci_msleep(50);
-	        // sdlog("getting USB_REQ_GETDESCRIPTOR - reset\n");   
-	        // now the device has the default device id
-	        retval = ehci_control_message(dev,USB_CTRLTYPE_DIR_DEVICE2HOST,
-	                             USB_REQ_GETDESCRIPTOR,USB_DT_DEVICE<<8,0,sizeof(dev->desc),&dev->desc);
-	        if (retval < 0) {
-	        		//my_sprint("unable to get device desc...",NULL);ehci_msleep(50);
-	        		// sdlog("error getting USB_REQ_GETDESCRIPTOR\n");
-	                //ehci_dbg ( "unable to get device desc...\n");
-	                retval=-2201;
-	                
-	                //return retval;
-	        }
-	        else break;
-	    }
-    }
-    
-    if (retval < 0)
-    {
-		for(i=0;i<3;i++)
-		{
-			ehci_adquire_port(port);
-	        ehci_msleep(100);
-	        ehci_reset_usb_port(port);
-	        ehci_msleep(100);
-	        //my_sprint("getting USB_REQ_GETDESCRIPTOR",NULL);ehci_msleep(50);
-	        // sdlog("getting USB_REQ_GETDESCRIPTOR - adquire - reset\n");   
-	        // now the device has the default device id
-	        retval = ehci_control_message(dev,USB_CTRLTYPE_DIR_DEVICE2HOST,
-	                             USB_REQ_GETDESCRIPTOR,USB_DT_DEVICE<<8,0,sizeof(dev->desc),&dev->desc);
-	        if (retval < 0) {
-	        		//my_sprint("unable to get device desc...",NULL);ehci_msleep(50);
-	        		// sdlog("error getting USB_REQ_GETDESCRIPTOR\n");
-	                //ehci_dbg ( "unable to get device desc...\n");
-	                retval=-2201;
-	                
-	                //return retval;
-	        }
-	        else break;
-	    }
-    }
-
-    if (retval < 0) 	return -2201;
-    
-        // sdlog("USB_REQ_GETDESCRIPTOR ok\n");
-
-        int cnt=2;
-        do{
-	        ehci_msleep(100);
-	        // sdlog("trying USB_REQ_SETADDRESS: %d\n",cnt);
-	        retval = ehci_control_message(dev,USB_CTRLTYPE_DIR_HOST2DEVICE,
-	                                      USB_REQ_SETADDRESS,cnt,0,0,0);
-	        if (retval < 0) {
-	        		//my_sprint("unable to set device addr...",NULL);
-	                ehci_dbg ( "unable to set device addr...\n");	                
-	                retval=-8000-cnt;
-	                // sdlog("unable to set device addr: %d\n",cnt);
-	                //return retval;
-	        }
-	        //else  sdlog("USB_REQ_SETADDRESS ok: %d\n",cnt);
-	
-	        dev->toggles = 0;
-	
-	        dev->id = cnt;
-	
-	        USB_ClearHalt(dev, 0);
-	        //USB_ClearHalt(dev, 0x80);
-			ehci_msleep(100);
-	        // sdlog("checking USB_REQ_GETDESCRIPTOR\n");
-	        retval = ehci_control_message(dev,USB_CTRLTYPE_DIR_DEVICE2HOST,
-	                             USB_REQ_GETDESCRIPTOR,USB_DT_DEVICE<<8,0,sizeof(dev->desc),&dev->desc);
-	                             
-	        
-	        if (retval < 0) {
-	        		//my_sprint("unable to get device desc...",NULL);
-	                ehci_dbg ( "unable to get device desc...\n");
-	                // sdlog("error checking USB_REQ_GETDESCRIPTOR\n");
-	                retval=-2242;
-	                dev->id =0;
-	                //return retval;
-	        }//else sdlog("ok checking USB_REQ_GETDESCRIPTOR\n");
-        
-        }while(retval<0 && cnt<20);
-        
-        //if(retval>=0)sdlog("init ok\n");
-        return retval;
-}
+#include "ehci_enum.h"
 
 int ehci_reset_port(int port)
 {
@@ -1067,7 +957,9 @@ int ehci_discover(void)
         for(i = 0;i<ehci->num_port; i++){
                 struct ehci_device *dev = &ehci->devices[i];
                 dev->port = i;
+                ehci_enum_arm(EHCI_ENUM_DISCOVER_MS);
                 ehci_reset_port(i);
+                ehci_enum_disarm();
         }        
         return 0;
 }

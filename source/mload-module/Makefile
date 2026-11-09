@@ -26,6 +26,11 @@ endif
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
 CFLAGS	+=	$(EXTRA_CFLAGS)
+# SD high speed is on in every build (docs/sd-high-speed.md); -DSDIO_NO_HIGH_SPEED turns it off.
+# cios-lib, fat-module and mload-module must all agree, so each Makefile has this block.
+ifeq ($(findstring -DSDIO_NO_HIGH_SPEED,$(EXTRA_CFLAGS)),)
+CFLAGS	+=	-DSDIO_HIGH_SPEED
+endif
 LDFLAGS	=	$(ARCH) -nostartfiles -nostdlib -Wl,-T,link.ld,-Map,$(TARGET).map -Wl,--gc-sections -Wl,-static
 
 # Libraries
@@ -46,6 +51,17 @@ OBJS	=	debug.o		\
 		swi.o		\
 		swi_asm.o	\
 		tid.o
+
+# Debug builds (-DD2X_DEBUG): the debug area, /dev/d2xdbg and the watchdog
+# (d2xdbg.h). d2xdbg_ident.h names the build; it is rewritten only when the
+# name changes, so the object's dependencies stay right.
+ifneq ($(findstring -DD2X_DEBUG,$(EXTRA_CFLAGS)),)
+OBJS	+=	dbg.o		\
+		dbg_core.o
+D2X_IDENT ?= unknown
+$(shell printf '#define D2X_IDENT "%s"\n' '$(D2X_IDENT)' > d2xdbg_ident.h.new; \
+	cmp -s d2xdbg_ident.h.new d2xdbg_ident.h || mv d2xdbg_ident.h.new d2xdbg_ident.h; rm -f d2xdbg_ident.h.new)
+endif
 
 
 $(TARGET).elf: $(OBJS) $(LIBS)

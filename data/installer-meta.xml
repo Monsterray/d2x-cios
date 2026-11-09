@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  meta.xml for the all-in-one zip (d2x-cios-installer-with-d2x-vX.Y.Z.zip):
+  copy it over apps/d2x-cios-installer/meta.xml, the file the Homebrew
+  Channel reads. Change <version> and <long_description> to the release
+  being packed, and <release_date> to the day of packing (YYYYMMDDHHMMSS).
+  The installer package itself (boot.dol, icon.png) is not in this repository.
+-->
+<app version="1">
+  <name>d2x cIOS installer</name>
+  <coder>dragbe, with d2x by davebaol, blackb0x and Monsterray</coder>
+  <version>d2x v11.1.0</version>
+  <release_date>20261109120000</release_date>
+  <short_description>Install d2x v11.1.0 cIOS</short_description>
+  <long_description>Installs the d2x v11.1.0 custom IOS, for USB Loader GX, Nintendont and other homebrew.
+
+d2x v11.1.0 makes a USB drive that stops answering fail fast instead of freezing the Wii, recovers write errors, turns on SD high speed and fixes the MLOAD, FAT and DIP modules. See Changelog.txt.
+
+Slots and bases: 249 on base 56 for most games, 250 on base 57 for USB loaders, 248 on base 38, 251 on base 58. On a vWii, use ciosmaps-vWii.xml as ciosmaps.xml. See ReadMe.txt.
+
+No warranty. This writes to the NAND: have a backup first.
+github.com/Monsterray/d2x-cios</long_description>
+  <arguments>
+    <arg>--remove-cache</arg>
+  </arguments>
+  <no_ios_reload/>
+</app>

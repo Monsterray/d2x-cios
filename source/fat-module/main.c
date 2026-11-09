@@ -37,6 +37,12 @@
 #include "types.h"
 #include "usbstorage.h"
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#else
+#define D2XDBG_EV(mod, ev, x, a, b)	do {} while (0)
+#endif
+
 
 char *moduleName = "FAT";
 
@@ -481,6 +487,19 @@ int main(void)
 		if (ret)
 			continue;
 
+		/* Debug builds: x = IPC command << 8 | ioctl number, a = fd,
+		   b = length (read and write) */
+		D2XDBG_EV(D2XDBG_M_FAT, D2XDBG_E_BEGIN,
+			  (message->command << 8) | (message->command >= IOS_IOCTL ? message->ioctl.command & 0xFF : 0),
+			  message->fd, message->read.length);
+#ifdef D2X_DEBUG
+		/* A fault set through /dev/d2xdbg: the request fails unrun */
+		if (D2XDBG_POINT(D2XDBG_M_FAT, D2XDBG_P_REQ, message->command)) {
+			ret = FS_EFATAL;
+			goto ack;
+		}
+#endif
+
 		switch (message->command) {
 		case IOS_OPEN: {
 			char *devpath = message->open.device;
@@ -632,6 +651,11 @@ int main(void)
 			/* Unknown command */
 			ret = IPC_EINVAL;
 		}
+
+#ifdef D2X_DEBUG
+ack:
+#endif
+		D2XDBG_EV(D2XDBG_M_FAT, D2XDBG_E_END, message->command, ret, 0);
 
 		/* Acknowledge message */
 		os_message_queue_ack((void *)message, ret);

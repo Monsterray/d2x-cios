@@ -7,6 +7,9 @@
 #include "hollywood.h"
 #include "syscalls.h"
 #include "trace.h"
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#endif
 
 u32 DI_TraceMode(void);                 /* plugin.c: the emulation mode bits */
 
@@ -30,6 +33,21 @@ void Trace_Set(u32 addr)
 void Trace_Event(u8 where, u8 cmd, u32 arg, u32 arg2)
 {
 	u32 *rec;
+
+#ifdef D2X_DEBUG
+	/* The d2x trace ring too (d2xdbg.h): a command's start and end count
+	   as a request, 'X' as an error; letters that mean a counter there
+	   are renamed (R read -> m, Z gap -> g) */
+	{
+		u8 ev = where;
+
+		if (where == DIP_T_CMD)		ev = D2XDBG_E_BEGIN;
+		else if (where == DIP_T_CMD_END)	ev = D2XDBG_E_END;
+		else if (where == DIP_T_READ)	ev = 'm';
+		else if (where == DIP_T_SPARSE)	ev = 'g';
+		D2XDBG_EV(D2XDBG_M_DIP, ev, (cmd << 8) | (DI_TraceMode() & 0xFF), arg, arg2);
+	}
+#endif
 
 	if (!trace)
 		return;

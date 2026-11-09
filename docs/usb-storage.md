@@ -23,7 +23,7 @@ transfer must stay below 64 KB).
 
 | Code | From | Meaning | What happens next |
 | --- | --- | --- | --- |
-| `-ENODEV` (-1) | `handshake()` | Port disconnected, port owner lost, fatal controller error, or a timeout outside set-up code | `unplug_device = 1`; the request waits for the drive (rule 1 below) |
+| `-ENODEV` (-1) | `handshake()` | Port disconnected, port owner lost, fatal controller error, or a timeout outside set-up code | `unplug_device = 1`; the request waits for the drive if PORTSC shows none (rule 1 below), else it keeps its deadline (rule 2) |
 | `-ETIMEDOUT` (-2) | `handshake()` in `handshake_mode` 1 | Timeout during set-up or recovery | The command's reset recovery |
 | `-EPIPE` (-5) | `ehci_do_urb()` | A control request STALLed | The caller's error path |
 | short count | `ehci_do_urb()` | A bulk transfer STALLed (or the device sent a short packet) | `__cycle()` clears the halt and reads the CSW (BOT 6.7.2, 6.7.3) |
@@ -38,14 +38,51 @@ never ran on hardware (REVIEW.md, EHCI item 7).
 
 `__USBStorage_Sectors()` applies these rules, in order:
 
-1. **The drive is gone** (`unplug_procedure()` cannot set it up): wait for
-   it without limit, so a game survives a replug. Once it is back, the
-   request starts afresh.
-2. **The drive answers but the request keeps failing:** after
+0. **The drive is dead** (see below): fail at once, no USB traffic.
+1. **The port shows no drive** (PORTSC CCS 0, or PORT_OWNER set: the drive is
+   unplugged): wait for it without limit, polling PORTSC every 100 ms and
+   resetting nothing, so a game survives a replug. Once it is back, the
+   request starts afresh: new tries, new deadline. Only PORTSC decides this.
+   A drive that is present but cannot be mounted (`unplug_procedure()`
+   fails) is not "gone": it falls to rule 2.
+2. **The drive is present but the request keeps failing:** after
    `USBSTORAGE_SECTOR_TRIES` attempts, or once `USBSTORAGE_REQUEST_MS` has
    passed, return failure. `__cycle()` checks the same deadline and starts
-   no new reset recovery after it.
+   no new reset recovery after it. This includes remounts that fail.
 3. Otherwise, try again.
+
+### The dead state
+
+Before 2026-11, a present drive that would not mount hung the loader: a
+failed `USBStorage_Try_Device()` runs `USBStorage_Close()`, which wipes
+`__usbfd` and sets `__mounted = 0`. After the first failed remount
+`unplug_procedure()` only slept 100 ms and returned 1 for ever (rule 1 waited
+for a drive that was there), and GET_CAPACITY returned 0. Also
+`ehci_reset_port_old()` wrote PORT_OWNER on every 100 ms poll with CCS 0.
+Now `unplug_procedure()` saves and restores `__usbfd`, `__lun` and
+`__mounted` when a remount fails, and:
+
+- After `UMS_DEAD_FAILS` failed remounts with the port connected, and
+  `UMS_DEAD_MIN_MS` since the start of the request in which the first one
+  failed, the drive is **dead**: sector requests return failure at once
+  (rule 0) with no USB traffic. Capacity stays valid (USB Loader GX ignores
+  the UMS_INIT result and only tests GET_CAPACITY != 0).
+- Dead ends on a replug (PORTSC CCS 0, or CSC set after it died), on
+  `UMS_INIT` (with the drive still unmountable it is dead again and the call
+  returns -ENODEV). Nothing retries a dead drive on a timer: a remount can
+  take seconds, and on the module's single thread it would stall USB and SD
+  at random moments, a hitch nobody could explain.
+- The keepalive (`__EHCI_Watchdog`, `loop.c`) reads a sector only when
+  `USBStorage_Keepalive_Ready()` says so: not while the drive is dead, and
+  not while PORTSC shows it unplugged, because the wait of rule 1 would hold
+  the module's single thread and the SD card with it.
+
+How callers see it: USB Loader GX (`usbstorage2.c`), d2x FAT
+(`fat-module/diskio.c`, `cios-lib/usbstorage.c`) and the DIP/WBFS reads
+(`wbfs.c`, `loop.c`) return the error at once, with no tight retry loop.
+Not verified: libfat's cache and a game's own DI retries after such errors.
+Not tested in the host harness: SD requests after the drive died (no SD
+card in it); the keepalive tests stand for that.
 
 The limits:
 
@@ -55,11 +92,115 @@ The limits:
 | Reset recoveries per command (`USBSTORAGE_CYCLE_RETRIES`) | 10 | `usbstorage.c` |
 | Attempts per sector request (`USBSTORAGE_SECTOR_TRIES`) | 4 | `usbstorage.c` |
 | Time per sector request (`USBSTORAGE_REQUEST_MS`) | 8000 ms | `usbstorage.c` |
+| Failed remounts before dead (`UMS_DEAD_FAILS`) | 2 | `usbstorage.c` |
+| Time since the first failed request before dead (`UMS_DEAD_MIN_MS`) | 15000 ms | `usbstorage.c` |
+| Deadline left for a power cycle (`UMS_POWER_CYCLE_MIN_MS`) | 2500 ms | `usbstorage.c` |
+| Async advance doorbell, then schedule halt (`EHCI_IAA_US`, `EHCI_ASS_US`) | 20 ms each | `ehci_recover.h` |
+| Port power: off, wait for the drive, settle (`EHCI_POWER_*`) | 300 ms, 1000 ms, 100 ms | `ehci_recover.h` |
+| One USBS transfer (`USBS_XFER_TIMEOUT_MS`) | 4000 ms, then a cancel | `usb2.c` |
+| Wait for the cancelled USBS transfer (`USB_CANCEL_WAIT_US`) | 1 s, then an orphan | `usb2.c` |
 
 A drive that takes a write's data but never sends its status (the bench's
 SanDisk "USB 3.2Gen1") now fails in about 8.5 s, with no remount. Before
 the deadline it took about 48 s: 43 reset recoveries and 6 remounts for one
 sector (`tests/host/ums`, `write_with_lost_status_fails_in_time`).
+
+## The recovery ladder
+
+A command that fails is recovered in steps, each one only between two
+transfers (the module's loop is single-threaded, so nothing else runs while
+a rung does), all inside the one request deadline (`USBSTORAGE_REQUEST_MS`):
+
+| Rung | What | Where |
+| --- | --- | --- |
+| 1 | clear-halt on the stalled endpoint, read the CSW | `__cycle()` |
+| 2 | Bulk-Only Mass Storage Reset, then clear-halt on both endpoints (`USBStorage_Reset`) | `__cycle()`, up to `USBSTORAGE_CYCLE_RETRIES` times |
+| 3 | port reset, enumerate again, mount again (a transfer timeout is an unplug here) | `unplug_procedure()` |
+| 4 | port power cycle, enumerate, mount; only with HCSPARAMS.PPC | `unplug_procedure()` |
+| fail | the request returns failure at its deadline | `__USBStorage_Sectors()` rule 2 |
+
+Rung 4 comes when a command fails again after rung 3 in the same request, or
+when the mount after rung 3 fails. At most one power cycle per request, and only
+with `UMS_POWER_CYCLE_MIN_MS` (2500 ms) of the deadline left. The power cycle
+itself takes about 0.6 s (off 300 ms, wait for the drive to reconnect, settle
+100 ms), then the enumeration and the mount.
+
+So that rung 3's mount cannot use up the time rung 4 needs, rung 3's mount gets
+an earlier deadline of its own when a power cycle could follow
+(`ums_rung3_budget_ms()`: what is left, minus 2.5 s and a 1.2 s transfer timeout,
+at least 1.5 s). A mount that runs after a deadline sends nothing more
+(`ums_in_remount` in `__cycle()`), so a request without PPC that fails ends about
+1 s after its deadline, not after one more timeout per mount command (12.7 s in
+the model before, under 10 s now). The keepalive's dead-drive retry and `UMS_INIT`
+run without a deadline: rung 3 first, rung 4 if the mount fails.
+
+Without PPC the ladder ends at rung 3. Hollywood's EHCI has no PPC: a `+dbg`
+boot on the dev Wii read `HCSPARAMS` 0x2204 (PPC 0), so on a Wii rung 4 and the
+start-up power cycle do nothing, and a drive left stuck by a console reset
+still has to be unplugged (REVIEW.md, the 2026-11-08 update). Both stay for
+controllers that do switch power, and the host tests cover them with `ppc`.
+
+PORTSC's CSC is write-1-to-clear. The ladder writes PORTSC only through masks
+that leave CSC, PEC and OCC out. The one exception is the CSC that the power
+cycle itself causes: `ehci_port_power_cycle()` clears it on purpose, so that the
+dead state does not take it for a replug.
+
+## Releasing the QH after a failed transfer
+
+`ehci_do_urb()` links one QH into the async list, waits for STS_INT, and unlinks
+it. On success it then waits for the controller's async-list address to be back
+at the list head (the controller has let go). On a failure (timeout, port gone)
+it used to free the qTDs without waiting, so the controller could still hold a QH
+that was about to be reused. Now `ehci_async_quiesce()`
+(`tinyehci/ehci_recover.h`) rings the async advance doorbell (USBCMD IAAD) and
+waits for STS_IAA (write-1-to-clear, cleared after) for at most 20 ms. If the
+doorbell does not come it clears CMD_ASE and waits for STS_ASS to clear, at most
+20 ms more; the schedule starts again (`ehci_async_resume()`, with the list
+address pointed at the list head) after the qTDs are freed. Never more than 40 ms.
+A controller that is halted or has its schedule off is not waited for. The
+success path is unchanged: a doorbell per transfer would cost a frame each.
+
+## Start-up: leave the drive clean
+
+A drive that a console or IOS reset left in the middle of a transfer can stay
+stuck: port power survives a console reset, and enumeration alone did not restart
+it (REVIEW.md, the 2026-11-06 finding). `EHCI_Init()` calls
+`ehci_startup_recover()` after it releases the non-USB2 ports. Every port that
+has a drive for EHCI is power cycled first if HCSPARAMS.PPC is set
+(`ehci_port_power_cycle()`), then given a bus reset (`ehci_reset_usb_port()`).
+`ehci_discover()` enumerates afterwards, at the first open of `/dev/usb2`.
+
+Added time in the host simulation, per connected port: about 110 ms without PPC,
+about 660 ms with PPC (off 300 ms, the drive reconnects after 150 ms in the model,
+settle 100 ms, reset 110 ms). A real drive may take longer to reconnect; the wait
+for it is limited to 1 s.
+
+`+dbg` builds (`D2X_DEBUG`) trace `Z` events (E_RESET): `c` at start with a =
+HCSPARAMS and b = PPC, `C` for a power cycle (a = 0 drive back, -1 not), `q` and
+`Q` for the doorbell wait and the schedule halt (a = 0 ok, -1 timeout), `3` and
+`4` for rungs 3 and 4 (a = 0 mounted).
+
+## Enumeration of a drive that never answers
+
+A drive left stuck by a console reset (devwii's SanDisk, 2026-11-08) answers no
+transfer, and a port reset does not help. Each failed transfer costs about 1 s
+(`usb_timeout`) plus the doorbell wait (`q`). The retries of `ehci_init_port()`
+(`ehci_enum.h`) are all counted now. Its SET_ADDRESS loop (`while (retval < 0 &&
+cnt < 20)`, with `cnt` never changed) had no limit at all: with a drive that took
+the descriptor request but nothing after it, `ehci_discover()`, `UMS_INIT` and the
+recovery ladder's port reset never returned, and the PowerPC watchdog reset the
+console. Now it makes `EHCI_SETADDR_TRIES` (3) tries.
+
+The two calls that answer a loader also have a time budget (rule 1 still holds:
+unlimited only while nothing is connected, and these end with an error, not a
+wait): `UMS_INIT` 8 s (`EHCI_ENUM_INIT_MS`, port reset, enumeration and mount) and
+the open of `/dev/usb2` 4 s per port (`EHCI_ENUM_DISCOVER_MS`). The budget is
+checked after each failed attempt, so the call ends one transfer timeout after it
+(under 10 s in all). A failed `UMS_INIT` leaves the drive unmounted: sector requests
+fail at once, with no traffic, until the next `UMS_INIT` or a replug. Nothing
+retries on a timer. `+dbg` builds trace `e` (E_RESET) when enumeration gives up:
+a = the phase (1 descriptor, 2 after a reset, 3 after re-acquiring the port,
+4 summary, 5 SET_ADDRESS), b = the attempt or result.
 
 ## Waiting for a transfer
 
@@ -74,7 +215,18 @@ was mostly waiting for IOS.
 - **Host tests:** `tools/build.sh test` runs `tests/host/ums`, the real
   `usb.c` and `usbstorage.c` against a simulated drive (`sim.c`) with a
   simulated clock. Faults are fields in `struct sim`: `stall_write_data`,
-  `fail_write_csw`, `timeout_xfers`, `lose_write_csw`. Add a fault there
+  `fail_write_csw`, `timeout_xfers`, `lose_write_csw`, `stall_csw` (every CSW
+  STALLs: a present drive that never recovers). The port: `disconnected`
+  (CCS 0), `csc` (write-1-to-clear), `replug_at_us`, `sim_unplug_for(us)`;
+  counters `portsc_writes` and `port_xfers_gone` (transfers tried on an
+  unplugged port). A stuck drive: `stuck` 1 answers no bulk transfer until a port
+  reset, 2 until a power cycle (`stuck_io_only`: only READ(10) and WRITE(10)).
+  `ppc` says whether the ports switch power (PORT_POWER writes are ignored
+  without it; counters `power_offs`, `power_cycles`). The controller: `hc_cmd` and
+  a STS_ASS/STS_IAA model for `ehci_recover.h` (`iaa_never`, `ass_stuck`; counters
+  `doorbells`, `ase_clears`, `ase_sets`). `ehci_do_urb()` itself is not in the
+  host build, so its call of `ehci_async_quiesce()` is checked by reading and by
+  the hardware build, not by a test. Add a fault there
   and a test in `test_ums.c` for any new failure mode.
 - **Event log:** build with `EXTRA_CFLAGS=-DEHCI_DEBUG_LOG` and run
   `tests/wii/umsbench.py -- --log`. The log shows each CBW, transfer, qTD
@@ -109,8 +261,33 @@ same rules as the EHCI module:
     the same way, but only EHCI has run it);
   - whether `USB_CancelEndpoint()`, which USBS uses as clear-halt, also clears
     the halt on the drive;
-  - an IOS transfer that never returns: the deadline is checked between
-    transfers only, so a blocked ioctl blocks the request.
+  - the bounded transfer (below): `os_ioctlv_async()` with a queue, a timer and
+    `USB_CancelEndpoint()` has run only against the host model
+    (`tests/host/usbs/test_usbs_async.c`); what real IOS58 sends back after
+    the cancel is not verified.
+
+### USBS: a transfer that never returns
+
+Each bulk or interrupt transfer (`usb2.c`) goes to IOS with
+`os_ioctlv_async()` and waits on a private queue for its own reply or for a
+one-shot timer. The queue and the timer are made once, in `USB_Init()`.
+
+- After `USBS_XFER_TIMEOUT_MS` (4000 ms; a build option) with no reply, the
+  module sends `USB_CancelEndpoint()` (USBV5 ioctl 17) for that endpoint and
+  returns `USBSTORAGE_ETIMEDOUT`. `usbstorage.c` then runs the same timeout
+  and recovery path as for an EHCI timeout.
+- It then waits at most 1 s (`USB_CANCEL_WAIT_US`) for the cancelled request to
+  come back. If it does not, the request's message is kept as an orphan and
+  never reused; the next transfer waits again up to 1 s for it, and frees it
+  when its reply arrives.
+- Each wait ends by sending a flush marker and reading up to it, so a timer
+  message or an old reply left in the queue is never taken for the next
+  transfer's. A transfer is identified by the address of its reply.
+- The 16 KB per-transfer limit stays. This bounds a drive that stops
+  answering. It does not help when IOS itself hangs, and the BOT reset
+  recovery in `usbstorage.c` is still a synchronous call.
+- The 4 s is a guess: a drive that spins up slowly can take longer on its first
+  transfer, and would then see a cancel and a recovery.
 
 ### USBS transfer sizes
 
@@ -132,10 +309,10 @@ path did (65024, `USBS_MAX_DIRECT`). **That hangs IOS on a real Wii**: umsbench'
 64-sector read (32 KB, one direct transfer into an aligned MEM2 buffer) never
 returned from `/dev/usb/ven` on base 58 (IOS58 v6175); the console froze and
 needed a power cycle. The 8 s deadline could not help, because the IPC call
-itself blocks. 16 KB transfers work. The per-transfer limit of IOS58's
+itself blocked (it is now bounded by the transfer timeout above). 16 KB transfers work. The per-transfer limit of IOS58's
 `/dev/usb/ven` looks like 16 KB, which matches libogc's `MAX_TRANSFER_SIZE_V5`.
 So the separate direct size is gone. **Do not try a bigger transfer again
-without a timeout that IOS itself enforces**: a hang needs a power cycle. The
+without an attended test**: a hang needs a power cycle. The
 callers (`wbfs.c`) do the cache invalidate and flush over the whole request. A
 64-sector read is 2 data transfers (4 with CBW and CSW), a 127-sector one 4, a
 200-sector one 7, on either path.

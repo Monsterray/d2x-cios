@@ -23,6 +23,12 @@ endif
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
 CFLAGS	=	$(ARCH) -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -Wno-address-of-packed-member -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
 CFLAGS	+=	$(EXTRA_CFLAGS)
+
+# Debug builds (-DD2X_DEBUG) carry the DIP trace (trace.h), which also feeds
+# the d2x trace ring (d2xdbg.h)
+ifneq ($(findstring -DD2X_DEBUG,$(EXTRA_CFLAGS)),)
+CFLAGS	+=	-DDIP_DEBUG_TRACE
+endif
 LDFLAGS	=	$(ARCH) -nostartfiles -nostdlib -Wl,-T,link.ld,-Map,$(TARGET).map -Wl,--gc-sections -Wl,-static
 
 # Libraries

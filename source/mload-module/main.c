@@ -39,6 +39,11 @@
 #include "tools.h"
 #include "types.h"
 
+#ifdef D2X_DEBUG
+#include "d2xdbg.h"
+#include "dbg.h"
+#endif
+
 #define DEBUG_MODE DEBUG_NONE
 //#define DEBUG_MODE DEBUG_BUFFER
 //#define DEBUG_MODE DEBUG_GECKO
@@ -263,6 +268,10 @@ static s32 __MLoad_Initialize(u32 *queuehandle)
 
 	/* Register devices */
 	os_device_register(DEVICE_NAME, ret);
+#ifdef D2X_DEBUG
+	os_device_register(D2XDBG_DEVICE, ret);
+	Dbg_Init();
+#endif
 
 	/* Copy queue handler */
 	*queuehandle = ret;
@@ -322,6 +331,10 @@ int main(void)
 			/* Check device path */
 			if (!strcmp(message->open.device, DEVICE_NAME))
 				ret = message->open.resultfd;
+#ifdef D2X_DEBUG
+			else if (!strcmp(message->open.device, D2XDBG_DEVICE))
+				ret = message->open.resultfd;
+#endif
 			else
 				ret = IPC_ENOENT;
 
@@ -343,6 +356,10 @@ int main(void)
 
 			/* Update offset */
 			offset += len;
+
+			/* Bytes read; without this break a read fell into IOS_WRITE and IOS_SEEK */
+			ret = len;
+			break;
 		}
 
 		case IOS_WRITE: {
@@ -355,6 +372,10 @@ int main(void)
 
 			/* Update offset */
 			offset += len;
+
+			/* Bytes written */
+			ret = len;
+			break;
 		}
 
 		case IOS_SEEK: {
@@ -393,6 +414,14 @@ int main(void)
 
 			break;
 		}
+
+#ifdef D2X_DEBUG
+		case IOS_IOCTL:
+			ret = Dbg_Ioctl(message->ioctl.command,
+					message->ioctl.buffer_in, message->ioctl.length_in,
+					message->ioctl.buffer_io, message->ioctl.length_io);
+			break;
+#endif
 
 		default:
 			/* Unknown command */
