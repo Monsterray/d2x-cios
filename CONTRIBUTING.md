@@ -174,11 +174,11 @@ Maintainers run these jobs through a shared bench queue; `tools/wii_paths.py` fi
 4. On a clean tree, build the release and the debug variant:
 
    ```sh
-   tools/build.sh
+   tools/build.sh clean && tools/build.sh
    D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh
    ```
 
-   A build with `-dirty` in `build/BUILD.txt` is not a release build. Keep each build's folder: a second build replaces `build/`.
+   A build with `-dirty` in `build/BUILD.txt` is not a release build. Keep each build's folder somewhere outside the repository: a second build replaces `build/`, and `clean` also deletes `dist/`. Each module carries the last commit's time, so a clean build of the same commit is byte-identical; `make` keeps modules it already built, so start from `clean`.
 5. Make the three zips from what is in `build/`: the `d2x-vX.Y.Z` folder, `ciosmaps.xml`, `ciosmaps-vWii.xml`, `ReadMe.txt`, `Changelog.txt` and `BUILD.txt`. The installer's own files are not in this repository.
    - `d2x-vX.Y.Z.zip`: the release build as it is, the `d2x-vX.Y.Z` folder at the top.
    - `d2x-vX.Y.Z+dbg.zip`: the same from the debug build.

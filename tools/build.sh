@@ -88,8 +88,11 @@ if ! docker image inspect "$tag" >/dev/null 2>&1; then
 fi
 
 # SOURCE_DATE_EPOCH, when set, fixes the build date stamped into the modules,
-# so two builds of different commits can be compared byte for byte.
+# so two builds of different commits can be compared byte for byte. Unset, it
+# is the last commit's time, read here: in a git worktree the container can't
+# see the repository, and maked2x.sh then fell back to the wall clock.
 # EXTRA_CFLAGS reaches every module's CFLAGS (CI sets -Werror).
+[ -n "${SOURCE_DATE_EPOCH:-}" ] || SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct 2>/dev/null) || true
 run() {
     docker run --rm -v "$mount:/src" --user "$ids" -e HOME=/tmp \
         ${SOURCE_DATE_EPOCH:+-e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"} \
