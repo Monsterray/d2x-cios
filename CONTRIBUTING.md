@@ -11,30 +11,69 @@ This fork keeps [wiidev/d2x-cios](https://github.com/wiidev/d2x-cios) buildable,
 | `tools/` | Build wrapper, Wii bench helpers, FAT32 repair scripts. |
 | `tests/host/` | Host tests against simulated hardware. |
 | `tests/wii/` | Bench programs (`sdbench`, `umsbench`, `netbench`) and their Python drivers; shared rules and header in `common/`. |
-| `docs/` | Developer notes: `usb-storage.md`, `sd-high-speed.md`, `bench.md`, `module-size.md`, `roadmap.md`. Findings are in `REVIEW.md`. |
+| `docs/` | Developer notes, indexed in [docs/README.md](docs/README.md). Verified findings are in `REVIEW.md`. |
 
-## Set up
+## Set up from scratch
 
-You need Git, Docker and Python 3.10 or newer. Nothing else is installed on your machine: the toolchain runs in a container.
+You need Git, Docker and Python 3.10 or newer. Nothing else is installed on your machine: the toolchain (devkitARM, gawk, gcc for the host tests) runs in a container.
 
 | OS | Docker |
 | --- | --- |
 | Linux | Docker Engine; add yourself to the `docker` group |
 | macOS | Docker Desktop, OrbStack or Colima |
-| Windows | Docker Engine inside WSL 2, or Docker Desktop. Run the commands below from Git Bash. If `docker` is not on PATH there, `tools/build.sh` uses `wsl -e docker`. |
+| Windows | Docker Engine inside WSL 2, or Docker Desktop. Run every command in this file from Git Bash. If `docker` is not on PATH there, `tools/build.sh` uses `wsl -e docker`. |
 
-```sh
-git clone https://github.com/Monsterray/d2x-cios.git
-cd d2x-cios
-git remote add upstream https://github.com/wiidev/d2x-cios.git
-```
+1. Clone, and add upstream so you can merge it later:
+
+   ```sh
+   git clone https://github.com/Monsterray/d2x-cios.git
+   cd d2x-cios
+   git remote add upstream https://github.com/wiidev/d2x-cios.git
+   git switch develop
+   ```
+
+2. Check the tools work. This builds nothing and prints the release name:
+
+   ```sh
+   tools/build.sh version
+   ```
+
+3. Build the release. The first run also builds the container image from `docker/Dockerfile` (once; later builds reuse it):
+
+   ```sh
+   tools/build.sh
+   ```
+
+   The modules are in `build/d2x-v<VERSION>/` (`EHCI.app`, `USBS.app`, `FAT.app`, `MLOAD.app`, `DIPP.app`, `ES.app`, `FFSP.app`), next to `ciosmaps.xml`, `ciosmaps-vWii.xml`, `ReadMe.txt`, `Changelog.txt` and `BUILD.txt` in `build/`.
+
+4. Run the tests:
+
+   ```sh
+   tools/build.sh test
+   ```
+
+   It should end with every host test group at `0 failed` (175 C tests in all as of 11.1.0).
+
+5. Build the debug variant (`+dbg`) when you chase a hang inside IOS. It must name a variant, so a flagged build can never pass for the release:
+
+   ```sh
+   D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh   # build/d2x-v11.1.0+dbg/
+   ```
+
+   [docs/debug-build.md](docs/debug-build.md) says what it adds and how to use it.
+
+**In a git worktree, five Python tests fail inside the container.** The five tests in `tests/test_line_endings.py` ask git about the checkout, and a worktree's `.git` is a file that points outside the folder, which the container cannot see (`git ls-files` stops with status 128). `tests/test_workstation_paths.py` is skipped there for the same reason. All of them pass when run natively: `python -m unittest discover -s tests -p "test_*.py"`. A normal clone is not affected. The C tests are not affected either.
+
+You do not need a Wii to build, test or send a change that the host tests cover. See "What needs a real Wii" below for the rest.
 
 ## Build
 
 ```sh
 tools/build.sh                 # the release in VERSION: build/d2x-v11.1.0/
 tools/build.sh 11 beta4-test   # an upstream-style name for experiments: build/d2x-v11-beta4-test/
+tools/build.sh version         # the name and version string, without building
 tools/build.sh clean
+tools/build.sh shell           # a shell inside the build image
 ```
 
 ### Versions
@@ -67,8 +106,8 @@ The maps list ten Wii bases. We test the ones people install:
 |---|---|---|---|
 | 56 | 249 | Most games and loaders | Map checked, boots in ironic, on the Wii |
 | 57 | 250 | USB loaders | Map checked, boots in ironic |
-| 38 | 251 | The few games that need it | Map checked, boots in ironic |
-| 58 | | USB through Nintendo's own USB 2.0 driver (the USBS module instead of EHCI) | Map checked |
+| 38 | 248 | The few games that need it | Map checked, boots in ironic |
+| 58 | 251 | USB through Nintendo's own USB 2.0 driver (the USBS module instead of EHCI) | Map checked |
 | 37, 53, 55, 80 | | Rarely used | Map checked |
 | 60, 70 | | Superseded System Menu IOS; Nintendo replaced both with stubs | Not checked, kept from upstream |
 
@@ -104,6 +143,47 @@ Changing how the USB driver retries or gives up? Read [docs/usb-storage.md](docs
 Chasing a problem inside IOS? Build the debug variant: `D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh`. It keeps counters and one trace ring for EHCI, USBS, SD, FAT and DIP in a fixed MEM2 area the PowerPC can read live, keeps the previous IOS run's "last words", has an ARM watchdog that resets the console when a test app stops checking in, and takes injected faults through `/dev/d2xdbg`. The release build is byte-identical without it. See [docs/debug-build.md](docs/debug-build.md).
 
 Chasing a hang inside IOS, where nothing on the Wii can report? Build with `EXTRA_CFLAGS=-DDIP_DEBUG_TRACE`: the DIP plugin then logs each DI command, each call into Nintendo's DI module and each emulated read into a buffer a loader registers and shows on the TV ([source/dip-plugin/trace.h](source/dip-plugin/trace.h) has the layout and the loader side; USB Loader GX's bench build shows it with `--dip-trace`).
+
+## What needs a real Wii
+
+Host tests cover logic: retries, recovery, error codes, request checking, the debug build's decisions. They run module code against simulated hardware. They cannot show timing on real drives, what IOS itself does, or whether a cIOS installs and boots. For those, use a console you can recover (BootMii or Priiloader and a NAND backup) and see Safety below.
+
+| Change | Check on a Wii |
+| --- | --- |
+| USB driver (EHCI, USBS) | `tests/wii/umsbench` on the drive the bug was seen on; record the drive (vendor, product, size, file system) with the result |
+| SD driver, SD high speed | `tests/wii/sdbench` (read only) |
+| DIP, FAT, loaders' paths | a real loader (USB Loader GX, Nintendont) on a spare slot |
+| A hang inside IOS | the `+dbg` build and `tests/wii/d2xdiag`, with someone at the Wii: a hang inside IOS needs a power cycle |
+
+Write tests (`--pattern`) overwrite sectors: scratch drives only. Never write through d2x to the SanDisk "USB 3.2Gen1" flash drive (60088319 sectors): it lands stale data (REVIEW.md). Dolphin cannot run a cIOS, so it is no evidence about a module.
+
+Maintainers run these jobs through a shared bench queue; `tools/wii_paths.py` finds the shared tools through environment variables or `~/.wii-paths.json`. If you have no bench, a pull request with host tests and a clear description is welcome, and a maintainer can run the Wii part.
+
+## Branches and releases
+
+- **`develop`** is where work lands. Branch from it for a feature or a fix (`feat/...`, `fix/...`), keep commits focused, and merge back into `develop`. Pushes to `develop` run CI.
+- **`master`** moves only at a release, by merging `develop`. A fix meant for upstream goes in its own commit, so it can be cherry-picked.
+- **Tags** are `d2x-vX.Y.Z` (`d2x-v11.1.0`); release candidates are `d2x-vX.Y.Z-rcN`. The release commit is titled "Version X.Y.Z".
+- **Upstream:** `git fetch upstream` and merge `upstream/master` into `develop` with `-X renormalize` (see Conventions).
+
+### Making a release
+
+1. On `develop`, finish the work; `tools/build.sh test` passes, and `EXTRA_CFLAGS=-Werror tools/build.sh` builds with no warnings (CI does both).
+2. Set `VERSION` (for example `11.2.0`), and add a `[ d2x v11.2.0 ]` section at the top of `data/Changelog.txt`: what changed for a user, in plain words, and what it was tested on. `tests/test_version.py` checks `VERSION`.
+3. Commit as "Version 11.2.0". Merge `develop` into `master` and tag `d2x-v11.2.0` on that commit.
+4. On a clean tree, build the release and the debug variant:
+
+   ```sh
+   tools/build.sh
+   D2X_VARIANT=dbg EXTRA_CFLAGS="-DD2X_DEBUG" tools/build.sh
+   ```
+
+   A build with `-dirty` in `build/BUILD.txt` is not a release build. Keep each build's folder: a second build replaces `build/`.
+5. Make the three zips from what is in `build/`: the `d2x-vX.Y.Z` folder, `ciosmaps.xml`, `ciosmaps-vWii.xml`, `ReadMe.txt`, `Changelog.txt` and `BUILD.txt`. The installer's own files are not in this repository.
+   - `d2x-vX.Y.Z.zip`: the release build as it is, the `d2x-vX.Y.Z` folder at the top.
+   - `d2x-vX.Y.Z+dbg.zip`: the same from the debug build.
+   - `d2x-cios-installer-with-d2x-vX.Y.Z.zip`: the same files from the release build under `apps/d2x-cios-installer/`, together with the d2x cIOS installer's `boot.dol`, `icon.png` and `meta.xml` (from the [installer repository](https://github.com/larsenv/d2x-cios-installer)). [data/installer-meta.xml](data/installer-meta.xml) is the `meta.xml` for it: fill in the version and the release date.
+6. Write the release notes (what is new, known limits, what it was tested on, the three downloads) and publish a GitHub release on the tag with the zips and a `SHA256SUMS` file.
 
 ## Conventions
 
