@@ -22,7 +22,7 @@ The first release of this fork, built on upstream d2x v11. Mostly it is about US
 - **Other modules:** fixes in MLOAD, FAT and DIP: requests are checked, errors fail cleanly.
 - **Versions** are now `major.minor.patch`. USB Loader GX shows 11.1.0 as `d2x v11-1-0`.
 
-The full list is in [data/Changelog.txt](data/Changelog.txt). Tested on two Wiis with USB Loader GX, Nintendont and the Homebrew Channel, on bases 56 and 58, with FAT32 USB drives and the SD card.
+The full list is in [data/Changelog.txt](data/Changelog.txt). Tested on two Wiis with USB Loader GX, Nintendont and the Homebrew Channel, on bases 56 and 58, with FAT32 USB drives and the SD card. All four usual slots (248 to 251, bases 38, 56, 57 and 58) were installed with the installer's NUS download and read a USB drive.
 
 ## Download
 

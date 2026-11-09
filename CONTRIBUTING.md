@@ -105,9 +105,9 @@ The maps list ten Wii bases. We test the ones people install:
 | Base | Usual slot | Used for | Tested |
 |---|---|---|---|
 | 56 | 249 | Most games and loaders | Map checked, boots in ironic, on the Wii |
-| 57 | 250 | USB loaders | Map checked, boots in ironic |
-| 38 | 248 | The few games that need it | Map checked, boots in ironic |
-| 58 | 251 | USB through Nintendo's own USB 2.0 driver (the USBS module instead of EHCI) | Map checked |
+| 57 | 250 | USB loaders | Map checked, boots in ironic, installed and USB reads on the Wii |
+| 38 | 248 | The few games that need it | Map checked, boots in ironic, installed and USB reads on the Wii |
+| 58 | 251 | USB through Nintendo's own USB 2.0 driver (the USBS module instead of EHCI) | Map checked, on the Wii |
 | 37, 53, 55, 80 | | Rarely used | Map checked |
 | 60, 70 | | Superseded System Menu IOS; Nintendo replaced both with stubs | Not checked, kept from upstream |
 

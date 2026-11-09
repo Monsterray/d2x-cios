@@ -37,8 +37,9 @@ Versions are now major.minor.patch (11.1.0, shown as -1-0). A separate
 debug build (+dbg) has counters, a trace and a watchdog for finding hangs;
 it is not for everyday use.
 
-Tested on two Wiis with USB Loader GX, Nintendont and the Homebrew Channel,
-bases 56 and 58, a FAT32 USB drive and the SD card.
+Tested on two Wiis with USB Loader GX, Nintendont and the Homebrew Channel
+on bases 56 and 58, with FAT32 USB drives and the SD card. Installed in the
+usual slots 248-251 (bases 38, 56, 57, 58), with USB reads on each.
 
 [ d2x v11 ]
 
