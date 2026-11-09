@@ -8,7 +8,7 @@ make -C tests/wii/d2xdiag
 python tests/wii/d2xdiag.py -- --ios=250 --scenario=usb-csw-stall,sd-low
 ```
 
-`+dbg` fits the version string after `-rc1` (`-1-0-rc1+dbg`). Install it only to a spare slot, never 249 of a console someone plays on. A debug build also carries the DIP trace (`DIP_DEBUG_TRACE`, [source/dip-plugin/trace.h](../source/dip-plugin/trace.h)).
+`+dbg` fits the version string after the release number (`-1-0+dbg`; after an `-rc1` too: `-1-0-rc1+dbg`). The 11.1.0 release ships one as `d2x-v11.1.0+dbg.zip`. Install it only to a spare slot, never 249 of a console someone plays on. A debug build also carries the DIP trace (`DIP_DEBUG_TRACE`, [source/dip-plugin/trace.h](../source/dip-plugin/trace.h)).
 
 ## The debug area
 
@@ -61,6 +61,7 @@ An MLOAD thread (priority `0x7F` when IOS allows it, else MLOAD's own, `0x79` on
 
 1. writes a `W` record;
 2. writes Priiloader's magic word `Abra` (`0x41627261`) to physical `0x017FEFF0`, so Priiloader autoboots whatever its boot state says;
+2a. (`__Dbg_UsbOff()`) bus resets every EHCI port that has a device and leaves the port disabled, so no transaction goes to the drive across the reset. This does not free a stuck drive for the next boot (REVIEW.md, the 2026-11-08 update);
 3. clears `HW_RESETS` bit 0, a system reset that needs nothing from IOS;
 4. if the console is still running 250 ms later, puts `HW_RESETS` and the magic word back, writes an `N` record and `wd_noreset`, turns itself off and returns. IOS goes on, so the PowerPC can show what happened. (Before 4481038 it spun there for good with interrupts off, which stops every IOS thread and the RESET button.)
 

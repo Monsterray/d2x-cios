@@ -124,7 +124,9 @@ at high speed (fallback, then the retry at default), a re-init (re-applied, and
 not re-applied after a fallback), a card IOS has not initialized, and the
 debug fallback. Run `tools/build.sh test`, or `make -C tests/host`.
 
-## Attended Wii test plan (nothing here has run on a Wii)
+## Attended Wii test plan
+
+The plan was written before the first run. It has since run on two Wiis: see "Second Wii run" below and [bench.md](bench.md).
 
 1. Install the cIOS in a spare slot only with the user at the Wii (never on prod or lrwii).
    Slot 249 base 56 is staged on the dev Wii's plan; keep the release cIOS in another slot.
@@ -165,11 +167,19 @@ out). IOS takes `cmd_type` as given, so ADTC returned rc 0 with no data.
 `cmd_type` is now `SDIOCMD_TYPE_BC`; the rest of the request already matched
 libogc. The host test's fake driver now delivers the data only for a DMA
 request that is not ADTC; the old code fails 13 of 20 tests, the new passes.
-Not yet run on a Wii with this change.
+Run on two Wiis the same day (next section).
 
-## Open questions for the first Wii run
+## Second Wii run (2026-11-05)
 
-- CMD6 is now sent as BC (see above). If the status is still all zero on a Wii,
-  `0x22` shows it; next to try is AC (3), as the reads use.
+With CMD6 as BC the card switches: the answer arrives, high speed is on, the
+forced fallback works (debug build) and the data is the same before and after.
+64-sector reads: devwii 9.97 MB/s against 6.85 at default speed; lrwii 6.23
+against 4.87. 0 failed requests ([bench.md](bench.md)). It has been on by
+default since 11.1.0-rc2.
+
+## Open questions
+
+- CMD6 as BC works on the Wiis tried (above). If a card's status is all zero,
+  `0x22` shows it; AC (3), as the reads use, is the next thing to try.
 - The CMD6 busy bits (status bits 287:272) are not checked: the switch is
   assumed complete when the status says function 1 is selected.

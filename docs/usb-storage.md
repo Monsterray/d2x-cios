@@ -134,8 +134,11 @@ at least 1.5 s). A mount that runs after a deadline sends nothing more
 the model before, under 10 s now). The keepalive's dead-drive retry and `UMS_INIT`
 run without a deadline: rung 3 first, rung 4 if the mount fails.
 
-Without PPC the ladder ends at rung 3. Whether Hollywood's EHCI has PPC is not
-known yet: `+dbg` builds log it at start (below).
+Without PPC the ladder ends at rung 3. Hollywood's EHCI has no PPC: a `+dbg`
+boot on the dev Wii read `HCSPARAMS` 0x2204 (PPC 0), so on a Wii rung 4 and the
+start-up power cycle do nothing, and a drive left stuck by a console reset
+still has to be unplugged (REVIEW.md, the 2026-11-08 update). Both stay for
+controllers that do switch power, and the host tests cover them with `ppc`.
 
 PORTSC's CSC is write-1-to-clear. The ladder writes PORTSC only through masks
 that leave CSC, PEC and OCC out. The one exception is the CSC that the power
