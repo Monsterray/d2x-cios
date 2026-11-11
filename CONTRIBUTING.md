@@ -10,7 +10,7 @@ This fork keeps [wiidev/d2x-cios](https://github.com/wiidev/d2x-cios) buildable,
 | `maked2x.sh`, `maked2x.bat`, `replace.awk`, `stripios_src/`, `data/` | Upstream's build entry points and release templates. They stay at the root because the module Makefiles and `tools/build.sh` use these paths. |
 | `tools/` | Build wrapper, Wii bench helpers, FAT32 repair scripts. |
 | `tests/host/` | Host tests against simulated hardware. |
-| `tests/wii/` | Bench programs (`sdbench`, `umsbench`, `netbench`) and their Python drivers; shared rules and header in `common/`. |
+| `tests/wii/` | Bench programs (`sdbench`, `umsbench`, `netbench`, `d2xdiag`, `iosdump`) and their Python drivers; shared rules and header in `common/`. |
 | `docs/` | Developer notes, indexed in [docs/README.md](docs/README.md). Verified findings are in `REVIEW.md`. |
 
 ## Set up from scratch
@@ -132,6 +132,7 @@ tools/build.sh test
 | SD sector read timing through `/dev/sdio/sdhc` and the SD high-speed state (`0x20`; `0x21` forces the fallback and re-reads to compare a CRC32). Read only: it never writes a sector of the card | `make -C tests/wii/sdbench`, then `python tests/wii/sdbench.py -- --ios=249 [--mb=32]` as a wii-bench job | devkitPPC, a Wii with HBC and an SD card |
 | The debug build's area, counters, watchdog decision and fault points, and each module's hooks, against simulated drives (`-DD2X_DEBUG`) | `tests/host/dbg`, `tests/host/*/test_*_dbg.c` | a C compiler (in the image) |
 | A `+dbg` build on a Wii: identity, counters, trace, last words, fault scenarios, and (attended) a deliberate IOS hang the ARM watchdog recovers from | `make -C tests/wii/d2xdiag`, then `python tests/wii/d2xdiag.py [--attended] -- --ios=N [--wd=S] --scenario=...` as a wii-bench job ([docs/debug-build.md](docs/debug-build.md)) | devkitPPC, a Wii with HBC and the `+dbg` cIOS in a spare slot |
+| Back up a Wii's IOS 200-255 before installing over them, and name what each slot holds (cIOS identity, module dates). Read only | `make -C tests/wii/iosdump`; as a wii-bench job `hbc.py run tests/wii/iosdump/iosdump.dol` then `hbc.py get -r sd:/iosdump BACKUP`; `python tools/iosdump.py check BACKUP`, and `python tools/iosdump.py wad BACKUP SLOT OUT.wad --keys keys.bin` for a WAD that restores a slot byte for byte | devkitPPC, a Wii with HBC; the `cryptography` package and a BootMii `keys.bin` for `wad` |
 | Installing a cIOS on a Wii, unattended | `python tests/wii/install_cios.py PACKAGE INSTALLER.dol` as a wii-bench job, with the d2x installer's `--auto` mode | a Wii you can recover |
 
 Host tests build module source unchanged for your PC and run it against simulated hardware, with AddressSanitizer and UBSan. A test marked `known_bug` describes behaviour that is still broken: it is reported as `known` and doesn't fail the run. When you fix the bug, remove the mark; a `known_bug` test that passes fails the run (`FIXED?`) as a reminder.
