@@ -54,6 +54,7 @@ A cIOS is installed into a slot (a number) on top of a base IOS. These are the u
 | 250 | 57 | USB loaders |
 | 248 | 38 | The few games that need it |
 | 251 | 58 | USB through Nintendo's own USB 2.0 driver (the USBS module) |
+| Wii Mini | IOS57 v31775 or v31776, any free slot. **Untested on hardware.** Ported from d2xl by Leseratte10; see [docs/wii-mini.md](docs/wii-mini.md). The Mini has no SD slot and no network, so the base IOS cannot be downloaded. |
 
 Bases 37, 53, 55 and 80 are also in the maps but are rarely used. The installer downloads the base IOS from Nintendo's update server when it needs one, so the Wii needs a network connection. Which bases the maintainers checked, and how, is in [CONTRIBUTING.md](CONTRIBUTING.md#which-bases-we-test).
 
@@ -96,4 +97,5 @@ d2x was made by davebaol and later by blackb0x, on the work of the people below.
  * *kwiirk*, for his EHCI module.
  * *Hermes*, for his EHCI improvements.
  * *neimod*, for his [Custom IOS Module Toolkit](http://wiibrew.org/wiki/Custom_IOS_Module_Toolkit).
+ * *Leseratte10*, for [d2xl](https://github.com/Leseratte10/d2xl-cios), the first cIOS for the Wii Mini (GPL-3.0). The Wii Mini maps here are ported from it.
  * All the betatesters.

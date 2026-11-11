@@ -16,7 +16,7 @@
 
 d2x v11.1.0 makes a USB drive that stops answering fail fast instead of freezing the Wii, recovers write errors, turns on SD high speed and fixes the MLOAD, FAT and DIP modules. See Changelog.txt.
 
-Slots and bases: 249 on base 56 for most games, 250 on base 57 for USB loaders, 248 on base 38, 251 on base 58. On a vWii, use ciosmaps-vWii.xml as ciosmaps.xml. See ReadMe.txt.
+Slots and bases: 249 on base 56 for most games, 250 on base 57 for USB loaders, 248 on base 38, 251 on base 58. On a vWii, use ciosmaps-vWii.xml as ciosmaps.xml. Wii Mini bases (57 v31775, v31776) are in the map but untested on hardware. See ReadMe.txt.
 
 No warranty. This writes to the NAND: have a backup first.
 github.com/Monsterray/d2x-cios</long_description>

@@ -9,6 +9,7 @@ Notes for people working on the cIOS. For setup and the build, start with [CONTR
 | [debug-build.md](debug-build.md) | you chase a hang inside IOS: the `+dbg` build, its trace, watchdog and fault injection |
 | [module-size.md](module-size.md) | a module grows: each module's fixed size and how much room is left |
 | [bench.md](bench.md) | you compare a measurement from a Wii (USB, SD, Wi-Fi) |
+| [wii-mini.md](wii-mini.md) | you touch the Wii Mini bases (57 v31775/v31776) or the IOP module they add: what came from d2xl, what is unchecked |
 | [roadmap.md](roadmap.md) | you have an idea that is not a defect yet: ideas with a trigger |
 | [../REVIEW.md](../REVIEW.md) | you look for a verified finding, its fix and its check |
 

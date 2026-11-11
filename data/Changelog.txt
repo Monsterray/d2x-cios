@@ -3,6 +3,13 @@
 +-----------+
 
 
+[ next ]
+
+- Wii Mini: base IOS57 v31775 and v31776 added to ciosmaps.xml, with the
+  Mini's IOP module (09/27/11 18:50:17) known to MLOAD and FFSP. Ported from
+  d2xl by Leseratte10. UNTESTED on a Wii Mini.
+
+
 [ d2x v11.1.0 ]
 
 USB drives (EHCI, all bases):

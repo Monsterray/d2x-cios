@@ -42,6 +42,11 @@
     slot 248, base 38   the few games that need it
     slot 251, base 58   USB through Nintendo's own USB 2.0 driver
 
+  Wii Mini: ciosmaps.xml has base 57 v31775 and v31776, ported from d2xl by
+  Leseratte10 (https://github.com/Leseratte10/d2xl-cios). UNTESTED on a
+  Wii Mini. It has no SD slot and no network, so the installer cannot
+  download the base IOS. See docs/wii-mini.md in the source repository.
+
   Any slot that is not in use will do; the installer asks.
   Keep a spare slot for tests, and do not overwrite a cIOS you rely on.
 
