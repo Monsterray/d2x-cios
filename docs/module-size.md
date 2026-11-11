@@ -32,6 +32,7 @@ The release build of `develop` (11.1.0-rc2, with the `/dev/mload` fix), the end 
 
 FAT with FatFs R0.16 and exFAT (branch `claude/fat-exfat`, 2026-11-10, [fatfs.md](fatfs.md)): the `exe` region grew from 0x5000 to 0x6000 and `ram` gave up the 0x1000 (the module still ends at 0x137dd000). Release 23104 of 24576 used, 1472 free (was 18032 of 20480, 2448 free); +dbg 23816 used, 760 free; `ram` 138848 of 139264, 416 free (+dbg 160 free). exFAT is about 4.6 KB of that (static name buffers instead of heap ones saved 456 bytes of code); `divmod64.c` keeps libgcc's 6.2 KB `bpabi.o` out. `FAT.app` is 25152 bytes release (was 20324).
 Two USB ports (`claude/usb-two-ports`, `docs/usb-ports.md`), release / `+dbg` bytes used (free): EHCI 18840 (1640) / 20152 (328); USBS 11952 (336) / 12252 (36); FAT 18232 (2248) / 18864 (1616); DIPP 6716 (1476) / 7760 (432). MLOAD, ES and FFSP unchanged.
+Two USB ports (`claude/usb-two-ports`, `docs/usb-ports.md`), release / `+dbg` bytes used (free): EHCI 19120 (1360) / 20424 (56); USBS 12108 (180) / 12252 (36); FAT 18232 (2248) / 18864 (1616); DIPP 6716 (1476) / 7760 (432). MLOAD, ES and FFSP unchanged. After the review fixes (the second socket back to OHCI, the fd table that refuses a failed SET_PORT, the UMS_INIT sender count): EHCI +280 release / +272 `+dbg`, USBS +156 release; the `+dbg` EHCI has 56 bytes free.
 
 USBS with bounded transfers (`usb2.c`, branch `feat/usbs-async`, 2026-11-08): release 11548 used, 740 free (was 11196, 1092 free); +dbg 11932 used, 356 free.
 
