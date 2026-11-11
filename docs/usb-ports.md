@@ -22,7 +22,7 @@ Status: implemented and host-tested (branch `claude/usb-two-ports`); **never run
 
 ### What loaders send
 
-USB Loader GX (`C:/projects/usbloadergx/source/usbloader/usbstorage2.c`; same on every branch we have):
+USB Loader GX (`source/usbloader/usbstorage2.c` in its repository; same on every branch we have):
 
 - Defines `USB_IOCTL_SET_PORT = UMS_BASE+0x83` (`:56`) and sends it with one `u32` input (`:148`), before `USB_IOCTL_UMS_INIT` (`:99-102`) and before each capacity, read and write call (`:164`, `:197`, `:314`). A settings value "both ports" (`Settings.USBPort == 2`) is handled in the loader: it switches the port back and forth on one fd. The loader's own comment: "Port = 2 is handle in the loader, no need to handle it in cIOS" (`:135`).
 - The GX-side code assumes the cIOS keeps **one mounted drive per port** and swaps on `SET_PORT`: it calls `UMS_INIT` once per port and later only swaps.
