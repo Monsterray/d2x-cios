@@ -423,6 +423,36 @@ out:
 	return ret;
 }
 
+#ifdef D2X_DEBUG
+/* +dbg only: divmod64.c's division on known values (8 of them: both numbers in
+   32 bits, one over, a zero divisor). The result is a 'D' step event in the
+   debug area: a = the number of wrong results (0: all right), b = the count. */
+u64 __gnu_uldivmod_helper(u64 n, u64 d, u64 *remainder);
+
+static void __FAT_DivSelfTest(void)
+{
+	static const u64 t[][4] = {	/* n, d, quotient, remainder */
+		{0x123456789ABCDEF0ULL, 0x1000ULL, 0x123456789ABCDULL, 0xEF0ULL},
+		{0xFFFFFFFFFFFFFFFFULL, 0x3ULL, 0x5555555555555555ULL, 0x0ULL},
+		{0x17FF18000ULL, 0x200ULL, 0xBFF8C0ULL, 0x0ULL},
+		{0x140000000ULL, 0x8000ULL, 0x28000ULL, 0x0ULL},
+		{0x100000000ULL, 0x100000001ULL, 0x0ULL, 0x100000000ULL},
+		{0xFFFFFFFFULL, 0x10ULL, 0xFFFFFFFULL, 0xFULL},
+		{0xDEADBEEFCAFEF00DULL, 0x1234567891ULL, 0xC3B6B4DULL, 0x1532D1170ULL},
+		{0x1234ULL, 0x0ULL, 0xFFFFFFFFFFFFFFFFULL, 0x1234ULL},
+	};
+	u32 i, bad = 0;
+
+	for (i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+		u64 r, q = __gnu_uldivmod_helper(t[i][0], t[i][1], &r);
+
+		if (q != t[i][2] || r != t[i][3])
+			bad++;
+	}
+	D2XDBG_EV(D2XDBG_M_FAT, D2XDBG_E_STEP, 'D', bad, i);
+}
+#endif
+
 s32 __FAT_Initialize(u32 *queuehandle)
 {
 	/* Heap space */
@@ -479,6 +509,10 @@ int main(void)
 	ret = __FAT_Initialize(&queuehandle);
 	if (ret < 0)
 		return ret;
+
+#ifdef D2X_DEBUG
+	__FAT_DivSelfTest();
+#endif
 
 	/* Main loop */
 	while (1) {
