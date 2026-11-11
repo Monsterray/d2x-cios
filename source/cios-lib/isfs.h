@@ -40,6 +40,7 @@
 #define ISFS_MODE_SDHC		0x01
 #define ISFS_MODE_USB		0x02
 #define ISFS_MODE_FULL		0x100
+#define ISFS_MODE_PORT1		0x200	/* with ISFS_MODE_USB: the FAT mount uses USB port 1 */
 
 
 /* ISFS structure */

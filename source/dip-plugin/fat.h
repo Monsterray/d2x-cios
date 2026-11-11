@@ -24,7 +24,7 @@
 
 
 /* Prototypes */
-s32 FAT_Mount(u32 device, u32 partition);
+s32 FAT_Mount(u32 device, u32 partition, u32 port);
 s32 FAT_GetPartition(u32 device, u32 *partition);
 
 #endif

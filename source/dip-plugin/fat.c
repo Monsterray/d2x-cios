@@ -53,10 +53,13 @@ typedef struct {
 
 	u32 partition;
 
+	u32 port;
+
 } ATTRIBUTE_PACKED fatBuf;
 
 
-s32 FAT_Mount(u32 device, u32 partition)
+/* port: the USB port of a USB mount; 0 sends no port vector (the module's default) */
+s32 FAT_Mount(u32 device, u32 partition, u32 port)
 {
 	s32 fatFd, ret;
 	fatBuf *iobuf;
@@ -80,11 +83,16 @@ s32 FAT_Mount(u32 device, u32 partition)
 		iobuf->vector[0].data = &iobuf->partition;
 		iobuf->vector[0].len = sizeof(u32);
 
+		/* Second vector: the USB port */
+		iobuf->port = port;
+		iobuf->vector[1].data = &iobuf->port;
+		iobuf->vector[1].len = sizeof(u32);
+
 		/* Flush cache */
 		os_sync_after_write(iobuf, sizeof(*iobuf));
 
 		/* Mount device */
-		ret = os_ioctlv(fatFd, cmd, 1, 0, iobuf->vector);
+		ret = os_ioctlv(fatFd, cmd, (device && port) ? 2 : 1, 0, iobuf->vector);
 
 		/* Free memory */
 		DI_Free(iobuf);

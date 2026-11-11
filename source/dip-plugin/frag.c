@@ -29,6 +29,7 @@
 #define DEV_NONE 0
 #define DEV_USB  1
 #define DEV_SDHC 2
+#define DEV_USB1 3	/* a USB drive on port 1: DEV_USB with SET_PORT 1 */
 
 #define MAX_IDX      640 // 640*16MB = 10GB
 #define IDX_CHUNK  32768 // 16MB in sectors units: 16*1024*1024/512
@@ -251,8 +252,14 @@ s32 Frag_Init(u32 device, void *fraglist, s32 size)
 		Frag_Close();
 
 	/* Check device */
-	if (device != DEV_USB && device != DEV_SDHC)
+	if (device != DEV_USB && device != DEV_SDHC && device != DEV_USB1)
 		return -1;
+
+	/* From here on port 1 is a USB drive like any other */
+	if (device != DEV_SDHC) {
+		usbstorage_SetPort(device == DEV_USB1);
+		device = DEV_USB;
+	}
 
 	/* Check empty fraglist */
 	if (!size)

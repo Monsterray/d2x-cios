@@ -179,7 +179,10 @@ u32 __usbstorage_GetCapacity(u32 *_sectorSz)
 
 void usbstorage_SetPort(u32 port)
 {
-	/* Takes effect at the next usbstorage_Init(); an open fd keeps its port */
+	/* An open fd keeps its port, so a change closes it: the next usbstorage_Init() opens it again */
+	if (port != usbPort)
+		usbstorage_Shutdown();
+
 	usbPort = port;
 }
 

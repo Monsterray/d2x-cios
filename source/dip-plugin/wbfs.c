@@ -28,8 +28,12 @@
 #define IOCTL_WBFS_OPEN		(IOCTL_WBFS_BASE + 0x1)
 #define IOCTL_WBFS_READ		(IOCTL_WBFS_BASE + 0x2)
 
+/* The USB module's "use this port" ioctl; device 3 is /dev/usb2 on port 1 */
+#define IOCTL_UMS_SET_PORT	((('U'<<24) | ('M'<<16) | ('S'<<8)) + 0x83)
+#define WBFS_DEV_USB1		2
+
 /* Variables */
-static char *devFs[] = { "/dev/usb2", "/dev/sdio/sdhc" };
+static char *devFs[] = { "/dev/usb2", "/dev/sdio/sdhc", "/dev/usb2" };
 static s32   devFd   = -1;
 
 
@@ -37,6 +41,8 @@ static s32   devFd   = -1;
 static ioctlv vector[4] ATTRIBUTE_ALIGN(32);
 static u32    buffer[9] ATTRIBUTE_ALIGN(32);
 
+
+void WBFS_Close(void);
 
 s32 WBFS_Open(u32 device, u8 *discid)
 {
@@ -48,6 +54,23 @@ s32 WBFS_Open(u32 device, u8 *discid)
 	devFd = os_open(devFs[device], 1);
 	if (devFd < 0)
 		return devFd;
+
+	/* The second USB port: tell the module before the first request */
+	if (device == WBFS_DEV_USB1) {
+		s32 ret;
+
+		buffer[0]      = 1;
+		vector[0].data = buffer;
+		vector[0].len  = sizeof(u32);
+		os_sync_after_write(buffer, sizeof(u32));
+		os_sync_after_write(vector, sizeof(ioctlv));
+
+		ret = os_ioctlv(devFd, IOCTL_UMS_SET_PORT, 1, 0, vector);
+		if (ret) {
+			WBFS_Close();
+			return ret;
+		}
+	}
 
 	/* Copy disc ID */
 	memcpy(buffer, discid, 6);

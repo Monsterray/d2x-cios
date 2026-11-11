@@ -226,10 +226,12 @@ static void __DI_InitDriveEmulation(void)
 	if (ret > 0 && ffsCfgState.mode) {
 		u32 device = (ffsCfgState.mode & ISFS_MODE_SDHC) ? 0 : 1;
 
-		DI_Printf("DIP: DI_InitEmulation: Mounting FAT partition %d on %s...\n", ffsCfgState.partition, device ? "USB device" : "SD card");
+		u32 port   = (device && (ffsCfgState.mode & ISFS_MODE_PORT1)) ? 1 : 0;
+
+		DI_Printf("DIP: DI_InitEmulation: Mounting FAT partition %d on %s...\n", ffsCfgState.partition, device ? (port ? "USB device (port 1)" : "USB device") : "SD card");
 
 		/* Mount FAT device */
-		FAT_Mount(device, ffsCfgState.partition);
+		FAT_Mount(device, ffsCfgState.partition, port);
 
 		DI_Printf("DIP: DI_InitEmulation: Enabling nand emulation: mode = %d, path = &s%d\n", ffsCfgState.mode, ffsCfgState.path);
 
