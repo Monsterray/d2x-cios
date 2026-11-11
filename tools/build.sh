@@ -5,6 +5,7 @@
 #     tools/build.sh MAJOR [MINOR]       an upstream-style build/d2x-vMAJOR-MINOR (experiments)
 #     tools/build.sh test                host tests (tests/host) and Python tests
 #     tools/build.sh version             print the name and version string, no build
+#     tools/build.sh testmod             the SD loader's test module: build/mloadtest.elf
 #     tools/build.sh clean               remove build/ and object files
 #
 # Variants: D2X_VARIANT=sdhs tools/build.sh builds 11.1.0-rc1+sdhs, version
@@ -24,7 +25,7 @@ cd "$root"
 # anything else, so a bad variant fails in a second, not after a build.
 die() { echo "build.sh: $*" >&2; exit 1; }
 case "${1:-}" in
-shell|clean|test) ;;
+shell|clean|test|testmod) ;;
 *)
     variant=${D2X_VARIANT:-}
     if [ -n "$variant" ] && ! printf '%s' "$variant" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'; then
@@ -108,6 +109,10 @@ clean)
     run "$tag" sh -c './maked2x.sh clean; make -C tests/host clean' ;;
 test)
     run "$tag" sh -c 'make -C tests/host && python3 -m unittest discover -s tests -p "test_*.py"' ;;
+testmod)
+    # stripios and cios-lib first, as the modules need them; the module is
+    # tests/wii/mloadsd/testmod, linked high in MLOAD's module area
+    run "$tag" sh -c 'g++ -O2 -Wall -Wextra stripios_src/main.cpp -o stripios && make -C source/cios-lib && make -C tests/wii/mloadsd/testmod && mkdir -p build && cp tests/wii/mloadsd/testmod/mloadtest.elf build/mloadtest.elf' ;;
 *)
     # Objects depend on their sources and Makefile, not on EXTRA_CFLAGS: when
     # the flags change (say -DEHCI_DEBUG_LOG on or off), build from clean.

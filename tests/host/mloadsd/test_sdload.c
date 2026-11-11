@@ -1318,6 +1318,39 @@ static void test_flow_second_run(void)
 	CHECK(S.state == SDL_ST_DONE, "done again");
 }
 
+/* The real test module (tools/build.sh testmod), as stripios wrote it: it must
+   pass the validator and start from a list. Skipped when it was not built. */
+static void test_real_testmod(void)
+{
+	const char *path = getenv("MLOADTEST_ELF");
+	static uint8_t file[4096];
+	sdl_report r;
+	size_t n;
+	FILE *f;
+	char list[64];
+
+	if (!path)
+		path = "../../build/mloadtest.elf";
+	f = fopen(path, "rb");
+	if (!f) {
+		printf("  (skipped: %s not built; run tools/build.sh testmod)\n", path);
+		return;
+	}
+	n = fread(file, 1, sizeof(file), f);
+	fclose(f);
+	CHECK(n > 100 && n < sizeof(file), "read %u bytes", (unsigned)n);
+
+
+	add_mod("mloadtest", file, (uint32_t)n);
+	snprintf(list, sizeof(list), "mloadtest crc32=%08X\n", crc_of(file, (uint32_t)n));
+	add_list(list);
+	run_loader(100);
+	CHECK(get_rep(&r) == 0 && r.error == 0 && r.loaded == 1 && r.entries[0].result == 0,
+	      "the built module loads: loaded %u, result %d", r.loaded, (int)r.entries[0].result);
+	CHECK(sim.nth == 1 && sim.th[0].start >= BASE + 0x60000 && sim.th[0].start < BASE + 0x64000 &&
+	      sim.th[0].prio == 0x79, "thread: start %08x prio %x", (unsigned)sim.th[0].start, (unsigned)sim.th[0].prio);
+}
+
 static const struct hc_test tests[] = {
 	{ "parse basic", test_parse_basic, false },
 	{ "parse comments and space", test_parse_comments_and_space, false },
@@ -1367,6 +1400,7 @@ static const struct hc_test tests[] = {
 	{ "flow tick after done", test_flow_tick_after_done, false },
 	{ "flow clock wrap", test_flow_clock_wrap, false },
 	{ "flow second run", test_flow_second_run, false },
+	{ "the built test module loads", test_real_testmod, false },
 };
 
 int main(int argc, char **argv)
