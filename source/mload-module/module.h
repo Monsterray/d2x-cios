@@ -23,6 +23,7 @@
 #define MLOAD_SET_LOG_MODE		0x4D4C44D0
 #define MLOAD_GET_LOG_BUFFER		0x4D4C44D1
 #define MLOAD_SET_STEALTH_MODE		0x4D4C44E0
+#define MLOAD_GET_SD_REPORT		0x4D4C44F0	/* out: sdl_report (sdload.h) */
 
 /* Module space */
 extern u8  exe_mem[];

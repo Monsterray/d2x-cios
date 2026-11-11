@@ -32,6 +32,7 @@
 #include "mem.h"
 #include "module.h"
 #include "patches.h"
+#include "sdload.h"
 #include "stealth.h"
 #include "swi_mload.h"
 #include "syscalls.h"
@@ -194,6 +195,13 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		break;
 	}
 
+	case MLOAD_GET_SD_REPORT: {
+		/* What the loader of sd:/d2x/mload.txt did (sdload.h) */
+		ret = SdLoad_GetReport(vector[0].data, vector[0].len);
+
+		break;
+	}
+
 	default:
 		break;
 	}
@@ -308,6 +316,9 @@ int main(void)
 	if (ret < 0)
 		return ret;
 
+	/* Load the modules listed in sd:/d2x/mload.txt, one step per timer message */
+	SdLoad_Start(queuehandle);
+
 	/* Main loop */
 	while (1) {
 		ipcmessage *message = NULL;
@@ -316,6 +327,12 @@ int main(void)
 		ret = os_message_queue_receive(queuehandle, (void *)&message, 0);
 		if (ret)
 			continue;
+
+		/* The loader's timer: not an IPC message, nothing to acknowledge */
+		if ((u32)message == SDL_COOKIE) {
+			SdLoad_Tick();
+			continue;
+		}
 
 		/* Parse command */
 		switch (message->command) {

@@ -63,3 +63,15 @@ Same measure (`PT_LOAD` file size at 0x13780000 in `ehci-module.elf`):
 | `+dbg` | 19032 | 1448 |
 
 Against the entry above: +896 bytes release, +1008 `+dbg`.
+
+## MLOAD with the SD module loader (claude/mload-sd, 2026-11-10)
+
+`sdload.c` (list parser, CRC32, ELF validator, the state machine) and its hook in `main.c` did not fit the 0x2000 `exe` region (the link stopped with ``section `.text' will not fit in region `exe'``). As xerpi's mload-mod did, `exe` is now 0x3000 and `ram` starts at 0x136d3000 (same length 0x9000, ending at 0x136dc000, inside the unused gap before `exe_mem` at 0x13700000). `_start` and the IRQ9 vector stay at 0x136d0000 and 0x136d0010, so `ciosmaps.xml` is unchanged.
+
+| Build | `exe` used (`.init` + `.text`) | Free of 12288 | `ram` end (`.bss`) | Free of 0x9000 |
+| --- | --- | --- | --- | --- |
+| Release, before (`develop`) | 5456 | 2736 of 8192 | about 0x136d9184 | about 7800 |
+| Release | 8800 | 3488 | 0x136db244 | 3516 |
+| `+dbg` | 11516 | 772 | 0x136db6d4 | 2348 |
+
+The loader adds 3344 bytes of code to the release build, 4 KB of buffers to `.bss` (2 KB read buffer, 1 KB module head, the report and the list entries) and 44 bytes of strings.
