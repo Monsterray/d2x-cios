@@ -37,7 +37,8 @@ LIBS	=	../cios-lib/cios-lib.a
 TARGET	=	fat-module
 
 # Objects
-OBJS	=	ffunicode.o		\
+OBJS	=	divmod64.o		\
+		ffunicode.o		\
 		diskio.o		\
 		fat_wrapper.o		\
 		ff.o			\
