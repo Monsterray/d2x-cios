@@ -35,7 +35,7 @@ Two USB ports ([usb-ports.md](usb-ports.md)), release / `+dbg` bytes used (free)
 
 All of it together (develop 2026-11-10: SD module loader, exFAT, two USB ports), measured from the program headers: FAT `exe` 23296 of 24576 (1280 free) release, 24008 (568 free) `+dbg`; FAT `ram` 138944 of 139264 (320 free) release, 139200 (64 free) `+dbg`; MLOAD `exe` 9376 of 12288 (2912 free) release, 12088 (200 free) `+dbg`. The `+dbg` FAT `ram`, `+dbg` EHCI `exe` and `+dbg` USBS `exe` (56, 64 and 36 bytes) are the tightest: any growth there needs a region change first.
 
-FAT with cluster-run coalescing in `f_read` and `f_write` (branch `claude/sd-speed`, [sd-speed.md](sd-speed.md)): `exe` 23440 of 24576 (1136 free) release, 24152 (424 free) `+dbg`, so +144 bytes over the line above in both; `ram` unchanged, 138944 (320 free) release, 139200 (64 free) `+dbg`.
+FAT with cluster-run coalescing in `f_read` and `f_write` (branch `claude/sd-speed`, [sd-speed.md](sd-speed.md)): `exe` 23440 of 24576 (1136 free) release, 24152 (424 free) `+dbg`, so +144 bytes over the line above in both; `ram` unchanged, 138944 (320 free) release, 139200 (64 free) `+dbg`. Merged onto develop with the SD response flush (2026-11-11): FAT `exe` 23448 (1128 free) release, 24160 (416 free) `+dbg`.
 
 USBS with bounded transfers (`usb2.c`, branch `feat/usbs-async`, 2026-11-08): release 11548 used, 740 free (was 11196, 1092 free); +dbg 11932 used, 356 free.
 
