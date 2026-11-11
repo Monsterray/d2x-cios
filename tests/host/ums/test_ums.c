@@ -838,15 +838,16 @@ static void test_fd_port_table(void)
 	CHECK(ums_fd_port(3) == 0 && ums_fd_port(0) == 0, "default is not port 0");
 	CHECK(ums_fd_set_port(3, 1) == 0 && ums_fd_port(3) == 1, "SET_PORT 1 not kept");
 	CHECK(ums_fd_port(4) == 0 && ums_fd_port(2) == 0, "another fd moved with it");
-	CHECK(ums_fd_set_port(3, 2) < 0 && ums_fd_port(3) == 1, "port 2 accepted");
+	CHECK(ums_fd_set_port(3, 2) < 0 && ums_fd_is_bad(3), "port 2 accepted, or the fd not marked");
+	CHECK(ums_fd_set_port(3, 1) == 0 && ums_fd_port(3) == 1, "SET_PORT 1 after a refused one not kept");
 	CHECK(ums_fd_set_port(3, 0) == 0 && ums_fd_port(3) == 0, "back to port 0 not kept");
 	CHECK(ums_fd_set_port(9, 0) == 0 && ums_fd_port(9) == 0, "port 0 for a new fd");
-	/* the table has 8 slots; fd 3 still holds one (on port 0), so 7 more fit */
-	for (int fd = 20; fd < 27; fd++)
+	/* the table has 12 slots for ports (fd 3 gave its slot back on port 0) */
+	for (int fd = 20; fd < 32; fd++)
 		CHECK(ums_fd_set_port(fd, 1) == 0, "slot %d refused", fd - 20);
-	CHECK(ums_fd_set_port(40, 1) < 0, "a ninth fd on port 1 was accepted");
+	CHECK(ums_fd_set_port(40, 1) < 0, "a thirteenth fd on port 1 was accepted");
 	CHECK(ums_fd_set_port(40, 0) == 0 && ums_fd_port(40) == 0, "port 0 needs no slot");
-	for (int fd = 20; fd < 27; fd++)
+	for (int fd = 20; fd < 32; fd++)
 		CHECK(ums_fd_port(fd) == 1, "fd %d lost its port", fd);
 	/* close: the slot is free and the fd is on port 0 again (fd numbers are reused) */
 	ums_fd_forget(23);
@@ -912,6 +913,76 @@ static void test_port1_umount_goes_back_to_ohci(void)
 	CHECK(sims[0].owner == false, "port 0's socket was released");
 }
 
+/* An fd whose SET_PORT could not be honoured must not reach another port's
+ * drive: with the slots all taken, the next fd on port 1 gets errors, not port 0 */
+static void test_fd_set_port_refused_fails_the_requests(void)
+{
+	u32 c0;
+	mount_both();
+	CHECK_OK();
+	for (int fd = 20; fd < 32; fd++)
+		CHECK(ums_fd_set_port(fd, 1) == 0, "slot %d refused", fd - 20);
+	CHECK(ums_fd_set_port(40, 1) < 0, "a thirteenth fd on port 1 was accepted");
+	CHECK(ums_fd_is_bad(40), "the refused fd is not marked");
+	for (int fd = 20; fd < 32; fd++)
+		CHECK(!ums_fd_is_bad(fd), "fd %d marked", fd);
+	sim_sel(0);
+	c0 = sims[0].cbws;
+	CHECK(!ums_fd_read(40, 10, 1, buf), "a read of the refused fd succeeded");
+	CHECK(sims[0].cbws == c0, "the refused fd's read reached port 0's drive");
+	CHECK(ums_fd_read(20, 10, 1, buf) && memcmp(buf, sims[1].data + 10 * SECTOR, SECTOR) == 0, "fd 20 does not read port 1");
+	CHECK(ums_fd_read(3, 10, 1, buf) && memcmp(buf, sims[0].data + 10 * SECTOR, SECTOR) == 0, "an fd that never sent SET_PORT does not read port 0");
+	/* it asks for port 0: it is a normal fd on port 0 again */
+	CHECK(ums_fd_set_port(40, 0) == 0 && !ums_fd_is_bad(40), "SET_PORT 0 does not clear the mark");
+	CHECK(ums_fd_read(40, 11, 1, buf) && memcmp(buf, sims[0].data + 11 * SECTOR, SECTOR) == 0, "fd 40 does not read port 0");
+	/* a slot frees up: the next try works */
+	CHECK(ums_fd_set_port(40, 1) < 0 && ums_fd_is_bad(40), "the refused fd was accepted again");
+	ums_fd_forget(22);
+	CHECK(ums_fd_set_port(40, 1) == 0 && !ums_fd_is_bad(40), "the freed slot was not used");
+	CHECK(ums_fd_read(40, 12, 1, buf) && memcmp(buf, sims[1].data + 12 * SECTOR, SECTOR) == 0, "fd 40 does not read port 1");
+	/* a port that does not exist: refused too, and the close clears the mark */
+	CHECK(ums_fd_set_port(41, 2) < 0 && ums_fd_is_bad(41), "port 2 not marked");
+	CHECK(!ums_fd_read(41, 10, 1, buf), "a read of an fd on port 2 succeeded");
+	ums_fd_forget(41);
+	CHECK(!ums_fd_is_bad(41) && ums_fd_read(41, 10, 1, buf), "the closed fd keeps the mark");
+	/* an fd on port 1 that asks for a port that is not there is cut off, not left on port 1 */
+	CHECK(ums_fd_set_port(20, 3) < 0 && !ums_fd_read(20, 10, 1, buf), "fd 20 still reads after a refused SET_PORT");
+	CHECK(ums_fd_set_port(20, 1) == 0 && ums_fd_read(20, 10, 1, buf), "fd 20 did not come back");
+	/* the spare slots hold the marks of refused fds: fd 40 has one, so three
+	   more refused fds are cut off (fd 50 finds the slot that fd 22 gave back) */
+	for (int fd = 50; fd < 54; fd++)
+		ums_fd_set_port(fd, 1);
+	CHECK(ums_fd_port(50) == 1 && !ums_fd_is_bad(50), "fd 50 did not get the freed slot");
+	for (int fd = 51; fd < 54; fd++)
+		CHECK(ums_fd_is_bad(fd), "fd %d is not marked", fd);
+}
+
+/* The keepalive runs while an fd that sent UMS_INIT is open: the FAT module
+ * closing its client (a port change) must not stop it for the loader */
+static void test_keepalive_follows_open_fds_that_sent_init(void)
+{
+	CHECK(ums_fd_init_count() == 0, "count %u at the start", ums_fd_init_count());
+	ums_fd_init(3);          /* the loader */
+	ums_fd_init(3);          /* once per port: still one fd */
+	CHECK(ums_fd_init_count() == 1, "one fd counted %u", ums_fd_init_count());
+	ums_fd_init(4);          /* the FAT module, the last to send UMS_INIT */
+	CHECK(ums_fd_init_count() == 2, "two fds counted %u", ums_fd_init_count());
+	CHECK(ums_fd_close(4) == 1, "the FAT module's close not recognised");
+	CHECK(ums_fd_init_count() == 1, "the loader's UMS_INIT was forgotten with the FAT module's close");
+	CHECK(ums_fd_close(7) == 0 && ums_fd_init_count() == 1, "an fd that never sent UMS_INIT changed the count");
+	CHECK(ums_fd_close(3) == 1 && ums_fd_init_count() == 0, "the last close does not stop it");
+	CHECK(ums_fd_close(3) == 0, "a second close counted");
+	/* the port and the UMS_INIT mark share a slot and do not disturb each other */
+	CHECK(ums_fd_set_port(5, 1) == 0 && ums_fd_port(5) == 1, "SET_PORT 1");
+	ums_fd_init(5);
+	CHECK(ums_fd_port(5) == 1 && ums_fd_init_count() == 1, "UMS_INIT changed the port, or was not counted");
+	CHECK(ums_fd_set_port(5, 0) == 0 && ums_fd_port(5) == 0 && ums_fd_init_count() == 1, "SET_PORT 0 lost the UMS_INIT mark");
+	CHECK(ums_fd_close(5) == 1 && ums_fd_init_count() == 0 && ums_fd_port(5) == 0, "close of an fd on port 0 that sent UMS_INIT");
+	for (int fd = 10; fd < 23; fd++)
+		ums_fd_init(fd);
+	CHECK(ums_fd_init_count() == 12, "more fds than slots: %u", ums_fd_init_count());
+}
+
 /* Not tested here: a request to the SD card after the drive died. The host
  * harness has no SD card; the keepalive tests above stand for it. */
 
@@ -966,6 +1037,8 @@ static const struct hc_test tests[] = {
 	{ "fd_port_table", test_fd_port_table, false },
 	{ "port1_not_a_drive_goes_back_to_ohci", test_port1_not_a_drive_goes_back_to_ohci, false },
 	{ "port1_umount_goes_back_to_ohci", test_port1_umount_goes_back_to_ohci, false },
+	{ "fd_set_port_refused_fails_the_requests", test_fd_set_port_refused_fails_the_requests, false },
+	{ "keepalive_follows_open_fds_that_sent_init", test_keepalive_follows_open_fds_that_sent_init, false },
 };
 
 static void setup(void)

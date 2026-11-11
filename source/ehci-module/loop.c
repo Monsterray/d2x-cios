@@ -48,7 +48,6 @@ static u32 timerId;
 
 /* Variables */
 static u32 discovered = 0;
-static u32 ums_mode   = 0;
 static u32 watchdog   = 1;
 
 char *__EHCI_ParseHex(char *base, s32 *val)
@@ -88,8 +87,14 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 	/* Invalidate cache */
 	InvalidateVector(vector, inlen, iolen);
 
-	/* The drive of this fd's port */
-	USBStorage_Select(fdport_get(fd));
+	/* The drive of this fd's port. An fd whose SET_PORT failed gets no drive:
+	   all its requests fail, until it sets port 0 again or is closed. */
+	u32 port = fdport_get(fd);
+
+	if (port == PORT_BAD && cmd != USB_IOCTL_UMS_SET_PORT)
+		return -1;
+
+	USBStorage_Select(port);
 
 	/* Parse IOCTLV command */
 	switch (cmd) {
@@ -158,8 +163,8 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 		/* Initialize USB storage */
 		ret = USBStorage_Init();
 
-		/* Set UMS mode */
-		ums_mode = fd;
+		/* Set UMS mode: the keepalive runs while an fd that sent this is open */
+		fdport_init(fd);
 
 		break;
 	}
@@ -359,7 +364,7 @@ void __EHCI_Watchdog(void)
 	int ret, active = 0;
 
 	/* UMS mode */
-	if (ums_mode) {
+	if (fdport_init_count()) {
 		/* Every mounted drive, so that a disk that parks its heads on
 		   the second port stays awake too */
 		for (port = 0; port < UMS_PORTS; port++) {
@@ -463,13 +468,16 @@ s32 EHCI_Loop(void)
 				/* Set discovered flag */
 				discovered = 1;
 
+				/* A reused fd number starts clean: port 0, not in UMS mode */
+				fdport_forget(resultfd);
+
 				ret = resultfd;
 
 				break;
 			}
 
 			/* USB device */
-			if (!strncmp(devpath, DEVICE "/", sizeof(DEVICE)) && !ums_mode) {
+			if (!strncmp(devpath, DEVICE "/", sizeof(DEVICE)) && !fdport_init_count()) {
 				/* Open USB device */
 				ret = __EHCI_OpenDevice(devpath + sizeof(DEVICE), resultfd);
 
@@ -490,12 +498,8 @@ s32 EHCI_Loop(void)
 			}
 
 			/* Close USB device */
-			if(ums_mode != message->fd)
+			if(!fdport_forget(message->fd))
 				ehci_close_device(ehci_fd_to_dev(message->fd));
-			else
-				ums_mode = 0;
-
-			fdport_forget(message->fd);
 
 			/* Success */
 			ret = 0;

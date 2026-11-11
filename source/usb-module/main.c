@@ -53,8 +53,15 @@ static s32 __USB_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
         s32 ret = IPC_EINVAL;
 
 #if USBS_PORTS > 1
-        /* The drive of this fd's port (docs/usb-ports.md) */
-        usbstorage_Select(fdport_get(fd));
+        /* The drive of this fd's port (docs/usb-ports.md). An fd whose
+           SET_PORT failed gets no drive: its requests fail until it sets
+           port 0 again or is closed. */
+        u32 port = fdport_get(fd);
+
+        if (port == PORT_BAD && cmd != IOCTL_UMS_SET_PORT)
+                return -1;
+        if (port != PORT_BAD)
+                usbstorage_Select(port);
 #endif
 
         /* Invalidate cache */
@@ -279,6 +286,10 @@ int main(void)
 			/* Check device path */
 			if (!strcmp(devpath, DEVICE_NAME)) {
 				ret = message->open.resultfd;
+#if USBS_PORTS > 1
+				/* A reused fd number starts on port 0 */
+				fdport_forget(ret);
+#endif
 				break;
 			}
 

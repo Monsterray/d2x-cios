@@ -148,6 +148,11 @@ int ums_selected(void);
 int ums_fd_port(int fd);        /* loop.c's fd -> port table */
 int ums_fd_set_port(int fd, unsigned port);
 void ums_fd_forget(int fd);
+int ums_fd_is_bad(int fd);      /* SET_PORT could not be honoured: its requests fail */
+bool ums_fd_read(int fd, u32 sector, u32 n, void *buffer);      /* loop.c's routing of a read */
+void ums_fd_init(int fd);       /* UMS_INIT came from this fd (fdport.h) */
+int ums_fd_close(int fd);       /* IOS_CLOSE: 1 if the fd had sent UMS_INIT */
+unsigned ums_fd_init_count(void);       /* open fds that sent UMS_INIT: the keepalive runs while > 0 */
 int ums_mounted(void);
 int ums_dev_id(int port);       /* the id of the device on root port 0 or 1: 0 = not known */
 void ums_umount(void);          /* USBStorage_Umount(): UMS_UMOUNT on the selected port */

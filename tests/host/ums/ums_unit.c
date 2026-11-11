@@ -122,6 +122,24 @@ int ums_selected(void) { return ums_cur; }
 int ums_fd_port(int fd) { return fdport_get(fd); }
 int ums_fd_set_port(int fd, unsigned port) { return fdport_set(fd, port, UMS_PORTS); }
 void ums_fd_forget(int fd) { fdport_forget(fd); }
+int ums_fd_is_bad(int fd) { return fdport_get(fd) == PORT_BAD; }
+
+/* What loop.c's __EHCI_Ioctlv() does for a UMS request of an fd: an fd whose
+   SET_PORT failed gets no drive, any other the drive of its port */
+bool ums_fd_read(int fd, u32 sector, u32 n, void *buffer)
+{
+	u32 port = fdport_get(fd);
+
+	if (port == PORT_BAD)
+		return false;
+	USBStorage_Select(port);
+	return USBStorage_Read_Sectors(sector, n, buffer);
+}
+
+/* The fds that sent UMS_INIT (fdport.h) */
+void ums_fd_init(int fd) { fdport_init(fd); }
+int ums_fd_close(int fd) { return fdport_forget(fd); }
+unsigned ums_fd_init_count(void) { return fdport_init_count(); }
 int ums_mounted(void) { return __mounted == 1; }
 int ums_dev_id(int port) { return ehci->devices[port].id; }
 void ums_umount(void) { USBStorage_Umount(); }
@@ -147,7 +165,7 @@ void ums_unplug(void)
 		ehci->devices[p].toggles = 0;
 	}
 	for (int i = 0; i < PORT_FDS; i++)
-		port_fd[i] = 0;
+		port_fd[i] = port_of[i] = 0;
 	handshake_mode = 0;
 	usb_timeout = 1000 * 1000;
 	sim_dev.toggles = 0;
