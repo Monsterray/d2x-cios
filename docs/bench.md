@@ -39,3 +39,17 @@ Measurements from the dev Wii and lrwii. The fixes they led to, and the open fin
 | Finding | **IOS refuses every TCP socket buffer size.** `SO_SNDBUF`/`SO_RCVBUF` on a TCP socket return -22 for 8, 16, 32, 48 and 64 KB; a UDP socket takes up to 32 KB. So the 32 KB `SO_RCVBUF` libogc's `net_socket` sets on every socket never takes effect on TCP. `TCP_NODELAY` (level 6, option 1) returns -109. | `buf`/`nodelay` |
 | Finding | **IOS's sockaddr is 8 bytes:** `net_sendto` with a length of 16 returns -22 on a real Wii (Dolphin accepts it). Found earlier in hbc-reborn's `discover.c`. | first job's `utx` |
 | Measurement | **A cIOS is as fast as its base IOS.** d2x does not touch the network modules (SO, NCD, WD, ETH come from the base IOS unchanged), and the cIOS slots fall within the stock IOSes' spread. Network start-up after a reload took 4.4-10.9 s; one start on 251/38 timed out (-116 after 16 s) and worked on the next run. | both jobs |
+
+## SD speed: cluster-run coalescing in the FAT module (lrwii, 2026-11-10)
+
+Branch `claude/sd-speed`; results and discussion in [sd-speed.md](sd-speed.md). `tests/wii/sdbench.py` on lrwii 252/56 and 253/58, develop 8b774f2 against this branch (`+sdsp`).
+
+| Kind | Result | Check |
+| --- | --- | --- |
+| Measurement | **Before (develop), read only.** Raw sweep a = 1945 us, b = 37.3 us per sector, 7.3 MiB/s at 64 sectors, 10.8 at 255. FAT file reads in 128 KB and 512 KB calls: 5.8-7.1 MiB/s. | jobs 20261110-230421-088f49 (252), 20261110-230422-b50e7b (253) |
+| Measurement | **FAT write, before and after:** 2 MB in 32 KB and 128 KB calls, readback CRC matches: 4.39 and 5.45 MiB/s before, 5.55 and 5.57 after. Writes only `/sdbench/w.tmp`, deleted. | jobs 20261110-230422-ab21b9 (before), 20261110-233218-263e16 (after) |
+| Measurement | **After (sd-speed build), read only.** Raw sweep unchanged (control); FAT reads in 128 KB and 512 KB calls 7.9-9.6 MiB/s; CRCs match the PC's. | jobs 20261110-233435-ee6bf1 (252), 20261110-233217-8e3dbc and 20261110-233436-677776 (253) |
+| Measurement | **A/B on one placed file, 253:** develop 5.78-5.80 and 5.81 MiB/s at 128 and 512 KB calls, sd-speed 8.01-8.04 and 9.15-9.20; 16 and 32 KB calls identical (3.57, 5.69). | jobs 20261110-234038-ffa606 (develop reinstalled), 20261110-234038-f4d995 (sd-speed back), file put by 20261110-234037-0054ff |
+| Install | **sd-speed build into 252/56 and 253/58;** `iosdump.py check` all good; FAT module 25344 to 25504 bytes, the rest the same but for the build date. Backups in `d2x-cios-releases/ios-backups/lrwii-sdsp-252-20261110-232050` and `-253-20261110-232123`. | job 20261110-231105-3d1ade |
+| Finding | **lrwii's SD card is nearly full (about 4 MB free)** while other sessions write to it; `--fat-upload 16` fails with ENOSPC. Use `--fat-upload 4`. sdbench's first version could not run (`iosCreateHeap` -22 for a 134 KB heap); fixed in 3abc0c4. | job 20261110-223727-31b067 |
+

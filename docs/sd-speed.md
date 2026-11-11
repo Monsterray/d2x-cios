@@ -1,8 +1,9 @@
 # SD card speed through d2x
 
-Branch `claude/sd-speed` (2026-11-10). Nothing here has run on a Wii yet: the
-numbers below are arithmetic from earlier measurements, marked as a model, and
-the test plan at the end replaces them with data. Background: [sd-high-speed.md](sd-high-speed.md)
+Branch `claude/sd-speed` (2026-11-10). It ran on lrwii on 2026-11-10: see
+[Results on lrwii](#results-on-lrwii-2026-11-10) at the end. The numbers in the model
+sections are arithmetic from earlier measurements and are marked as a model; on lrwii
+the model's constants were wrong (the card is slower), its conclusions held. Background: [sd-high-speed.md](sd-high-speed.md)
 (the CMD6 switch to 50 MHz), [fatfs.md](fatfs.md) (the FAT module), [bench.md](bench.md).
 
 ## What was measured before
@@ -138,3 +139,52 @@ DOL first: `make -C tests/wii/sdbench` from the devkitPro MSYS2 shell.
 Read the result against the model: a (about 1.35 ms), b (about 28 us), the SDMA boundary
 and clock in the register lines (clock divisor code 0 is the full base clock, 48 MHz on the
 SD slot; host control bit 2 is high speed). A boundary of 4 KB points at cause 5.
+
+## Results on lrwii (2026-11-10)
+
+Slots 252/56 and 253/58, lrwii's card. Before: develop 8b774f2 (`-1-0`). After: this branch's
+release build, `D2X_VARIANT=sdsp` (`-1-0+sdsp`). iosdump shows the FAT module 25344 -> 25504 bytes;
+the other modules differ only in their build date. Jobs are in [bench.md](bench.md). Raw reads go to
+255 sectors; no `--big` was run.
+
+| | 252 before | 252 after | 253 before | 253 after (2 runs) |
+| --- | --- | --- | --- | --- |
+| raw 1 sector, us | 1990 | 1988 | 1989 | 1987, 1987 |
+| raw 64 sectors, MiB/s | 7.37 | 7.22 | 7.30 | 7.37, 7.20 |
+| raw 255 sectors, MiB/s | 10.80 | 10.84 | 10.88 | 10.87, 10.87 |
+| fit a, us per call | 1944.8 | 1944.9 | 1948.2 | 1935.9, 1944.9 |
+| fit b, us per sector | 37.37 | 37.19 | 37.14 | 37.14, 37.14 |
+| FAT read 16 KB calls, MiB/s | 4.76 | 3.36 | 3.63 | 3.11, 3.21 |
+| FAT read 32 KB calls | 6.88 | 5.53 | 5.80 | 5.18, 5.29 |
+| FAT read 128 KB calls | 7.05 | 8.07 | 5.88 | 7.88, 7.92 |
+| FAT read 512 KB calls | 7.02 | 9.54 | 5.85 | 9.39, 9.56 |
+| FAT read +16 (bounce), 32 KB calls | 4.52 | 3.26 | 3.52 | 3.01, 3.09 |
+| FAT write 32 KB calls (2 MB) | 4.39 | 5.55 | | |
+| FAT write 128 KB calls (2 MB) | 5.45 | 5.57 | | |
+
+Every CRC matched the PC's: the 4 MB read file 73518964 in every run, the written 2 MB file 46727317
+in both write runs and both builds.
+
+- **The change works on long calls.** 128 KB and 512 KB FAT reads rise: 512 KB calls go from 5.8 to
+  9.2-9.6 MiB/s, close to the 255-sector raw rate (10.8). The raw sweep and the fit did not move (the
+  control). FAT writes in 32 KB calls rose 26% (4.39 to 5.55, one run each); 128 KB writes did not
+  (5.45 to 5.57).
+- **The 16 KB and 32 KB drops in the table are file placement, not a regression.** Each run uploaded the
+  file again, into different clusters, on a card with 4 MB free, and the same code moved by up to 30% between
+  slots. With one file placed once and read three times on 253 (develop, then this build), small calls
+  are identical: 16 KB 3.57 and 3.56-3.58, 32 KB 5.69 and 5.68-5.69, while 128 KB goes 5.78-5.80 to
+  8.01-8.04 and 512 KB 5.81 to 9.15-9.20. That is the figure to quote: **+39% at 128 KB and +58% at
+  512 KB**, nothing at or below 32 KB (a 32 KB cluster is one request already).
+- **The model's constants were wrong.** lrwii's card gives a = 1.94 ms and b = 37 us per sector (the
+  model said 1.35 ms and 28 us, from devwii and bootmii). The asymptote is 13.1 MiB/s, not 17.5, and 255
+  sectors give 10.9, not 14.7. The sweep is a straight line: the fit predicts 7.2 at 64 and 10.9 at 255,
+  and both were measured. With a = 1.9 ms, raising `DISK_MAX_SECTORS` to 512 would gain about 0.8 MiB/s
+  (the fit predicts 11.7 for 512 sectors); not done, and `--big` needs Monty at the Wii.
+- **The host register dump** (after the sweep) reads SDMA boundary 4 KB, but also host control 00 (1-bit
+  bus, no high speed) and block size 0, while the raw rate shows the fast mode. So it does not show the
+  state the transfers ran under (the controller is probably reset or the card deselected between
+  requests). Do not read the bus width from it; the 4 KB boundary keeps cause 5 open.
+- **sdbench fix on the branch (3abc0c4):** the first run failed with `iosCreateHeap(134656) = -22`:
+  the IPC heap is only what is left of 128 KB. The heap is now 4 KB and the data buffer plain MEM2.
+- **The lrwii card has about 4 MB free** (other jobs share it), so the file reads are 4 MB
+  (`--fat-upload 4`), not 16, and the write test (2 MB) ran as its own job.
