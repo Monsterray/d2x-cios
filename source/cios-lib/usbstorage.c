@@ -36,6 +36,7 @@
 #define USB_IOCTL_UMS_WRITE_SECTORS	(UMS_BASE + 0x4)
 #define USB_IOCTL_UMS_READ_STRESS	(UMS_BASE + 0x5)
 #define USB_IOCTL_UMS_SET_VERBOSE	(UMS_BASE + 0x6)
+#define USB_IOCTL_UMS_SET_PORT		(UMS_BASE + 0x83)
 
 /* Constants */
 #define USB_MAX_SECTORS			64
@@ -48,6 +49,9 @@ static s32  fd = -1;
 
 /* Sector size */
 static u32 sectorSz = 0;
+
+/* USB port of this client: 0 sends nothing (the module's default) */
+static u32 usbPort = 0;
 
 /* Buffers */
 static ioctlv __iovec[3]   ATTRIBUTE_ALIGN(32);
@@ -173,6 +177,31 @@ u32 __usbstorage_GetCapacity(u32 *_sectorSz)
 }
 
 
+void usbstorage_SetPort(u32 port)
+{
+	/* Takes effect at the next usbstorage_Init(); an open fd keeps its port */
+	usbPort = port;
+}
+
+/* Tell the module which port this fd uses (before UMS_INIT, again after any reopen) */
+static s32 __usbstorage_SendPort(void)
+{
+	static u32 portbuf[1] ATTRIBUTE_ALIGN(32);
+	static ioctlv portvec[1] ATTRIBUTE_ALIGN(32);
+
+	if (!usbPort)
+		return 0;
+
+	portbuf[0]      = usbPort;
+	portvec[0].data = portbuf;
+	portvec[0].len  = sizeof(u32);
+
+	os_sync_after_write(portbuf, sizeof(u32));
+	os_sync_after_write(portvec, sizeof(ioctlv));
+
+	return os_ioctlv(fd, USB_IOCTL_UMS_SET_PORT, 1, 0, portvec);
+}
+
 bool usbstorage_Init(void)
 {
 	s32 ret = 1;
@@ -185,6 +214,11 @@ bool usbstorage_Init(void)
 	fd = os_open(fs, 0);
 	if (fd < 0)
 		return false;
+
+	/* Select the port, if not the default one */
+	ret = __usbstorage_SendPort();
+	if (ret)
+		goto err;
 
 	/* Initialize USB storage */
 	ret = os_ioctlv(fd, USB_IOCTL_UMS_INIT, 0, 0, NULL);

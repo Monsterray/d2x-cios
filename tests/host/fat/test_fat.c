@@ -28,6 +28,8 @@ int fatw_ioctlv(unsigned int cmd, void **data, unsigned int *len, unsigned int i
 		unsigned int iolen);
 int fatw_ioctl(long fd, unsigned int cmd, void *in, unsigned int inlen, void *io, unsigned int iolen);
 const char *fatw_nandpath(void);
+unsigned int fatw_usb_port(void);
+unsigned int fatw_usb_closes(void);
 int fatw_deletedir(const char *path);
 int fatw_usage(const char *path, unsigned long long *size, unsigned int *files, unsigned int *dirs);
 int fatw_readdir(const char *path, char *out, unsigned int buflen, unsigned int *outlen,
@@ -325,6 +327,43 @@ static void test_ioctlv_getpartition_bad_device(void)
 	CHECK(r == IPC_EINVAL, "GETPARTITION of device 7 returned %d", r);
 }
 
+/* MOUNT_USB: the optional second vector is the USB port. None means port 0;
+   a port other than the open client's closes it first; a port that does not
+   exist, or a vector too short to hold one, is refused. */
+static void test_ioctlv_mount_usb_port(void)
+{
+	int part = -1;
+	unsigned int port = 1, closes;
+	void *data[2] = { &part, &port };
+	unsigned int len[2] = { 4, 4 };
+	int r;
+
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 1, 0);
+	CHECK(r == 0 && fatw_usb_port() == 0, "no port vector: ret %d, port %u", r, fatw_usb_port());
+
+	closes = fatw_usb_closes();
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 2, 0);
+	CHECK(r == 0 && fatw_usb_port() == 1, "port 1: ret %d, port %u", r, fatw_usb_port());
+	CHECK(fatw_usb_closes() == closes + 1, "a change of port closes the client once, not %u times",
+	      fatw_usb_closes() - closes);
+
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 2, 0);
+	CHECK(r == 0 && fatw_usb_closes() == closes + 1, "the same port again keeps the client open");
+
+	port = 2;
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 2, 0);
+	CHECK(r == IPC_EINVAL && fatw_usb_port() == 1, "port 2 returned %d (port now %u)", r, fatw_usb_port());
+
+	port = 0;
+	len[1] = 2;
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 2, 0);
+	CHECK(r != 0 && fatw_usb_port() == 1, "a 2-byte port vector returned %d", r);
+
+	len[1] = 4;
+	r = fatw_ioctlv(IOCTL_FAT_MOUNT_USB, data, len, 1, 0);
+	CHECK(r == 0 && fatw_usb_port() == 0, "back to the default: ret %d, port %u", r, fatw_usb_port());
+}
+
 /* FILESTATS on the module's own descriptor (0) is not a file. */
 static void test_ioctl_filestats_on_module_fd(void)
 {
@@ -499,6 +538,25 @@ GENERIC_TESTS(EXFAT_WRAPPER)
 static const struct hc_test tests[] = {
 	GENERIC_TESTS(AS_FAT)
 	GENERIC_TESTS(AS_EXFAT)
+	{ "one_volume", test_one_volume, false },
+	{ "sd_and_usb_together", test_sd_and_usb_together, false },
+	{ "readdir_small_buffer", test_readdir_small_buffer, false },
+	{ "readdir_returns_names", test_readdir_returns_names, false },
+	{ "readdir_count_only_frees", test_readdir_count_only_frees, false },
+	{ "deletedir_long_path", test_deletedir_long_path, false },
+	{ "getusage_long_path", test_getusage_long_path, false },
+	{ "close_failure_frees", test_close_failure_frees, false },
+	{ "deletedir_deep_tree_refused", test_deletedir_deep_tree_refused, false },
+	{ "deletedir_tree_within_cap", test_deletedir_tree_within_cap, false },
+	{ "getusage_deep_tree_refused", test_getusage_deep_tree_refused, false },
+	{ "getusage_tree_within_cap", test_getusage_tree_within_cap, false },
+	{ "ioctlv_readdir_vector_count", test_ioctlv_readdir_vector_count, false },
+	{ "ioctlv_getusage_size_only", test_ioctlv_getusage_size_only, false },
+	{ "ioctlv_path_without_nul", test_ioctlv_path_without_nul, false },
+	{ "ioctlv_getpartition_bad_device", test_ioctlv_getpartition_bad_device, false },
+	{ "ioctlv_mount_usb_port", test_ioctlv_mount_usb_port, false },
+	{ "ioctl_filestats_on_module_fd", test_ioctl_filestats_on_module_fd, false },
+	{ "ioctl_setnandpath", test_ioctl_setnandpath, false },
 };
 
 int main(int argc, char **argv)

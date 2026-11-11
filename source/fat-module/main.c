@@ -56,6 +56,10 @@ static inline int __FAT_IsFileFd(s32 fd)
 	return fd != 0 && (fd % 32) == 0;
 }
 
+/* USB ports the mount accepts, and the one the open client uses */
+#define FAT_USB_PORTS 2
+static u32 fatUsbPort = 0;
+
 /* A path argument must end with a NUL inside its vector. */
 static int __FAT_IsPath(const ioctlv *v)
 {
@@ -95,8 +99,11 @@ static int __FAT_CheckVectors(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		       (iolen < 3 || (count >= 4 && vector[3].len >= sizeof(u32)));
 
 	case IOCTL_FAT_MOUNT_SD:
-	case IOCTL_FAT_MOUNT_USB:
 		return inlen == 0 || vector[0].len >= sizeof(s32);
+
+	case IOCTL_FAT_MOUNT_USB:	/* partition, then the USB port if sent (u32 is 4 bytes on the host too) */
+		return (inlen == 0 || vector[0].len >= sizeof(u32)) &&
+		       (inlen < 2 || vector[1].len >= sizeof(u32));
 
 	case IOCTL_FAT_GETPARTITION:
 		return count >= 2 && vector[0].len >= sizeof(u32) && vector[1].len >= sizeof(u32);
@@ -374,7 +381,22 @@ s32 __FAT_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 
 	/** Mount USB device **/
 	case IOCTL_FAT_MOUNT_USB: {
-		s32 partition = inlen > 0 ? *(s32 *)vector[0].data : -1;
+		s32 partition = inlen > 0 ? (s32)*(u32 *)vector[0].data : -1;
+		u32 port      = inlen > 1 ? *(u32 *)vector[1].data : 0;
+
+		/* Only the two ports the USB modules know */
+		if (port >= FAT_USB_PORTS) {
+			ret = IPC_EINVAL;
+			break;
+		}
+
+		/* Another port than the open client's: close it, the mount opens it again */
+		if (port != fatUsbPort) {
+			FAT_Unmount(1);
+			usbstorage_Shutdown();
+			fatUsbPort = port;
+		}
+		usbstorage_SetPort(port);
 
 		/* Mount USB device */
 		ret = FAT_Mount(1, partition);

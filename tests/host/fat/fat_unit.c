@@ -16,6 +16,11 @@
 
 bool sdio_Startup(void) { return true; }
 bool usbstorage_Init(void) { return true; }
+/* The port the mount asked the USB client for, and how often it closed it */
+static unsigned int usb_port, usb_closes;
+void usbstorage_SetPort(u32 port) { usb_port = port; }
+unsigned int fatw_usb_port(void) { return usb_port; }
+unsigned int fatw_usb_closes(void) { return usb_closes; }
 
 /*
  * Mem_Alloc: a bump allocator. Each block is followed by a guard zone that
@@ -76,7 +81,7 @@ void svc_write(const char *str) { (void)str; }
 void InvalidateVector(ioctlv *vector, u32 inlen, u32 iolen) { (void)vector; (void)inlen; (void)iolen; }
 void FlushVector(ioctlv *vector, u32 inlen, u32 iolen) { (void)vector; (void)inlen; (void)iolen; }
 bool sdio_Shutdown(void) { return true; }
-bool usbstorage_Shutdown(void) { return true; }
+bool usbstorage_Shutdown(void) { usb_closes++; return true; }
 void Led_BlinkOn(void) { }
 void Led_BlinkOff(void) { }
 void Led_CreateBlinkThread(void) { }

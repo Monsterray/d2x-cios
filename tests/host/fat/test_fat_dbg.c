@@ -26,6 +26,7 @@
 
 bool sdio_Startup(void) { return true; }
 bool usbstorage_Init(void) { return true; }
+void usbstorage_SetPort(u32 port) { (void)port; }
 bool sdio_Shutdown(void) { return true; }
 bool usbstorage_Shutdown(void) { return true; }
 

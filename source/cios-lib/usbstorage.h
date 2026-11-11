@@ -27,6 +27,7 @@
 #include "types.h"
 
 /* Prototypes */
+void usbstorage_SetPort(u32 port);
 bool usbstorage_Init(void);
 bool usbstorage_Shutdown(void);
 bool usbstorage_IsInserted(void);
