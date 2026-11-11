@@ -4,6 +4,12 @@
  *     hbc.py run umsbench.dol [--ios=249] [--write-back [--writes=N]]
  *                             [--big-writes=N] [--timeout=N] [--quirks=N] [--log]
  *                             [--pattern=N]   (SCRATCH drives only: overwrites)
+ *                             [--port=N] [--alternate]
+ *
+ * --port=N (0 or 1) sends SET_PORT N on the fd before UMS_INIT: the drive of
+ * that USB port (docs/usb-ports.md). --alternate then also starts the other
+ * port on the same fd and switches between the two ten times, reading the
+ * capacity and one sector of each drive; they must stay the same per port.
  *
  * --timeout and --log need an EHCI module built with EHCI_DEBUG_LOG:
  * --timeout sets its sector I/O timeout (usb_timeout units; 1000000 is
@@ -215,6 +221,8 @@ static int bench(int argc, char **argv)
 	bool log = false;
 	int dump = 0;
 	int pattern = 0;
+	u32 port = 0;
+	bool alternate = false;
 	bool list_slots = false;
 	struct timing r1 = {0}, r64 = {0}, w1 = {0}, w64 = {0};
 	u32 changed = 0;
@@ -238,6 +246,10 @@ static int bench(int argc, char **argv)
 			dump = atoi(argv[i] + 7);
 		else if (!strncmp(argv[i], "--pattern=", 10))
 			pattern = atoi(argv[i] + 10);
+		else if (!strncmp(argv[i], "--port=", 7))
+			port = strtoul(argv[i] + 7, NULL, 10);
+		else if (!strcmp(argv[i], "--alternate"))
+			alternate = true;
 		else if (!strcmp(argv[i], "--slots"))
 			list_slots = true;
 	}
@@ -281,7 +293,9 @@ static int bench(int argc, char **argv)
 		say("RESULT ios=%u error=open heap=%d fd=%d\n", ios, heap, fd);
 		return 1;
 	}
-	IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", 0);
+	s32 port_ret = IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", port);
+	if (port)
+		say("umsbench: SET_PORT(%u) = %d\n", port, port_ret);
 	if (io_timeout)
 		say("umsbench: SET_TIMEOUT(%u) = %d\n", io_timeout,
 		    IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_SET_TIMEOUT, "i:", io_timeout));
@@ -338,6 +352,51 @@ static int bench(int argc, char **argv)
 	       r1.max_us, r1.failed);
 	say("umsbench: read %u sectors: avg %u us, max %llu us, %u failed\n", big, avg(&r64),
 	       r64.max_us, r64.failed);
+
+	/* --alternate: both drives on this one fd. Per port, the capacity and a
+	 * checksum of one sector must not change when the other port is used in
+	 * between; the two ports reporting the very same drive is flagged (two
+	 * identical clones would too: use two different drives). */
+	if (alternate) {
+		u32 other = !port, cap[2] = {0, 0}, sum[2] = {0, 0}, secsz[2] = {0, 0};
+		u32 wrong = 0, ports[2] = {port, other};
+		s32 init2;
+		IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", other);
+		init2 = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_INIT, ":");
+		say("umsbench: port %u UMS_INIT = %d\n", other, init2);
+		for (int round = 0; round < 10; round++) {
+			for (int k = 0; k < 2; k++) {
+				u32 c, ss = 0, h = 0;
+				IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", ports[k]);
+				c = IOS_IoctlvFormat(heap, fd, USB_IOCTL_UMS_GET_CAPACITY, ":i", &ss);
+				if ((s32) c <= 0 || rw(USB_IOCTL_UMS_READ_SECTORS, lba, 1, buf, ss) != 0) {
+					say("umsbench: alternate round %d port %u: no drive (cap %d)\n", round,
+					    ports[k], (s32) c);
+					wrong++;
+					continue;
+				}
+				sector_size = ss;
+				for (u32 b = 0; b < ss; b++)
+					h = h * 31 + buf[b];
+				if (round == 0) {
+					cap[k] = c;
+					sum[k] = h;
+					secsz[k] = ss;
+					say("umsbench: port %u: %u sectors of %u, sector %u checksum %08x\n",
+					    ports[k], c, ss, lba, h);
+				} else if (c != cap[k] || h != sum[k] || ss != secsz[k]) {
+					say("umsbench: alternate round %d port %u CHANGED: %u sectors, checksum %08x\n",
+					    round, ports[k], c, h);
+					wrong++;
+				}
+			}
+		}
+		IOS_IoctlvFormat(heap, fd, USB_IOCTL_SET_PORT, "i:", port);
+		if (secsz[0])
+			sector_size = secsz[0];
+		say("ALTERNATE ports=%u,%u cap=%u,%u wrong=%u same_drive=%u\n", ports[0], ports[1],
+		    cap[0], cap[1], wrong, (cap[0] == cap[1] && sum[0] == sum[1]));
+	}
 
 	/* --pattern=N, for a SCRATCH drive only (it overwrites sectors): write
 	 * known data that differs from what is there, read it back, compare.
