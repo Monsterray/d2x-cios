@@ -40,6 +40,8 @@ SECTIONS {
 		*(.bss*)
 		*(COMMON)
 		KEEP(*(.ios_bss))
-		. = ALIGN(4);
+		/* The loader checks that a segment is whole 32 byte cache lines
+		   (SDL_R_ALIGN): the segment starts on one and ends on one */
+		. = ALIGN(32);
 	} > exe
 }
