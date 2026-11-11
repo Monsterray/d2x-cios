@@ -97,6 +97,8 @@ DRESULT disk_read(BYTE drv, BYTE *buf, LBA_t sector, UINT count)
 {
 	if (drv > 1 || (unsigned long long)sector + count > ramdisk[drv].sectors)
 		return RES_PARERR;
+	if (ramdisk[drv].fail_reads && ramdisk[drv].read_budget-- <= 0)
+		return RES_ERROR;
 	for (UINT i = 0; i < count; i++)
 		ramdisk_read_raw(drv, sector + i, buf + (size_t)i * RAMDISK_SECTOR);
 	ramdisk[drv].reads++;
@@ -140,6 +142,3 @@ DWORD get_fattime(void)
 {
 	return 0x00210000;
 }
-
-void *ff_memalloc(UINT size) { return malloc(size); }
-void ff_memfree(void *ptr) { free(ptr); }

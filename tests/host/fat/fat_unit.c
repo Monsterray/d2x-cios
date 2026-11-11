@@ -26,9 +26,12 @@ bool usbstorage_Init(void) { return true; }
 static uint8_t arena[1 << 20] __attribute__((aligned(32)));
 static size_t arena_used;
 static int arena_live, arena_corrupt;
+int fatw_fail_alloc;                            /* nonzero: Mem_Alloc fails (heap full) */
 
 void *Mem_Alloc(u32 size)
 {
+	if (fatw_fail_alloc)
+		return NULL;
 	u32 body = (size + 31) & ~31u;
 	if (arena_used + 32 + body + GUARD > sizeof(arena))
 		return NULL;
@@ -90,6 +93,7 @@ void fatw_reset(void)
 	arena_used = 0;
 	arena_live = 0;
 	arena_corrupt = 0;
+	fatw_fail_alloc = 0;
 	f_mount(NULL, "0:", 0);
 	f_mount(NULL, "1:", 0);
 	VolToPart[0].pt = VolToPart[1].pt = 0;

@@ -3422,8 +3422,11 @@ static UINT find_volume (	/* Returns BS status found in the hosting drive */
 
 
 	fmt = check_fs(fs, 0);				/* Load sector 0 and check if it is an FAT VBR as SFD format */
-	/* d2x: a FAT VBR in sector 0 is the volume whatever partition is forced, as in FatFs R0.08b,
-	/  so a loader that asks for partition 0 mounts a drive without a partition table. */
+	/* d2x: a FAT VBR in sector 0 is the volume whatever partition is forced. This is
+	/  what FatFs R0.08b did for every index: its chk_mounted() read the partition
+	/  table only when sector 0 was not a FAT VBR. (Stock R0.16 fails a forced index
+	/  above 0 here.) So a loader that asks for any partition mounts a drive without
+	/  a partition table. */
 	if (fmt != 2) return fmt;	/* Returns if it is an FAT VBR, not a BS or disk error */
 
 	/* Sector 0 is not an FAT VBR or forced partition number wants a partitioned drive */

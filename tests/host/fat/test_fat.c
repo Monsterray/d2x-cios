@@ -373,6 +373,103 @@ static void test_close_failure_frees(void)
 	CHECK(fatw_live_blocks() == live, "%d FIL block leaked", fatw_live_blocks() - live);
 }
 
+/* FatFs's name buffers are static: a close (which writes the directory entry)
+   works with the module heap exhausted, and the size and start cluster land. */
+extern int fatw_fail_alloc;
+static void test_close_with_heap_exhausted(void)
+{
+	char buf[16];
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	CHECK(fatw_create("0:/h.txt") >= 0, "create failed");
+	long fd = fatw_open("0:/h.txt", FA_WRITE);
+	CHECK(fd > 0, "open failed");
+	CHECK(fatw_write(fd, "heapfull", 8) == 8, "write failed");
+	fatw_fail_alloc = 1;
+	int r = fatw_close(fd);
+	fatw_fail_alloc = 0;
+	CHECK(r == 0, "close returned %d with the heap exhausted", r);
+	/* Remount: what the directory entry holds, not the cache */
+	CHECK(fatw_unmount(0) == 0 && fatw_mount(0) >= 0, "remount failed");
+	get_file("0:/h.txt", buf, sizeof(buf));
+	CHECK(strcmp(buf, "heapfull") == 0, "file holds '%s' after the close", buf);
+}
+
+/* Reads of the card start failing after n reads: a directory call either gives
+   the whole answer or an error, never a short list reported as success. */
+#define NFILES 40
+static void fail_reads_after(int n)
+{
+	ramdisk[0].fail_reads = 1;
+	ramdisk[0].read_budget = n;
+}
+
+static void reads_ok(void)
+{
+	ramdisk[0].fail_reads = 0;
+}
+
+static void test_readdir_read_error(void)
+{
+	static char out[NFILES * 40];
+	int errors = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_dir_of_files("0:/rd", NFILES);
+	CHECK_OK();
+	for (int n = 0; n < 12; n++) {
+		unsigned int cnt = 0;
+		fail_reads_after(n);
+		int r = fatw_readdir("0:/rd", out, sizeof(out), &cnt, 0);
+		reads_ok();
+		if (r != 0)
+			errors++;
+		else
+			CHECK(cnt == NFILES, "budget %d: success with %u of %d entries", n, cnt, NFILES);
+	}
+	CHECK(errors > 0, "no read failure reached the listing (test is blind)");
+}
+
+static void test_deletedir_read_error(void)
+{
+	int errors = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	for (int n = 0; n < 12; n++) {
+		char dir[24];
+		unsigned int cnt = 0;
+		snprintf(dir, sizeof(dir), "0:/dd%d", n);
+		make_dir_of_files(dir, NFILES);
+		CHECK_OK();
+		fail_reads_after(n);
+		int r = fatw_deletedir(dir);
+		reads_ok();
+		CHECK(fatw_readdir(dir, NULL, 0, &cnt, 0) == 0, "listing after delete failed");
+		if (r != 0)
+			errors++;
+		else
+			CHECK(cnt == 0, "budget %d: DELETEDIR succeeded with %u entries left", n, cnt);
+	}
+	CHECK(errors > 0, "no read failure reached DELETEDIR (test is blind)");
+}
+
+static void test_getusage_read_error(void)
+{
+	int errors = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_dir_of_files("0:/gu", NFILES);
+	CHECK_OK();
+	for (int n = 0; n < 12; n++) {
+		unsigned long long size = 0;
+		unsigned int files = 0, dirs = 0;
+		fail_reads_after(n);
+		int r = fatw_usage("0:/gu", &size, &files, &dirs);
+		reads_ok();
+		if (r != 0)
+			errors++;
+		else
+			CHECK(files == NFILES, "budget %d: success with %u of %d files", n, files, NFILES);
+	}
+	CHECK(errors > 0, "no read failure reached GETUSAGE (test is blind)");
+}
+
 /*
  * Every test above runs twice: on FAT (the RAM disks setup() formats) and on
  * exFAT (the same disks formatted again). The cases that are only exFAT's are
@@ -384,7 +481,8 @@ static void test_close_failure_frees(void)
 	X(close_failure_frees) X(deletedir_deep_tree_refused) X(deletedir_tree_within_cap) \
 	X(getusage_deep_tree_refused) X(getusage_tree_within_cap) X(ioctlv_readdir_vector_count) \
 	X(ioctlv_getusage_size_only) X(ioctlv_path_without_nul) X(ioctlv_getpartition_bad_device) \
-	X(ioctl_filestats_on_module_fd) X(ioctl_setnandpath)
+	X(ioctl_filestats_on_module_fd) X(ioctl_setnandpath) X(close_with_heap_exhausted) \
+	X(readdir_read_error) X(deletedir_read_error) X(getusage_read_error)
 
 #define EXFAT_WRAPPER(name) \
 	static void exfat_##name(void) \

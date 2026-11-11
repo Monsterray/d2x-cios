@@ -43,6 +43,11 @@ static FATFS fatFs[FF_VOLUMES] ATTRIBUTE_ALIGN(32);
 
 /* The window of a work area is the DMA target of the sector reads (see ff.h) */
 typedef char __fatfs_win_is_aligned[(offsetof(FATFS, win) % 32) ? -1 : 1];
+/* ... and so is fatFs[1].win, so the work area's size is a multiple of 32.
+   (Checked for the module only: the host tests have 8-byte pointers.) */
+#ifdef __arm__
+typedef char __fatfs_size_is_aligned[(sizeof(FATFS) % 32) ? -1 : 1];
+#endif
 
 /* Which partition each volume mounts: 0 is none, 1 to 4 the partition (FatFs
    counts from 1; the IPC calls and GETPARTITION count from 0). */
@@ -94,7 +99,9 @@ s32 __FAT_OpenDir(DIR *dir, const char *dirpath)
 	return FS_EFATAL;
 }
 
-/* Read the next entry that is not . or .. (or hidden by a leading dot) into fno */
+/* Read the next entry that is not . or .. (or hidden by a leading dot) into fno.
+   Returns FS_SUCCESS with an entry, FS_ENOENT at the end of the directory and
+   FS_EFATAL when the read failed (the callers must not take that for the end). */
 s32 __FAT_ReadDirEntry(DIR *dir)
 {
 	s32 ret;
@@ -103,8 +110,8 @@ s32 __FAT_ReadDirEntry(DIR *dir)
 	while (1) {
 		/* Read entry */
 		ret = f_readdir(dir, &fno);
-		if (ret)
-			return FS_ENOENT;
+		if (ret != FR_OK)
+			return FS_EFATAL;
 
 		/* Read end */
 		if (fno.fname[0] == '\0')
@@ -265,7 +272,17 @@ s32 FAT_Close(s32 fd)
 	/* Close file */
 	ret = f_close(fil);
 
-	/* Free memory: the descriptor is gone even when the close failed */
+	/* A close that failed for a reason a next try could get past (anything but
+	   a disk or mount error: the size and cluster update is still pending)
+	   keeps the file object, so a later close can write it again. Whether the
+	   caller's descriptor survives an error reply is IOS's rule; if it does
+	   not, the object stays allocated: one FIL leaked per such failure. */
+	if (ret != FR_OK && ret != FR_DISK_ERR && ret != FR_NOT_READY &&
+	    ret != FR_INVALID_OBJECT && ret != FR_INVALID_DRIVE &&
+	    ret != FR_NOT_ENABLED && ret != FR_NO_FILESYSTEM)
+		return FS_EFATAL;
+
+	/* Free memory */
 	Mem_Free(fil);
 
 	return ret ? FS_EFATAL : FS_SUCCESS;
@@ -418,7 +435,7 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 
 	char *buffer = NULL;
 	u32   cnt = 0, pos = 0;
-	s32   ret;
+	s32   ret, err = FS_SUCCESS;
 	FIL   fil;
 	
 	// FIX:
@@ -450,8 +467,11 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 
 		/* Read entry */
 		ret = __FAT_ReadDirEntry(&dir);
-		if (ret)
+		if (ret) {
+			if (ret != FS_ENOENT)
+				err = ret;
 			break;
+		}
 
 		/* Get name (the long name when there is one) */
 		name = fno.fname;
@@ -498,6 +518,10 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 		/* Free buffer */
 		Mem_Free(buffer);
 	}
+
+	/* A failed directory read is an error, not a short list */
+	if (err)
+		return err;
 
 	/* Set value */
 	*outlen = cnt;
@@ -560,8 +584,10 @@ static s32 __FAT_DeleteDir(const char *dirpath, u32 depth)
 
 		/* Read entry */
 		ret = __FAT_ReadDirEntry(&dir);
-		if (ret)
+		if (ret == FS_ENOENT)
 			break;
+		if (ret)
+			return ret;
 
 		/* Get name */
 		name = fno.fname;
@@ -693,8 +719,10 @@ static s32 __FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs,
 
 		/* Read entry */
 		ret = __FAT_ReadDirEntry(&dir);
-		if (ret)
+		if (ret == FS_ENOENT)
 			break;
+		if (ret)
+			return ret;
 
 		/* Get name */
 		name = fno.fname;

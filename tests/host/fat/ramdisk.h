@@ -15,6 +15,8 @@ struct ramdisk {
 	int inited;
 	unsigned int reads, writes;
 	int fail_writes;        /* nonzero: every write fails (a pulled card) */
+	int fail_reads;         /* nonzero: reads fail once read_budget reads have been served */
+	int read_budget;
 };
 
 extern struct ramdisk ramdisk[2];
