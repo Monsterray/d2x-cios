@@ -148,13 +148,14 @@ sdio/test_sdio_dbg: sdio/test_sdio_dbg.c hostcheck.h $(DBG_DEPS) $(CIOSLIB)/sdio
 
 fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h hostcheck.h \
 		$(DBG_DEPS) fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c $(FATMOD)/ff.h \
-		$(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c
+		$(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c $(FATMOD)/divmod64.c
 	$(CC) $(ALL_CFLAGS) -Ifat -I$(FATMOD) -c -o fat/dbg_ramdisk.o fat/ramdisk.c
 	$(CC) $(ALL_CFLAGS) -Wno-implicit-fallthrough -Ifat -I$(FATMOD) -c -o fat/dbg_ff.o fat/ff_unit.c
 	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -I. -Ifat -Ifat/stub \
 		-Idbg -I$(FATMOD) -I$(MLOADMOD) -I$(CIOSLIB) -c -o fat/dbg_test.o fat/test_fat_dbg.c
 	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Idbg -I$(MLOADMOD) -I$(CIOSLIB) -c -o fat/dbg_swi.o dbg/swi_host.c
-	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/dbg_test.o fat/dbg_swi.o fat/dbg_ramdisk.o fat/dbg_ff.o
+	$(CC) $(ALL_CFLAGS) -c -o fat/dbg_divmod.o $(FATMOD)/divmod64.c
+	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/dbg_test.o fat/dbg_swi.o fat/dbg_ramdisk.o fat/dbg_ff.o fat/dbg_divmod.o
 
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
