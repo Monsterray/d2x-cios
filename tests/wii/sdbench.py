@@ -6,15 +6,26 @@ A wii-bench queue job. `hbc.py run` shows sdbench's output only until it
 reloads IOS (the reload drops the network), so sdbench also saves its report
 to sd:/sdbench.txt; this script waits for the Wii to return to HBC, fetches
 that file, and prints it. Read only. Example: -- --ios=249 --mb=32
+--big adds 512 and 1024 sectors to the raw size sweep (sizes no loader has
+used: only with Monty at the Wii). --fat-upload MB puts a pseudo-random MB
+megabyte file at sd:/sdbench.bin through the Wii's HBC, has sdbench read it
+through the FAT module (--file=/sdbench.bin), compares sdbench's CRC32 with the
+PC's, and removes the file; --pc-file PATH does the same compare for a file
+already on the card (give --file=/NAME in the sdbench arguments). --fat-write MB
+(an sdbench argument) writes a scratch file under sd:/sdbench/ and deletes it.
+See docs/sd-speed.md.
 --video S records the TV for S seconds through the capture card (sdbench
 draws its report there, so a run never looks like a frozen Wii).
 """
 import os
 import pathlib
+import random
+import re
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 here = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(here.parents[2] / "tools"))
@@ -22,6 +33,7 @@ import wii_targets as wt  # noqa: E402
 
 DOL = here.parent / "sdbench" / "sdbench.dol"
 REPORT = "sd:/sdbench.txt"
+UPLOAD = "sd:/sdbench.bin"
 try:        # the capture card's wiicap.py ($WIICAP or ~/.wii-paths.json); none: no recording
     WIICAP = str(wt.wii_paths.wiicap())
 except wt.wii_paths.NotFound:
@@ -32,6 +44,9 @@ def main():
     p = wt.parser(__doc__)
     p.add_argument("--timeout", type=int, default=1800)
     p.add_argument("--video", type=int, default=0, help="record the TV for this many seconds")
+    p.add_argument("--fat-upload", type=int, default=0, metavar="MB",
+                   help="put a MB-megabyte test file on the card and read it through the FAT module")
+    p.add_argument("--pc-file", help="PC copy of the file sdbench reads with --file, for the CRC compare")
     p.add_argument("args", nargs="*")
     a = p.parse_args()
     if not DOL.is_file():
@@ -39,6 +54,17 @@ def main():
     wii = wt.bench_wii("sdbench.py")
 
     wt.hbc(wii, "rm", REPORT, timeout=30)            # an old report must not count
+    pc_file = pathlib.Path(a.pc_file) if a.pc_file else None
+    uploaded = False
+    if a.fat_upload:
+        src = pathlib.Path(tempfile.mkdtemp()) / "sdbench.bin"
+        src.write_bytes(random.Random(1).randbytes(a.fat_upload * 1024 * 1024))
+        r = wt.hbc(wii, "put", str(src), UPLOAD, timeout=300 + 30 * a.fat_upload)
+        if r.rc:
+            sys.exit(f"sdbench.py: upload of {UPLOAD} failed ({r.text[-200:]})")
+        uploaded = True
+        pc_file = src
+        a.args = [*a.args, "--file=/sdbench.bin", f"--limit={a.fat_upload * 1024}"]
     outdir = pathlib.Path(os.environ.get("WII_BENCH_OUT") or tempfile.mkdtemp())
     cap = None
     if a.video and WIICAP:
@@ -55,6 +81,9 @@ def main():
             sys.exit(f"sdbench.py: the Wii did not return to HBC in {a.timeout} s")
         time.sleep(5)
 
+    if uploaded:                                      # the scratch file goes either way
+        wt.hbc(wii, "rm", UPLOAD, timeout=60)
+
     out = outdir / "sdbench.txt"
     r = wt.hbc(wii, "get", REPORT, str(out), timeout=60)
     if r.rc or not out.is_file():
@@ -64,7 +93,21 @@ def main():
     if cap:
         cap.wait(timeout=a.video + 60)
         print(f"sdbench.py: TV recording in {outdir / 'sdbench.mp4'}", flush=True)
-    return 0 if "RESULT ok" in text else 1
+    rc = 0 if "RESULT ok" in text else 1
+    m = re.search(r"FATFILE bytes=(\d+) crc=([0-9a-f]{8})", text)
+    if pc_file and m:
+        n, crc = int(m.group(1)), int(m.group(2), 16)
+        with open(pc_file, "rb") as f:
+            want = zlib.crc32(f.read(n))
+        ok = want == crc
+        print(f"sdbench.py: CRC32 of the first {n} bytes: Wii {crc:08x}, PC {want:08x}: "
+              f"{'matches' if ok else 'DIFFERS'}", flush=True)
+        if not ok:
+            rc = 1
+    elif pc_file:
+        print("sdbench.py: no FATFILE line in the report: nothing to compare", flush=True)
+        rc = 1
+    return rc
 
 
 if __name__ == "__main__":
