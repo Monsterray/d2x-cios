@@ -4056,7 +4056,18 @@ FRESULT f_read (
 			cc = btr / SS(fs);					/* When remaining bytes >= sector size, */
 			if (cc > 0) {						/* Read maximum contiguous sectors directly */
 				if (csect + cc > fs->csize) {	/* Clip at cluster boundary */
+					UINT want = cc;
+					DWORD nc;
+
 					cc = fs->csize - csect;
+					/* d2x: go on over the following clusters while the chain runs
+					   on contiguously, so one disk_read serves a whole run: every
+					   SD request costs about 1.3 ms whatever its size (docs/sd-speed.md) */
+					while (cc < want && (nc = get_fat(&fp->obj, fp->clust)) == fp->clust + 1) {
+						fp->clust = nc;
+						cc += fs->csize;
+					}
+					if (cc > want) cc = want;
 				}
 				if (disk_read(fs->pdrv, rbuff, sect, cc) != RES_OK) ABORT(fs, FR_DISK_ERR);
 #if !FF_FS_READONLY && FF_FS_MINIMIZE <= 2		/* Replace one of the read sectors with cached data if it contains a dirty sector */
@@ -4171,7 +4182,24 @@ FRESULT f_write (
 			cc = btw / SS(fs);				/* When remaining bytes >= sector size, */
 			if (cc > 0) {					/* Write maximum contiguous sectors directly */
 				if (csect + cc > fs->csize) {	/* Clip at cluster boundary */
+					UINT want = cc;
+					DWORD nc;
+
 					cc = fs->csize - csect;
+#if FF_FS_EXFAT
+					if (fs->fs_type != FS_EXFAT)	/* exFAT keeps its contiguous-chain state per cluster */
+#endif
+					{
+						/* d2x: as in f_read, but the next cluster is followed or
+						   stretched (create_chain). A cluster that is not the next one
+						   stays in the chain and is taken by the next pass; a full
+						   disk or an error comes back the same way on that pass. */
+						while (cc < want && (nc = create_chain(&fp->obj, fp->clust)) == fp->clust + 1) {
+							fp->clust = nc;
+							cc += fs->csize;
+						}
+						if (cc > want) cc = want;
+					}
 				}
 				if (disk_write(fs->pdrv, wbuff, sect, cc) != RES_OK) ABORT(fs, FR_DISK_ERR);
 #if FF_FS_MINIMIZE <= 2

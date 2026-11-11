@@ -510,6 +510,164 @@ static void test_getusage_read_error(void)
 }
 
 /*
+ * Cluster runs (docs/sd-speed.md): f_read and f_write hand the disk one request
+ * for a whole run of contiguous clusters, not one per cluster. Each SD request
+ * costs about 1.3 ms whatever its size, so the number of requests is the speed.
+ */
+int fatw_raw_seek(unsigned int fd, unsigned long long pos);
+
+static unsigned char pat(unsigned int salt, unsigned long long i)
+{
+	return (unsigned char) ((i * 131 + (i >> 9) * 7 + salt) ^ (i >> 16));
+}
+
+static void fill_pat(unsigned char *p, unsigned int salt, unsigned long long from, unsigned int n)
+{
+	for (unsigned int i = 0; i < n; i++)
+		p[i] = pat(salt, from + i);
+}
+
+static int same_pat(const unsigned char *p, unsigned int salt, unsigned long long from, unsigned int n)
+{
+	for (unsigned int i = 0; i < n; i++)
+		if (p[i] != pat(salt, from + i))
+			return 0;
+	return 1;
+}
+
+/* A new file of len bytes of pattern salt, written in chunk-byte calls */
+static void make_pat_file(const char *path, unsigned int salt, unsigned int len, unsigned int chunk)
+{
+	static unsigned char buf[1 << 20];
+	CHECK(fatw_create(path) >= 0, "create %s failed", path);
+	long fd = fatw_open(path, FA_WRITE);
+	CHECK(fd > 0, "open %s: %ld", path, fd);
+	for (unsigned int at = 0; at < len; at += chunk) {
+		unsigned int n = len - at < chunk ? len - at : chunk;
+		fill_pat(buf, salt, at, n);
+		CHECK(fatw_write(fd, buf, n) == (int) n, "write %s at %u failed", path, at);
+	}
+	CHECK(fatw_close(fd) >= 0, "close %s failed", path);
+}
+
+/* A file of 768 KB is read back with one call: the disk sees a few requests, not one per cluster */
+static void test_run_read_one_request(void)
+{
+	static unsigned char buf[768 * 1024];
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	make_pat_file("0:/run.bin", 3, sizeof(buf), sizeof(buf));
+	CHECK_OK();
+	long fd = fatw_open("0:/run.bin", FA_READ);
+	CHECK(fd > 0, "open failed");
+	ramdisk[0].reads = 0;
+	CHECK(fatw_read(fd, buf, sizeof(buf)) == (int) sizeof(buf), "short read");
+	unsigned int reads = ramdisk[0].reads;
+	CHECK(fatw_close(fd) >= 0, "close failed");
+	CHECK(same_pat(buf, 3, 0, sizeof(buf)), "data differs");
+	/* the data in one request, and the FAT sectors the chain walk loads; one per cluster is 190 or more */
+	CHECK(reads <= 8, "%u disk reads for 768 KB (one per cluster)", reads);
+}
+
+/* The same for writing a new file in one call. FAT volumes only: on exFAT a write goes one
+   cluster at a time, because the file's size, which its chain lookups depend on, grows with each. */
+static void test_run_write_few_requests(void)
+{
+	static unsigned char buf[768 * 1024];
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	CHECK(fatw_create("0:/w.bin") >= 0, "create failed");
+	long fd = fatw_open("0:/w.bin", FA_WRITE);
+	CHECK(fd > 0, "open failed");
+	fill_pat(buf, 5, 0, sizeof(buf));
+	ramdisk[0].writes = 0;
+	CHECK(fatw_write(fd, buf, sizeof(buf)) == (int) sizeof(buf), "short write");
+	unsigned int writes = ramdisk[0].writes;
+	CHECK(fatw_close(fd) >= 0, "close failed");
+	/* the data in a few requests (the 255-sector cap of diskio.c is not in this stub), the tables around them;
+	   one per cluster would be 190 or more */
+	CHECK(writes <= 12, "%u disk writes for 768 KB", writes);
+	CHECK(fatw_unmount(0) == 0 && fatw_mount(0) >= 0, "remount failed");
+	fd = fatw_open("0:/w.bin", FA_READ);
+	CHECK(fd > 0, "reopen failed");
+	static unsigned char back[sizeof(buf)];
+	CHECK(fatw_read(fd, back, sizeof(back)) == (int) sizeof(back), "short read back");
+	fatw_close(fd);
+	CHECK(!memcmp(back, buf, sizeof(buf)), "data differs after the write");
+}
+
+/* Two files grown in turns are in pieces. Reads of any offset and length across the
+   pieces give the right bytes. */
+static void test_run_fragmented_reads(void)
+{
+	static unsigned char buf[300 * 1024], copy[300 * 1024];
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	CHECK(fatw_create("0:/fa.bin") >= 0 && fatw_create("0:/fb.bin") >= 0, "create failed");
+	long fa = fatw_open("0:/fa.bin", FA_WRITE), fb = fatw_open("0:/fb.bin", FA_WRITE);
+	CHECK(fa > 0 && fb > 0, "open failed");
+	for (unsigned int at = 0; at < sizeof(buf); at += 24 * 1000) {
+		unsigned int n = sizeof(buf) - at < 24 * 1000 ? sizeof(buf) - at : 24 * 1000;
+		fill_pat(copy, 1, at, n);
+		CHECK(fatw_write(fa, copy, n) == (int) n, "write a failed");
+		fill_pat(copy, 2, at, n);
+		CHECK(fatw_write(fb, copy, n) == (int) n, "write b failed");
+	}
+	CHECK(fatw_close(fa) >= 0 && fatw_close(fb) >= 0, "close failed");
+	for (int f = 0; f < 2; f++) {
+		long fd = fatw_open(f ? "0:/fb.bin" : "0:/fa.bin", FA_READ);
+		CHECK(fd > 0, "reopen failed");
+		unsigned int rnd = 12345 + f;
+		for (int k = 0; k < 60; k++) {
+			rnd = rnd * 1103515245u + 12345u;
+			unsigned int off = (rnd >> 8) % sizeof(buf);
+			rnd = rnd * 1103515245u + 12345u;
+			unsigned int len = 1 + (rnd >> 8) % (sizeof(buf) - off);
+			if (k == 0) { off = 0; len = sizeof(buf); }
+			memset(copy, 0xEE, sizeof(copy));
+			CHECK(fatw_raw_seek(fd, off) == 0, "seek %u failed", off);
+			CHECK(fatw_read(fd, copy, len) == (int) len, "short read at %u len %u", off, len);
+			CHECK(same_pat(copy, f + 1, off, len), "file %d differs at %u len %u", f, off, len);
+			CHECK(len == sizeof(copy) || copy[len] == 0xEE, "read wrote past the end");
+		}
+		fatw_close(fd);
+	}
+}
+
+/* A write that runs into the end of the disk keeps what it wrote: the file reads back as long as the count says */
+static void test_run_write_disk_full(void)
+{
+	static unsigned char buf[1 << 20], back[1 << 20];
+	unsigned long long total = 0;
+	CHECK(fatw_mount(0) >= 0, "mount SD failed");
+	CHECK(fatw_create("0:/full.bin") >= 0, "create failed");
+	long fd = fatw_open("0:/full.bin", FA_WRITE);
+	CHECK(fd > 0, "open failed");
+	for (int i = 0; i < 12; i++) {                      /* 8 MB disk: it fills in the 8th */
+		fill_pat(buf, 9, total, sizeof(buf));
+		int n = fatw_write(fd, buf, sizeof(buf));
+		if (n < 0)
+			break;
+		total += n;
+		if (n < (int) sizeof(buf))
+			break;
+	}
+	CHECK(total > 4u << 20 && total < 8u << 20, "wrote %llu bytes", total);
+	CHECK(fatw_close(fd) >= 0, "close failed");
+	CHECK(fatw_unmount(0) == 0 && fatw_mount(0) >= 0, "remount failed");
+	fd = fatw_open("0:/full.bin", FA_READ);
+	CHECK(fd > 0, "reopen failed");
+	unsigned long long got = 0;
+	for (;;) {
+		int n = fatw_read(fd, back, sizeof(back));
+		CHECK(n >= 0, "read failed");
+		if (n == 0)
+			break;
+		CHECK(same_pat(back, 9, got, n), "data differs at %llu", got);
+		got += n;
+	}
+	fatw_close(fd);
+	CHECK(got == total, "file holds %llu bytes, the writes said %llu", got, total);
+}
+
+/*
  * Every test above runs twice: on FAT (the RAM disks setup() formats) and on
  * exFAT (the same disks formatted again). The cases that are only exFAT's are
  * in test_exfat.c.
@@ -521,7 +679,8 @@ static void test_getusage_read_error(void)
 	X(getusage_deep_tree_refused) X(getusage_tree_within_cap) X(ioctlv_readdir_vector_count) \
 	X(ioctlv_getusage_size_only) X(ioctlv_path_without_nul) X(ioctlv_getpartition_bad_device) \
 	X(ioctl_filestats_on_module_fd) X(ioctl_setnandpath) X(close_with_heap_exhausted) \
-	X(readdir_read_error) X(deletedir_read_error) X(getusage_read_error)
+	X(readdir_read_error) X(deletedir_read_error) X(getusage_read_error) \
+	X(run_read_one_request) X(run_fragmented_reads) X(run_write_disk_full)
 
 #define EXFAT_WRAPPER(name) \
 	static void exfat_##name(void) \
@@ -538,6 +697,7 @@ GENERIC_TESTS(EXFAT_WRAPPER)
 static const struct hc_test tests[] = {
 	GENERIC_TESTS(AS_FAT)
 	GENERIC_TESTS(AS_EXFAT)
+	{ "run_write_few_requests", test_run_write_few_requests, false },
 	{ "one_volume", test_one_volume, false },
 	{ "sd_and_usb_together", test_sd_and_usb_together, false },
 	{ "readdir_small_buffer", test_readdir_small_buffer, false },
