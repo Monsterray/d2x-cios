@@ -5,6 +5,7 @@ Notes for people working on the cIOS. For setup and the build, start with [CONTR
 | Page | Read it when |
 | --- | --- |
 | [usb-storage.md](usb-storage.md) | you change how the USB driver retries, recovers or gives up: the layers, error codes, deadlines, the recovery ladder, USBS |
+| [usb-ports.md](usb-ports.md) | you use or change the second USB port: how each driver picks a drive, `SET_PORT`, the FAT/DIP/NAND-emulation client API, sizes, the Wii test |
 | [sd-high-speed.md](sd-high-speed.md) | you touch the SD card driver: how 50 MHz is switched on, the fallback, the `-DSDIO_NO_HIGH_SPEED` opt-out |
 | [debug-build.md](debug-build.md) | you chase a hang inside IOS: the `+dbg` build, its trace, watchdog and fault injection |
 | [mload.md](mload.md) | you touch MLOAD or load modules from the SD card: how mload works, the SD loader (files, limits, report), security, the Wii test steps, BootMii-reborn notes |

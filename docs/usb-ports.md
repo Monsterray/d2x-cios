@@ -1,6 +1,6 @@
 # USB ports: how d2x picks a drive, and the plan for both ports
 
-Status: investigation and design (branch `claude/usb-two-ports`). Nothing here is implemented or tested on a Wii yet. Section 6 lists what is still open. Paths are relative to the repository root.
+Status: implemented and host-tested (branch `claude/usb-two-ports`); **never run on a Wii**. Sections 1 to 5 are the investigation and design as written before the code. Section 7 says what was built, with sizes, and where it differs from the design; section 8 is the client API for loader authors; section 9 the limits; section 6 and 10 the Wii test. Paths are relative to the repository root.
 
 ## 1. How each driver picks a port today
 
@@ -109,6 +109,8 @@ Rules: the default stays as today. A loader that never sends the port ioctl keep
 
 ## 6. Open items and the Wii test (nothing run yet)
 
+Steps 2 and 3 settle the open items; `umsbench --port=N` and `--alternate` exist now (section 7.5).
+
 Open:
 
 - Which EHCI root ports the two sockets are (0 and 1, or 0 and 3). One-line change in the port map once known.
@@ -119,11 +121,82 @@ Open:
 Wii test (attended, with Monty at the Wii; never unattended: a USB hang inside IOS needs a power cycle). Use `devwii` or `lrwii`, never `prod`, never lrwii slot 249. Installing a cIOS writes NAND: get Monty's OK for the slot and base first (`tests/wii/install_cios.py`, CONTRIBUTING.md "What needs a real Wii"). Two **scratch** drives whose data nobody needs; never the SanDisk "USB 3.2Gen1" (60088319 sectors), which lands stale data on writes.
 
 1. Read only first. In a spare slot (EHCI base 56 or 57, and base 58 for USBS) run `make -C tests/wii/umsbench`, then as a queue job `python tests/wii/umsbench.py -- --ios=N` with drive A in the lower socket only. Then drive A in the upper socket only. Today's cIOS (without the new code) shows which sockets work at all; record which one answers.
-2. With the new build: `umsbench --ios=N --port=P` (the `--port` option is to be added to umsbench; it sends `SET_PORT` before `UMS_INIT`). Drive A in socket X, nothing in the other: P=0 and P=1 each, record which socket is which port. This settles the port map and the USBS ordering question.
-3. Both drives plugged in: read test on each port (`--port=0`, `--port=1`), then alternating requests on one fd (`--alternate`, to be added): capacity and the first sector of each drive must stay distinct (compare a volume label or a pattern written beforehand).
+2. With the new build: `umsbench --ios=N --port=P` (it sends `SET_PORT` before `UMS_INIT`). Drive A in socket X, nothing in the other: P=0 and P=1 each, record which socket is which port. This settles the port map and the USBS ordering question.
+3. Both drives plugged in: read test on each port (`--port=0`, `--port=1`), then alternating requests on one fd (`--alternate`: it prints an `ALTERNATE ... wrong=N same_drive=M` line; both must be 0): capacity and the first sector of each drive must stay distinct (compare a volume label or a pattern written beforehand).
 4. Two clients at once (two umsbench fds, or umsbench plus a loader): one on each port.
 5. Write test on the two scratch drives only, `--pattern=N`, one port at a time, then both.
 6. Unplug the drive in one socket while the other is being read. Expected: the unplugged port's requests wait or fail by the rule chosen in 5.1(7); the other port keeps working; a replug recovers. Have Monty's hand on the plug and the power button.
 7. Last, with a loader: NAND emulation on one port and a game on the other. Needs the loader changes of 5.3.
 
 Run the host tests first: `tools/build.sh test`, then `EXTRA_CFLAGS=-Werror tools/build.sh`.
+
+
+## 7. What was built
+
+Commits on `claude/usb-two-ports`, in order: the design (`debcb99`), EHCI two ports, EHCI tests, USBS two ports, then the clients (cios-lib and the FAT module; DIP and NAND emulation; umsbench). Sizes are bytes used in the module's `exe` region, release build / `-DD2X_DEBUG` (`+dbg`), with the free bytes in brackets. Before this branch (`docs/module-size.md`, release): EHCI 17864 (2616 free), USBS 11548 (740 free), FAT 18032 (2448 free), DIPP 6448 (1744 free), MLOAD 5456, FFSP 6700, ES 2872.
+
+### 7.1 EHCI module (`source/ehci-module`)
+
+- Release 18840 (1640 free); `+dbg` 20152 (328 free).
+- Two drives, one controller. `tinyehci/usbstorage.c` keeps the live drive state and parks the other in `ums_park[]`; `USBStorage_Select(port)` swaps them (the module loop is single-threaded). `ums_root_port[UMS_PORTS] = { 0, 1 }` (`usbstorage.c` ~:249) maps the logical port to the EHCI root port. **Whether the second socket is root port 1 or 3 is unverified** (sections 6 and 10).
+- `fdport.h`: the fd to port table, shared with the USBS module. 8 slots: at most 8 fds can be on port 1 at once (an fd on port 0 needs no slot); a ninth `SET_PORT 1` returns -1. A new fd is on port 0. `SET_PORT` = `UMS_BASE+0x83`, one `u32` input; 0 or 1, else -1. Every UMS and WBFS request selects its fd's port first (`loop.c`). `IOS_Close` clears the entry.
+- Correction to the design: the USB address of a drive is `cnt = port + 2`; section 5.1 point 6 said `dev->id = port + 1`.
+- Port 1 is taken back from OHCI at the first `UMS_INIT` on it. Port 1 looks at the port's connect bit and resets and enumerates in the one call, so a drive plugged in after boot mounts with one `UMS_INIT` (a host test found that). Port 0 is unchanged and still needs a second `UMS_INIT` after a late plug.
+- The wait for a replug on port 1 is bounded: `UMS_GONE_MS` = 3000 ms (`usbstorage.c` ~:258), then the request fails, so a gone drive on port 1 cannot hold the module's single thread. Port 0 keeps the old unlimited wait: no change in behaviour for anyone who does not use port 1.
+- The 10-second keepalive loop in `loop.c` covers both ports.
+
+### 7.2 USBS module (`source/usb-module`)
+
+- Release 11952 (336 free); `+dbg` 12252 (36 free).
+- IOS58 gives no port number, so port 0 is the first mass-storage drive that mounts and port 1 the second. Drives are matched by `device_id` plus VID and PID, so two drives of one model are two drives. Port 1 is scanned only after a client sent `SET_PORT 1`: a client that never does behaves as before. Both handles use one shared 16 KB bounce buffer.
+- `+dbg` has **one port**: `USBS_PORTS` is 1 there (`module.h`), `SET_PORT` is not handled and returns -101 (loaders ignore that; `usbstorage_SetPort(1)` and DI device 3 see it as an error).
+
+### 7.3 cios-lib and the FAT module
+
+- `cios-lib/usbstorage.c`: `usbstorage_SetPort(u32 port)`. Port 0 sends nothing (a client that never calls it is as before). Otherwise `SET_PORT` is sent before `UMS_INIT` and again after each reopen. A change of port closes an open client, so the next `usbstorage_Init()` opens it again with the new port.
+- `fat-module/main.c` only (not `fat_wrapper.c`, which another branch rewrites for FatFs R0.16): `IOCTL_FAT_MOUNT_USB` (0xF2) takes an optional second input vector, a `u32` port (0 or 1; anything else returns `IPC_EINVAL`). No vector means port 0. A port other than the open client's unmounts volume 1, closes the client and mounts again. Host test `ioctlv_mount_usb_port` in `tests/host/fat/test_fat.c`. The length check uses `sizeof(u32)`: `s32` is 8 bytes on the host.
+- FAT release 18232 (2248 free); `+dbg` 18864 (1616 free).
+
+### 7.4 DIP plugin and NAND emulation
+
+- **DI device 3 = "USB, port 1"** for `IOCTL_DI_WBFS_SET` and `IOCTL_DI_FRAG_SET` (`dip-plugin/wbfs.c`, `frag.c`, `plugin.c`): like device 1, with `SET_PORT 1` sent on the DIP's own fd (WBFS) or client (fraglist) first. The device number is saved in the DIP config across the fake IOS reload as before, so the reload reopens port 1. The loader must already have started that port (`UMS_INIT` after `SET_PORT 1` on its own fd): the DIP sends no `UMS_INIT` for WBFS, and device 1 does not either.
+- **NAND emulation port: `ISFS_MODE_PORT1` = 0x200** (`cios-lib/isfs.h`), set in the `mode` of `ISFS_SetMode` together with `ISFS_MODE_USB`. The FFS plugin keeps `mode` as given. After a fake reload `DI_InitEmulation()` mounts the FAT module's USB volume on port 1 when the bit is set (`dip-plugin/fat.c` sends the port vector). No struct field was added. A loader's own first mount goes straight to the FAT module (0xF2 with the port vector).
+- DIPP release 6716 (1476 free); `+dbg` 7760 (432 free). FFSP, ES and MLOAD are not changed (MLOAD 5456 release, 8164 `+dbg`).
+
+### 7.5 umsbench
+
+`--port=N` sends `SET_PORT N` before `UMS_INIT` (it always sent 0 before). `--alternate` starts the other port on the same fd, then switches ten times and checks the capacity and one sector of each port (an `ALTERNATE` line).
+
+### 7.6 Tests
+
+`tools/build.sh test`: ums 48, usbs 25 (async 6), fat 19. The EHCI tests include eight for two ports; the USBS tests cover both ports, the default unchanged, port 1 empty then plugged, unplug one, one buffer, a failing drive. Release and `+dbg` builds with `-Werror` are clean.
+
+## 8. Using it: the client API
+
+For loader authors (USB Loader GX, WiiFlow) and anyone who opens `/dev/usb2`:
+
+- **Your own fd.** Send ioctlv `UMS_BASE+0x83` (`('U'<<24 | 'M'<<16 | 'S'<<8) + 0x83`) with one `u32` input (0 or 1) before `UMS_INIT` on that fd. Every later request on that fd uses that port's drive; different fds can use different ports at once. USB Loader GX already sends it this way (`usbstorage2.c`), so its "port 1" setting works once the cIOS answers, and so does its "both ports" mode (it switches on one fd; `UMS_INIT` is per port).
+- **FAT module (NAND emulation, save files).** `IOCTL_FAT_MOUNT_USB` (0xF2): vector 0 = partition (`s32`), vector 1 = port (`u32`). Send one vector for port 0.
+- **DIP.** `IOCTL_DI_WBFS_SET` and `IOCTL_DI_FRAG_SET`: device 1 = USB (port 0), 2 = SD, **3 = USB port 1**. Start port 1 on your own fd first.
+- **NAND emulation mode.** `ISFS_SetMode(ISFS_MODE_USB | ISFS_MODE_PORT1 (0x200), path)`, so that the remount after a fake IOS reload uses port 1.
+- An older cIOS answers the new calls with an error (`IPC_EINVAL`): treat a failed `SET_PORT 1` as "no second port".
+
+By design these combinations work: NAND emulation on port 1 with the game on port 0, the reverse, or both on one port. One FAT USB volume serves the emulation.
+
+## 9. Limits and risks
+
+- **WBFS state is one global** in each USB module: one WBFS disc is open at a time, whichever port it is on; opening one on port 1 replaces one on port 0.
+- **`ums_mode` follows the last fd that sent `UMS_INIT`**; it is not per port. The sector requests do not check it, as before.
+- **`main.c` dispatch is not host-tested** (EHCI `loop.c` and USBS `main.c`): the host tests drive the storage code and `fdport.h`, not the IPC loop. The `SET_PORT` case and the per-request port select are checked by reading only.
+- USBS: which drive is "port 1" follows IOS's device list and the order in which drives mount; it is not the physical socket.
+- EHCI: `ums_root_port[1]` is a guess (1). If the second socket is root port 3, port 1 finds nothing.
+- `+dbg` USBS has one port, `+dbg` EHCI two. USBS release has 336 bytes free (36 `+dbg`): the next change there needs a size check.
+- A hang inside IOS (a stuck drive, a replug during a transfer) is not recoverable without a power cycle: see section 6.
+
+## 10. Wii test: how to set the port map
+
+Section 6 has the steps and the safety rules: someone at the Wii, two scratch drives, never the SanDisk "USB 3.2Gen1", `devwii` or `lrwii` and never `prod`, never lrwii slot 249, Monty's OK for the slot. The port map from the result:
+
+1. Drive A in socket X only; `umsbench --port=1`. If port 1 answers, `{ 0, 1 }` is right.
+2. If port 1 finds no drive in either socket, but the drive answers on `--port=0` in the other one: change `ums_root_port` in `source/ehci-module/tinyehci/usbstorage.c` from `{ 0, 1 }` to `{ 0, 3 }`, rebuild, repeat. Record the root port of each socket here.
+3. USBS (base 58): record whether the drive order follows the socket (steps 3 and 6 of section 6).
