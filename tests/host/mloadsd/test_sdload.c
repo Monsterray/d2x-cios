@@ -51,6 +51,7 @@ static struct {
 	uint32_t cost_open, cost_read, cost_ioctl;
 	int timer_fail, timer_created, timer_stopped, timer_destroyed;
 	int armed, restarts, overqueue, delay_us;	/* the one-shot timer: armed = a message is due or queued */
+	int fired, dead_restarts;	/* fired: it sent its message and was not stopped since; a restart then arms nothing (IOS) */
 	int flag, flag_opens;		/* the flag file on the NAND; -1: the file system errs */
 	int sleeps;
 	int fat_calls;			/* any open of "fat" or a file under it, mount, unmount */
@@ -238,6 +239,12 @@ s32 os_restart_timer(s32 id, s32 time_us, s32 repeat_time_us)
 	if (id != 7 || (time_us != 20000 && time_us != 1000) || repeat_time_us != 0)
 		hc_hang("bad restart of timer %d", (int)id);
 	sim.delay_us = time_us;
+	if (sim.fired) {
+		/* IOS: restarting a one-shot timer that already fired returns 0 and
+		   never sends again; only a stop makes it restartable */
+		sim.dead_restarts++;
+		return 0;
+	}
 	if (sim.armed)
 		sim.overqueue++;	/* a second message while one is still due */
 	sim.armed = 1;
@@ -256,6 +263,7 @@ s32 os_stop_timer(s32 id)
 	if (id != 7)
 		hc_hang("stop of timer %d", (int)id);
 	sim.timer_stopped++;
+	sim.fired = 0;
 	return 0;
 }
 
@@ -415,6 +423,7 @@ static uint32_t crc_of(const uint8_t *d, uint32_t n)
 static void fire(void)
 {
 	sim.armed = 0;
+	sim.fired = 1;
 	clk += sim.delay_us / 1000 * MS;
 	SdLoad_Tick();
 }
@@ -959,7 +968,10 @@ static void test_flow_ok(void)
 
 	CHECK(sim.mounts == 1 && sim.umounts == 1, "mount %d unmount %d", sim.mounts, sim.umounts);
 	CHECK(sim.open_fds == 0, "%d files left open", sim.open_fds);
-	CHECK(sim.timer_created == 1 && sim.timer_stopped == 1 && sim.timer_destroyed == 1, "timer");
+	CHECK(sim.timer_created == 1 && sim.timer_destroyed == 1, "timer");
+	CHECK(sim.timer_stopped == sim.restarts + 1 && sim.dead_restarts == 0,
+	      "every re-arm stops the fired timer first, one more stop at the end: %d stops, %d restarts, %d dead",
+	      sim.timer_stopped, sim.restarts, sim.dead_restarts);
 	CHECK(sim.icinv == 2 && sim.callfuncs == 2, "icache invalidated once per module: %d", sim.icinv);
 	CHECK(!strcmp(sim.opened[0], "fat/d2x/mload.txt") && !strcmp(sim.opened[1], "fat/d2x/mload/one.elf"),
 	      "paths: %s, %s", sim.opened[0], sim.opened[1]);
@@ -1569,6 +1581,7 @@ static void test_one_message_at_most(void)
 
 	CHECK(sim.overqueue == 0, "the timer was never armed while a message was due: %d", sim.overqueue);
 	CHECK(sim.restarts == ticks - 1, "one re-arm per tick but the last: %d for %d ticks", sim.restarts, ticks);
+	CHECK(sim.dead_restarts == 0, "no restart of a fired timer without a stop: %d", sim.dead_restarts);
 	CHECK(sim.armed == 0, "nothing is armed after the end");
 	CHECK(worst_reads <= 1, "at most one FAT read per tick: %d", worst_reads);
 	CHECK(worst_mounts <= 1, "at most one mount or unmount per tick");

@@ -754,9 +754,13 @@ void SdLoad_Tick(void)
 	/* One shot: the next message is queued only now, so a long step cannot
 	   leave a pile of them in MLOAD's 8-entry queue. Polling for the FAT
 	   module waits SDL_TICK_US; the other steps SDL_STEP_US, just long enough
-	   for the PPC's requests to get in between. */
-	if (S.state != SDL_ST_DONE)
+	   for the PPC's requests to get in between. IOS does not re-arm a one-shot
+	   timer that has fired: os_restart_timer alone returned 0 and never sent
+	   another message (measured on a Wii), so stop it first. */
+	if (S.state != SDL_ST_DONE) {
+		os_stop_timer(S.timer);
 		os_restart_timer(S.timer, S.state == SDL_ST_WAIT_FAT ? SDL_TICK_US : SDL_STEP_US, 0);
+	}
 }
 
 void SdLoad_PpcRequest(void)
