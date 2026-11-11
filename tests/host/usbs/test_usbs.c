@@ -388,6 +388,158 @@ static void test_short_read_is_retried_after_reset(void)
 	}
 }
 
+/* ---- two drives: logical ports 0 and 1 (docs/usb-ports.md) ----
+ * usbglue.c over a list of devices (usbs_unit.c): port 0 is the first
+ * mass-storage device that mounts, port 1 the second, found by IOS's device
+ * id, so two drives with one VID/PID are two drives. Odd ids are the second
+ * simulated drive. The drives differ in data and size. */
+
+void usbg_reset(void);
+void usbg_clear_devices(void);
+void usbg_add_device(int id, unsigned vid, unsigned pid);
+void usbg_remove_device(int id);
+int usbg_init(int port);
+int usbg_inserted(int port);
+int usbg_mounted(int port);
+int usbg_read(int port, unsigned sector, unsigned n, void *buf);
+int usbg_write(int port, unsigned sector, unsigned n, const void *buf);
+unsigned usbg_capacity(int port);
+int usbg_shutdown(int port);
+int usbg_buffers(void);
+
+/* READ CAPACITY gives the last LBA */
+#define CAP(i) (sims[i].sectors - 1)
+
+/* Both drives plugged in, with the signature the module wants on sector 0
+ * (0x55AA read as a native u16: the module is big-endian, this host is not) */
+static void two_drives(void)
+{
+	usbg_reset();
+	for (int d = 0; d < 2; d++) {
+		sims[d].data[510] = 0xAA;
+		sims[d].data[511] = 0x55;
+	}
+	sims[1].disconnected = false;
+	sims[1].owner = false;
+	usbg_add_device(0x10, 0x1234, 0x5678);
+	usbg_add_device(0x11, 0x1234, 0x5678);   /* the same VID/PID */
+}
+
+/* A read on a port, the data compared with that port's drive */
+static bool read_port(int port, unsigned sector, unsigned n)
+{
+	if (usbg_read(port, sector, n, buf) <= 0)
+		return false;
+	return memcmp(buf, sims[port].data + (size_t)sector * SECTOR, (size_t)n * SECTOR) == 0;
+}
+
+static void test_ports_two_drives(void)
+{
+	two_drives();
+	CHECK(usbg_init(0), "UMS_INIT on port 0 failed");
+	CHECK(usbg_mounted(0), "port 0 not mounted: %s", sim_summary());
+	CHECK(!usbg_mounted(1), "port 1 mounted by a client that never asked for it");
+	CHECK(usbg_init(1), "UMS_INIT on port 1 failed");
+	CHECK(usbg_mounted(0) && usbg_mounted(1), "not both mounted: %s", sim_summary());
+	CHECK(usbg_capacity(0) == CAP(0) && usbg_capacity(1) == CAP(1) && CAP(0) != CAP(1), "capacities %u and %u",
+	      usbg_capacity(0), usbg_capacity(1));
+	CHECK(usbg_buffers() == 1, "%d bounce buffers", usbg_buffers());
+	for (int i = 0; i < 24; i++)
+		CHECK(read_port(i & 1, 10 + i, 1 + (i % 5)), "read %d on port %d failed: %s", i, i & 1, sim_summary());
+	/* a write goes to its own drive */
+	fill(big, 8 * SECTOR, 0x42);
+	unsigned char before = sims[0].data[300 * SECTOR];
+	CHECK(usbg_write(1, 300, 8, big) > 0, "write failed: %s", sim_summary());
+	CHECK(memcmp(sims[1].data + 300 * SECTOR, big, 8 * SECTOR) == 0, "the data did not land on drive 1");
+	CHECK(sims[0].data[300 * SECTOR] == before && sims[0].writes_ok == 0, "drive 0 saw the write");
+	CHECK(read_port(0, 300, 8) && read_port(1, 300, 8), "read back failed");
+	usbg_reset();
+}
+
+/* A client that never sends SET_PORT: port 0, the first drive, and the
+ * second drive is not looked at */
+static void test_ports_default_is_unchanged(void)
+{
+	two_drives();
+	CHECK(usbg_init(0) && usbg_mounted(0), "port 0 not mounted: %s", sim_summary());
+	CHECK(usbg_inserted(0), "ISINSERTED said no");
+	CHECK(read_port(0, 5, 3), "read failed: %s", sim_summary());
+	CHECK(!usbg_mounted(1) && sims[1].cbws == 0, "the second drive was opened: %s", sim_summary());
+	CHECK(usbg_read(1, 5, 1, buf) <= 0 && usbg_capacity(1) == 0, "a request to port 1 with no drive there worked");
+	CHECK(sims[1].cbws == 0, "traffic to the second drive");
+	usbg_reset();
+}
+
+/* Port 1 with one drive only: no drive there, and port 0 unharmed. The second
+ * drive plugged in later is found by the next UMS_INIT. */
+static void test_ports_port1_empty_then_plugged(void)
+{
+	two_drives();
+	usbg_remove_device(0x11);
+	CHECK(usbg_init(0) && usbg_init(1), "UMS_INIT failed");
+	CHECK(usbg_mounted(0) && !usbg_mounted(1), "port 0 %d, port 1 %d", usbg_mounted(0), usbg_mounted(1));
+	CHECK(usbg_read(1, 5, 1, buf) <= 0, "read from an empty port 1 worked");
+	CHECK(read_port(0, 6, 2), "port 0 failed: %s", sim_summary());
+	usbg_add_device(0x11, 0x1234, 0x5678);
+	CHECK(usbg_init(1) && usbg_mounted(1), "port 1 not mounted after the plug: %s", sim_summary());
+	CHECK(read_port(1, 7, 2) && read_port(0, 8, 2), "reads failed");
+	usbg_reset();
+}
+
+/* A drive unplugged on one port does not take the other with it; the drive
+ * that comes back (a new id) takes the port that is free */
+static void test_ports_unplug_one_keeps_the_other(void)
+{
+	two_drives();
+	CHECK(usbg_init(0) && usbg_init(1) && usbg_mounted(0) && usbg_mounted(1), "not both mounted");
+	usbg_remove_device(0x11);
+	CHECK(!usbg_inserted(1) && !usbg_mounted(1), "port 1 still mounted after the unplug");
+	CHECK(usbg_mounted(0) && read_port(0, 11, 2), "port 0 failed: %s", sim_summary());
+	CHECK(usbg_read(1, 11, 1, buf) <= 0, "read from the unplugged drive worked");
+	CHECK(usbg_buffers() == 1, "%d bounce buffers", usbg_buffers());
+	usbg_add_device(0x21, 0x1234, 0x5678);       /* the same drive, a new id */
+	CHECK(usbg_init(1) && usbg_mounted(1), "not back on port 1: %s", sim_summary());
+	CHECK(read_port(1, 12, 3) && read_port(0, 13, 3), "reads after the replug failed");
+
+	/* now port 0's drive goes: port 1 stays, and does not move to port 0 */
+	usbg_remove_device(0x10);
+	CHECK(!usbg_inserted(0) && !usbg_mounted(0), "port 0 mounted the other port's drive");
+	CHECK(usbg_mounted(1) && read_port(1, 14, 1), "port 1 failed: %s", sim_summary());
+	usbg_add_device(0x30, 0x1234, 0x5678);
+	CHECK(usbg_init(0) && usbg_mounted(0), "port 0 not mounted again");
+	CHECK(read_port(0, 15, 1) && read_port(1, 16, 1), "reads failed");
+	CHECK(usbg_buffers() == 1, "%d bounce buffers", usbg_buffers());
+	usbg_reset();
+}
+
+/* One bounce buffer for both handles, freed with the last */
+static void test_ports_one_bounce_buffer(void)
+{
+	two_drives();
+	CHECK(usbg_init(0) && usbg_buffers() == 1, "%d buffers", usbg_buffers());
+	CHECK(usbg_init(1) && usbg_buffers() == 1, "%d buffers with two drives", usbg_buffers());
+	usbg_shutdown(0);
+	CHECK(usbg_buffers() == 1, "the buffer went with the first drive");
+	usbg_shutdown(1);
+	CHECK(usbg_buffers() == 0, "the buffer stayed after the last drive");
+	usbg_reset();
+}
+
+/* A drive on port 1 that fails does not stop port 0 (the stall is on its drive) */
+static void test_ports_a_failing_drive_leaves_the_other(void)
+{
+	two_drives();
+	CHECK(usbg_init(0) && usbg_init(1), "UMS_INIT failed");
+	sims[1].stall_csw = 1000000;
+	u64 t = sim.now_us;
+	CHECK(usbg_read(1, 20, 1, buf) <= 0, "read from a failing drive worked");
+	CHECK(sim.now_us - t <= (u64)(8000 + 2000) * 1000, "gave up after %.1f s", (sim.now_us - t) / 1e6);
+	CHECK(read_port(0, 21, 4), "port 0 failed: %s", sim_summary());
+	sims[1].stall_csw = 0;
+	CHECK(read_port(1, 22, 2), "port 1 did not recover: %s", sim_summary());
+	usbg_reset();
+}
+
 static const struct hc_test tests[] = {
 	{ "usbs_roundtrip", test_roundtrip, false },
 	{ "usbs_write_csw_failure_is_reported", test_write_csw_failure_is_reported, false },
@@ -408,6 +560,12 @@ static const struct hc_test tests[] = {
 	{ "usbs_direct_write_recovers_from_one_stall", test_direct_write_recovers_from_one_stall, false },
 	{ "usbs_short_write_is_retried_after_reset", test_short_write_is_retried_after_reset, false },
 	{ "usbs_short_read_is_retried_after_reset", test_short_read_is_retried_after_reset, false },
+	{ "usbs_ports_two_drives", test_ports_two_drives, false },
+	{ "usbs_ports_default_is_unchanged", test_ports_default_is_unchanged, false },
+	{ "usbs_ports_port1_empty_then_plugged", test_ports_port1_empty_then_plugged, false },
+	{ "usbs_ports_unplug_one_keeps_the_other", test_ports_unplug_one_keeps_the_other, false },
+	{ "usbs_ports_one_bounce_buffer", test_ports_one_bounce_buffer, false },
+	{ "usbs_ports_a_failing_drive_leaves_the_other", test_ports_a_failing_drive_leaves_the_other, false },
 };
 
 static void setup(void)

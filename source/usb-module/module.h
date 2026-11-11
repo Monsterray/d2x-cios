@@ -17,6 +17,7 @@
 #define IOCTL_UMS_READ_SECTORS		(UMS_BASE + 0x3)
 #define IOCTL_UMS_WRITE_SECTORS		(UMS_BASE + 0x4)
 #define IOCTL_UMS_UMOUNT		(UMS_BASE + 0x10)
+#define IOCTL_UMS_SET_PORT		(UMS_BASE + 0x83)
 
 /* WBFS IOCTL commands */
 #define WBFS_BASE			(('W'<<24)|('F'<<16)|('S'<<8))
@@ -27,6 +28,14 @@
 #define MESSAGE_DEVCHANGE		(u32)&usbCb[0]
 #define MESSAGE_ATTACH			(u32)&usbCb[1]
 #define MESSAGE_MOUNT			0x10000001
+
+/* Logical USB ports (docs/usb-ports.md). The +dbg build has no room for the
+   second one (its USBS module is full): it keeps one port, as it was. */
+#ifdef D2X_DEBUG
+#define USBS_PORTS			1
+#else
+#define USBS_PORTS			2
+#endif
 
 /* Device name */
 #define DEVICE_NAME			"/dev/usb2"

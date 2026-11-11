@@ -75,7 +75,8 @@ ums/test_ums_dbg: ums/test_ums_dbg.c ums/ums_unit.c $(SIM_DEPS) $(DBG_DEPS) $(TI
 		ums/test_ums_dbg.c ums/sim.c ums/ums_unit.c dbg/swi_host.c
 
 usbs/test_usbs_dbg: usbs/test_usbs_dbg.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h $(SIM_DEPS) \
-		$(DBG_DEPS) $(USBS)/usbstorage.c $(USBS)/usbstorage.h $(USBS)/usb2.h
+		$(DBG_DEPS) $(USBS)/usbstorage.c $(USBS)/usbstorage.h $(USBS)/usb2.h $(USBS)/usbglue.c \
+		$(USBS)/usbglue.h $(USBS)/module.h
 	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(MLOADMOD) -I$(CIOSLIB) -c \
 		-o usbs/dbg_test.o usbs/test_usbs_dbg.c
 	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -c -o usbs/dbg_sim.o ums/sim.c
@@ -93,7 +94,8 @@ ums/test_ums: ums/test_ums.c ums/ums_unit.c $(SIM_DEPS) $(TINYEHCI)/usb.c $(TINY
 # from the simulation; usbs/stub stands in for cios-lib's ipc.h, mem.h and
 # timer.h. Its MEM2 checks cast pointers to u32, which is harmless here.
 usbs/test_usbs: usbs/test_usbs.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h $(SIM_DEPS) \
-		$(USBS)/usbstorage.c $(USBS)/usbstorage.h $(USBS)/usb2.h
+		$(USBS)/usbstorage.c $(USBS)/usbstorage.h $(USBS)/usb2.h $(USBS)/usbglue.c \
+		$(USBS)/usbglue.h $(USBS)/module.h
 	$(CC) $(ALL_CFLAGS) -I. -Iums -c -o usbs/test_usbs.o usbs/test_usbs.c
 	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -c -o usbs/sim.o ums/sim.c
 	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -c -o usbs/glue_sim.o usbs/glue_sim.c

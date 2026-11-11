@@ -4,4 +4,5 @@
 #include "types.h"
 #define usleep glue_usleep      /* keep clear of libc's usleep */
 void glue_usleep(u32 us);
+#define msleep(ms) glue_usleep((ms) * 1000)
 #endif

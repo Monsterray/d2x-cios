@@ -451,6 +451,14 @@ end:
 	return retval;
 }
 
+/* The bounce buffer, shared by the drives of both ports and kept while one is
+   open (docs/usb-ports.md). The +dbg build has one port, and no room to spare
+   (module.h, USBS_PORTS): there the handle has its own, as it always had. */
+#ifndef D2X_DEBUG
+static u8 *usbs_bounce;
+static u8 usbs_bounce_users;
+#endif
+
 s32 USBStorage_Open(usbstorage_handle *dev, s32 device_id, u16 vid, u16 pid)
 {
 	s32 retval = -1;
@@ -567,11 +575,22 @@ found:
 	//USB_ClearHalt(dev->usb_fd, dev->ep_in);
 	//USB_ClearHalt(dev->usb_fd, dev->ep_out);
 
+#ifndef D2X_DEBUG
+	/* The module serves one request at a time, and the heap has room for one
+	   buffer: every open drive uses it. */
+	if(!usbs_bounce_users)
+		usbs_bounce = Mem_Alloc(MAX_TRANSFER_SIZE);
+	dev->buffer = usbs_bounce;
+#else
 	dev->buffer = Mem_Alloc(MAX_TRANSFER_SIZE);
+#endif
 
 	if(!dev->buffer) {
 		retval = IPC_ENOMEM;
 	} else {
+#ifndef D2X_DEBUG
+		usbs_bounce_users++;
+#endif
 // 		USB_DeviceRemovalNotify(dev->usb_fd,__usb_deviceremoved_cb,dev);
 		retval = USBSTORAGE_OK;
 	}
@@ -595,8 +614,12 @@ s32 USBStorage_Close(usbstorage_handle *dev)
 
 	Mem_Free(dev->sector_size);
 
+#ifndef D2X_DEBUG
+	if (dev->buffer && !--usbs_bounce_users)
+#else
 	if (dev->buffer)
-		Mem_Free( dev->buffer);
+#endif
+		Mem_Free(dev->buffer);
 
 	memset(dev, 0, sizeof(*dev));
 	dev->usb_fd = -1;

@@ -35,6 +35,9 @@
 #include "usb2.h"
 #include "usbglue.h"
 #include "wbfs.h"
+#if USBS_PORTS > 1
+#include "../ehci-module/fdport.h"
+#endif
 
 
 /* Variables */
@@ -45,9 +48,14 @@ s32 queuehandle = -1;
 areply usbCb[2] = { { -1, -1 } };
 
 
-static s32 __USB_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
+static s32 __USB_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 {
         s32 ret = IPC_EINVAL;
+
+#if USBS_PORTS > 1
+        /* The drive of this fd's port (docs/usb-ports.md) */
+        usbstorage_Select(fdport_get(fd));
+#endif
 
         /* Invalidate cache */
         InvalidateVector(vector, inlen, iolen);
@@ -124,6 +132,15 @@ static s32 __USB_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 
 		break;
 	}
+
+#if USBS_PORTS > 1
+	/** The port of this fd **/
+	case IOCTL_UMS_SET_PORT: {
+		ret = (inlen >= 1) ? fdport_set(fd, *(u32 *)vector[0].data, USBS_PORTS) : -1;
+
+		break;
+	}
+#endif
 
 	/** Open WBFS disc **/
 	case IOCTL_WBFS_OPEN_DISC: {
@@ -282,7 +299,12 @@ int main(void)
 				/* Close SDHC device */
 				ret = SDHC_Close();
 			} else {
+#if USBS_PORTS > 1
+				/* The fd's port is forgotten */
+				fdport_forget(message->fd);
+#else
 				/* Do nothing */
+#endif
 				ret = 0;
 			}
 			break;
@@ -298,7 +320,7 @@ int main(void)
 			if (message->fd == SDHC_FD)
 				ret = SDHC_Ioctlv(cmd, vector, inlen, iolen);
 			else
-				ret = __USB_Ioctlv(cmd, vector, inlen, iolen);
+				ret = __USB_Ioctlv(message->fd, cmd, vector, inlen, iolen);
 
 			break;
 		}

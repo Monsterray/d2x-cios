@@ -6,12 +6,19 @@
 #include "sim.h"
 #include "ehci_dev.h"
 
-static struct ehci_device usbs_dev;     /* the host's toggles for this drive */
+/* The host's toggles for each drive. IOS's device ids pick the drive: an odd
+ * id is drive 1 (the second drive of ../ums/sim.c), an even one drive 0, so a
+ * drive that is plugged in again can have a new id. */
+static struct ehci_device usbs_dev[SIM_DRIVES];
+#define DEV(id) (&usbs_dev[(id) & 1])
 
 void glue_reset(void)
 {
-	usbs_dev.toggles = 0;
-	sim.dev = &usbs_dev;
+	for (int d = 0; d < SIM_DRIVES; d++) {
+		usbs_dev[d].toggles = 0;
+		usbs_dev[d].port = d;
+		sims[d].dev = &usbs_dev[d];
+	}
 }
 
 static void swap_words(u8 *p, int words)
@@ -31,7 +38,7 @@ static void swap_words(u8 *p, int words)
  * those words come out byte-reversed, so swap them back at the boundary,
  * exactly where the Wii's byte order would have put them.
  */
-static int glue_bulk_raw(unsigned char ep, unsigned short len, void *buf);
+static int glue_bulk_raw(int id, unsigned char ep, unsigned short len, void *buf);
 
 /*
  * IOS's USB driver reports a transfer as a byte count, or a negative code:
@@ -51,7 +58,7 @@ unsigned glue_data_ptr_aligned[64];
  * taken or sent all of it; only the count is short), once. */
 unsigned glue_short_next;
 
-int glue_bulk(unsigned char ep, unsigned short len, void *buf)
+int glue_bulk(int id, unsigned char ep, unsigned short len, void *buf)
 {
 	int is_cbw = !(ep & 0x80) && len == 31 && memcmp(buf, "CBSU", 4) == 0;
 	int is_csw = (ep & 0x80) && len == 13;
@@ -62,7 +69,7 @@ int glue_bulk(unsigned char ep, unsigned short len, void *buf)
 		}
 		glue_data_xfers++;
 	}
-	int r = glue_bulk_raw(ep, len, buf);
+	int r = glue_bulk_raw(id, ep, len, buf);
 	if (r < 0)
 		return -7022;
 	if (!is_cbw && !is_csw && glue_short_next && r == len) {
@@ -79,16 +86,16 @@ int glue_bulk(unsigned char ep, unsigned short len, void *buf)
  * known; REVIEW.md, USBS open question). 0: it does not. */
 int glue_cancel_clears_halt = 1;
 
-static int glue_bulk_raw(unsigned char ep, unsigned short len, void *buf)
+static int glue_bulk_raw(int id, unsigned char ep, unsigned short len, void *buf)
 {
 	u8 *p = buf;
 	if (!(ep & 0x80) && len == 31 && memcmp(p, "CBSU", 4) == 0) {
 		u8 cbw[31];
 		memcpy(cbw, p, sizeof(cbw));
 		swap_words(cbw, 3);             /* signature, tag, data length */
-		return ehci_bulk_message(&usbs_dev, ep, len, cbw);
+		return ehci_bulk_message(DEV(id), ep, len, cbw);
 	}
-	s32 r = ehci_bulk_message(&usbs_dev, ep, len, buf);
+	s32 r = ehci_bulk_message(DEV(id), ep, len, buf);
 	if ((ep & 0x80) && r == 13 && memcmp(p, "USBS", 4) == 0)
 		swap_words(p, 3);               /* signature, tag, residue */
 	else if ((ep & 0x80) && r == 8 && sim.last_cb_op == 0x25)
@@ -96,14 +103,14 @@ static int glue_bulk_raw(unsigned char ep, unsigned short len, void *buf)
 	return r;
 }
 
-int glue_ctrl(unsigned char type, unsigned char req, unsigned short value, unsigned short index,
+int glue_ctrl(int id, unsigned char type, unsigned char req, unsigned short value, unsigned short index,
 	      unsigned short len, void *buf)
 {
-	int r = ehci_control_message(&usbs_dev, type, req, value, index, len, buf);
+	int r = ehci_control_message(DEV(id), type, req, value, index, len, buf);
 	/* IOS keeps the host side's toggle itself; a clear-halt puts it to DATA0
 	 * with the drive's (USB 2.0 9.4.5) */
 	if (type == 0x02 && req == 0x01 && value == 0)
-		set_toggle(&usbs_dev, (u8) index, 0);
+		set_toggle(DEV(id), (u8) index, 0);
 	return r;
 }
 
