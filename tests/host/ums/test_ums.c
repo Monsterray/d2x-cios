@@ -701,6 +701,7 @@ static void test_port1_init_without_a_drive_fails(void)
 	CHECK(sim.now_us < 2000000, "took %s", sim_summary());
 	CHECK(!USBStorage_Read_Sectors(1, 1, buf), "read from an empty port");
 	CHECK(read_port(0, 3, 1), "port 0 read failed: %s", sim_summary());
+	CHECK(sims[1].owner, "an empty second socket stayed with EHCI: a keyboard in it never reaches OHCI");
 	/* the drive is plugged in later: the next UMS_INIT finds it */
 	sim_sel(1);
 	sim.disconnected = false;
@@ -854,6 +855,63 @@ static void test_fd_port_table(void)
 	CHECK(ums_fd_port(22) == 1 && ums_fd_port(24) == 1, "close moved another fd");
 }
 
+/* The second socket goes back to OHCI whenever nothing is mounted on it: a
+ * device that is not storage (a LAN adapter) and an empty socket must not stay
+ * with EHCI, where IOS never sees what is plugged in. A drive is taken again
+ * by the next UMS_INIT. */
+static void test_port1_not_a_drive_goes_back_to_ohci(void)
+{
+	mount();
+	CHECK_OK();
+	/* something whose enumeration fails, as a device that is not storage does */
+	sim_sel(1);
+	sim.disconnected = false;
+	sim.silent = true;
+	ums_select(1);
+	CHECK(ums_init() < 0, "UMS_INIT mounted something that is not a drive");
+	CHECK(sims[1].owner, "the port stayed with EHCI after a failed UMS_INIT");
+	CHECK(ums_dev_id(1) == 0, "the device is still known");
+	CHECK(sims[1].acquires == 1, "acquired %u times", sims[1].acquires);
+	CHECK(!sims[0].owner && read_port(0, 5, 1), "port 0 touched: %s", sim_summary());
+	/* a drive in its place: the next UMS_INIT takes the port again */
+	sim_sel(1);
+	sim.silent = false;
+	ums_select(1);
+	CHECK(ums_init() == 0, "UMS_INIT failed with a drive: %s", sim_summary());
+	CHECK(!sims[1].owner && sims[1].acquires == 2, "not taken again (owner %d, %u acquires)", sims[1].owner, sims[1].acquires);
+	CHECK(read_port(1, 9, 2), "read of port 1 failed");
+}
+
+/* UMS_UMOUNT on port 1 gives the socket back; port 0 stays mounted and its
+ * socket is never written */
+static void test_port1_umount_goes_back_to_ohci(void)
+{
+	u32 w0;
+	mount_both();
+	CHECK_OK();
+	CHECK(!sims[1].owner, "the second socket is not EHCI's after the mount");
+	sim_sel(0);
+	w0 = sims[0].portsc_writes;
+	ums_select(1);
+	ums_umount();
+	CHECK(!ums_mounted(), "still mounted after UMS_UMOUNT");
+	CHECK(sims[1].owner, "the port stayed with EHCI after UMS_UMOUNT");
+	CHECK(ums_dev_id(1) == 0, "the device is still known");
+	CHECK(sims[0].portsc_writes == w0 && !sims[0].owner, "port 0's socket was written");
+	CHECK(read_port(0, 12, 2), "port 0 read failed after the umount: %s", sim_summary());
+	/* mount it again */
+	sim_sel(1);
+	ums_select(1);
+	CHECK(ums_init() == 0, "UMS_INIT after the umount failed: %s", sim_summary());
+	CHECK(!sims[1].owner && sims[1].acquires == 2, "not taken again (%u acquires)", sims[1].acquires);
+	CHECK(read_port(1, 13, 1), "read of port 1 failed after the remount");
+	/* UMS_UMOUNT on port 0 does not touch port 1's socket */
+	ums_select(0);
+	ums_umount();
+	CHECK(!sims[1].owner, "UMS_UMOUNT on port 0 gave port 1's socket away");
+	CHECK(sims[0].owner == false, "port 0's socket was released");
+}
+
 /* Not tested here: a request to the SD card after the drive died. The host
  * harness has no SD card; the keepalive tests above stand for it. */
 
@@ -906,6 +964,8 @@ static const struct hc_test tests[] = {
 	{ "port1_stuck_drive_errors_at_the_deadline", test_port1_stuck_drive_errors_at_the_deadline, false },
 	{ "default_port_is_unchanged", test_default_port_is_unchanged, false },
 	{ "fd_port_table", test_fd_port_table, false },
+	{ "port1_not_a_drive_goes_back_to_ohci", test_port1_not_a_drive_goes_back_to_ohci, false },
+	{ "port1_umount_goes_back_to_ohci", test_port1_umount_goes_back_to_ohci, false },
 };
 
 static void setup(void)

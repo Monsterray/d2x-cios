@@ -149,6 +149,8 @@ int ums_fd_port(int fd);        /* loop.c's fd -> port table */
 int ums_fd_set_port(int fd, unsigned port);
 void ums_fd_forget(int fd);
 int ums_mounted(void);
+int ums_dev_id(int port);       /* the id of the device on root port 0 or 1: 0 = not known */
+void ums_umount(void);          /* USBStorage_Umount(): UMS_UMOUNT on the selected port */
 extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */
 s32 ums_init(void);             /* USBStorage_Init(): UMS_INIT on a mounted drive */

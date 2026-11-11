@@ -123,6 +123,8 @@ int ums_fd_port(int fd) { return fdport_get(fd); }
 int ums_fd_set_port(int fd, unsigned port) { return fdport_set(fd, port, UMS_PORTS); }
 void ums_fd_forget(int fd) { fdport_forget(fd); }
 int ums_mounted(void) { return __mounted == 1; }
+int ums_dev_id(int port) { return ehci->devices[port].id; }
+void ums_umount(void) { USBStorage_Umount(); }
 
 /* Forget the device without talking to it, for the next test. */
 void ums_unplug(void)

@@ -37,4 +37,22 @@ void ehci_acquire_port(int port)
 	ehci_msleep(60);
 }
 
+/*
+ * The way back: hand the port to the OHCI companion again, the write
+ * ehci_release_ports() does at boot. The second socket is only EHCI's while a
+ * mass-storage drive is on it; with no drive, a device that is not storage (a
+ * LAN adapter, a keyboard) or after the unmount, OHCI must have it, or IOS
+ * never sees what is plugged in. The enumerated device is forgotten: its
+ * descriptor must not match an ehci_open_device() by VID/PID any more.
+ */
+void ehci_release_port(int port)
+{
+	struct ehci_device *dev = &ehci->devices[port];
+
+	ehci_writel(PORT_OWNER, &ehci->regs->port_status[port]);
+	dev->id = 0;
+	dev->desc.idVendor = 0;
+	dev->desc.idProduct = 0;
+}
+
 #endif

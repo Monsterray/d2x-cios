@@ -1497,6 +1497,10 @@ void USBStorage_Umount(void)
 	ums_init_done=0;
 	unplug_device=0;
 	ums_dead_clear();
+	// The second socket goes back to OHCI, so that what is plugged in next
+	// (a keyboard, a LAN adapter) reaches IOS. The next UMS_INIT takes it again.
+	if(ums_cur != 0)
+		ehci_release_port(UMS_ROOT());
 }
 
 
@@ -1582,6 +1586,15 @@ s_printf("\n***************************************************\nUSBStorage_Init
 	s_printf("USBStorage_Init() status %x\n",status);
 
 	#endif
+
+	// The second socket without a mountable drive (empty, or a device that is
+	// not storage: a LAN adapter, a keyboard): back to OHCI, where IOS can use
+	// it. The next UMS_INIT takes it again.
+	if(ums_cur != 0)
+	{
+		ehci_release_port(p);
+		return (status & 1) ? -101 : -100;
+	}
 
 	if(status & 1)
 	{
