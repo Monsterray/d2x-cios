@@ -234,16 +234,18 @@ s32 Detect_IopModule(void)
 	case 0xFFFF7B98:	// gecko patched IOS: 60v6174, 70v6687
 	case 0xFFFF7BD0:	// gecko patched IOS: 56v5661, 57v5918, 58v6175, 61v5661, 80v6943
 	{
-		static moduleId iospIds[3] = {
+		static moduleId iospIds[4] = {
 			{0xFFFF880B, "03/03/10 10:43:18", 0x4B8E3D46},  //  IOS: 56v5661, 57v5918, 58v6175, 61v5661, 80v6943
+			{0xFFFF880B, "09/27/11 18:50:17", 0x4E821AE9},  //  Wii Mini IOS: 57v31775, 57v31776 (d2xl)
 			{0xFFFF8693, "04/02/12 14:03:56", 0x4F79B1CC},  // vIOS: 56v5918, 57v6175, 58v6432
 			{0xFFFF87D3, "11/24/08 15:39:12", 0x492ACAA0}   //  IOS: 60v6174, 70v6687
 		};
 
-		ios.iopVersion = __Detect_ModuleVersion(iospIds, 3);
+		ios.iopVersion = __Detect_ModuleVersion(iospIds, 4);
 
 		switch (ios.iopVersion) {
 		case 0x4B8E3D46:   // IOS: 56v5661, 57v5918, 58v6175, 61v5661, 80v6943
+		case 0x4E821AE9:   // Wii Mini IOS: 57v31775, 57v31776 (d2xl)
 			ios.syscallBase = 0xFFFF93D0;
 			break;
 		case 0x4F79B1CC:   // vIOS: 56v5918, 57v6175

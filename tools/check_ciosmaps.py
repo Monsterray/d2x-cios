@@ -98,6 +98,9 @@ def main():
                 err(tag, "contentscount %s != %d" % (b.get("contentscount"), len(cs)))
             if int(b.get("modulescount")) != len(mods):
                 err(tag, "modulescount %s != %d" % (b.get("modulescount"), len(mods)))
+            cids = [int(c.get("id"), 16) for c in cs]
+            if len(set(cids)) != len(cids):
+                err(tag, "content id listed twice: %s" % sorted({"0x%x" % i for i in cids if cids.count(i) > 1}))
             names = [c.get("module") for c in mods]
             print(" base %s: %d contents (%d original + modules %s)" % (tag, len(cs), len(orig), ",".join(names)))
             for n in names:

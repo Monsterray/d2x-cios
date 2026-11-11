@@ -356,8 +356,10 @@ s32 Patch_IopModule(void)
 	case 0x48776F75:        // IOS: 37v5662, 53v5662, 55v5662
 	case 0x492ACAA0:        // IOS: 60v6174, 70v6687
 	case 0x49511FC0:        // IOS: ???
-	case 0x4B8E3D46:        // IOS: 56v5661, 57v5918, 58v6175, 61v5661, 80v6943 
-	case 0x4B8B30CD:        // IOS: 36v3607, 38v4123
+	case 0x4B8E3D46:        // IOS: 56v5661, 57v5918, 58v6175, 61v5661, 80v6943
+	/** 09/27/11 18:50:17 **/
+	case 0x4E821AE9:        // Wii Mini IOS: 57v31775, 57v31776 (d2xl)
+	case 0x4B8B30CD:       // IOS: 36v3607, 38v4123
 	/** 04/03/12 12:00:18 **/
 	case 0x4F7AE652:        // vIOS: 38v4380
 	/** 04/02/12 14:03:56 **/
