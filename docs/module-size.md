@@ -30,7 +30,7 @@ The release build of `develop` (11.1.0-rc2, with the `/dev/mload` fix), the end 
 | ES | 8192 | 2872 | 5320 |
 | FFSP | 12288 | 6700 | 5588 |
 
-FAT with FatFs R0.16 and exFAT (branch `claude/fat-exfat`, 2026-11-10, [fatfs.md](fatfs.md)): the `exe` region grew from 0x5000 to 0x6000 and `ram` gave up the 0x1000 (the module still ends at 0x137dd000). Release 23560 of 24576 used, 1016 free (was 18032 of 20480, 2448 free); +dbg 24192 used, 384 free; `ram` 138880 of 139264, 384 free. exFAT is 5028 bytes of that; `divmod64.c` keeps libgcc's 6.2 KB `bpabi.o` out. `FAT.app` is 25608 bytes release (was 20324).
+FAT with FatFs R0.16 and exFAT (branch `claude/fat-exfat`, 2026-11-10, [fatfs.md](fatfs.md)): the `exe` region grew from 0x5000 to 0x6000 and `ram` gave up the 0x1000 (the module still ends at 0x137dd000). Release 23104 of 24576 used, 1472 free (was 18032 of 20480, 2448 free); +dbg 23816 used, 760 free; `ram` 138848 of 139264, 416 free (+dbg 160 free). exFAT is about 4.6 KB of that (static name buffers instead of heap ones saved 456 bytes of code); `divmod64.c` keeps libgcc's 6.2 KB `bpabi.o` out. `FAT.app` is 25152 bytes release (was 20324).
 
 USBS with bounded transfers (`usb2.c`, branch `feat/usbs-async`, 2026-11-08): release 11548 used, 740 free (was 11196, 1092 free); +dbg 11932 used, 356 free.
 
