@@ -149,3 +149,59 @@ int fatw_usage(const char *path, unsigned long long *size, unsigned int *files, 
 	*dirs = d;
 	return r;
 }
+
+/* --- for the exFAT tests ------------------------------------------------ */
+
+int fatw_mount_part(int dev, int part) { return FAT_Mount((u8) dev, part); }
+int fatw_getpartition(int dev, unsigned int *part) { u32 p = 0; s32 r = FAT_GetPartition((u8) dev, &p); *part = p; return r; }
+int fatw_fstype(int dev) { return fatFs[dev].fs_type; }
+long long fatw_seek(long fd, int where, int whence) { return FAT_Seek((s32) fd, where, whence); }
+int fatw_rename(const char *from, const char *to) { return FAT_Rename(from, to); }
+int fatw_delete(const char *path) { return FAT_Delete(path); }
+
+int fatw_stats(const char *path, unsigned int *size, unsigned int *date, unsigned int *time,
+	       unsigned int *attrib)
+{
+	struct stats st;
+	s32 r = FAT_GetStats(path, &st);
+	*size = st.size;
+	*date = st.date;
+	*time = st.time;
+	*attrib = st.attrib;
+	return r;
+}
+
+int fatw_filestats(long fd, unsigned int *length, unsigned int *pos)
+{
+	struct fstats st;
+	s32 r = FAT_GetFileStats((s32) fd, &st);
+	*length = st.length;
+	*pos = st.pos;
+	return r;
+}
+
+int fatw_readdir_fs(const char *path, char *out, unsigned int buflen, unsigned int *outlen)
+{
+	u32 n = 0;
+	s32 r = FAT_ReadDir(path, out, buflen, &n, 0, 1);
+	*outlen = n;
+	return r;
+}
+
+int fatw_usage_fs(const char *path, unsigned long long *size, unsigned int *files, unsigned int *dirs)
+{
+	u64 s = 0;
+	u32 f = 0, d = 0;
+	s32 r = FAT_GetUsage(path, &s, &f, &d, 1);
+	*size = s;
+	*files = f;
+	*dirs = d;
+	return r;
+}
+
+/* The path main.c builds for an IOS_OPEN of "$name" in the emulated NAND folder */
+void fatw_nand_path(char *dst, const char *nand, const char *name)
+{
+	strcpy(dst, nand);
+	FAT_Escape(dst + strlen(nand), name);
+}

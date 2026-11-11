@@ -373,25 +373,34 @@ static void test_close_failure_frees(void)
 	CHECK(fatw_live_blocks() == live, "%d FIL block leaked", fatw_live_blocks() - live);
 }
 
+/*
+ * Every test above runs twice: on FAT (the RAM disks setup() formats) and on
+ * exFAT (the same disks formatted again). The cases that are only exFAT's are
+ * in test_exfat.c.
+ */
+#define GENERIC_TESTS(X) \
+	X(one_volume) X(sd_and_usb_together) X(readdir_small_buffer) X(readdir_returns_names) \
+	X(readdir_count_only_frees) X(deletedir_long_path) X(getusage_long_path) \
+	X(close_failure_frees) X(deletedir_deep_tree_refused) X(deletedir_tree_within_cap) \
+	X(getusage_deep_tree_refused) X(getusage_tree_within_cap) X(ioctlv_readdir_vector_count) \
+	X(ioctlv_getusage_size_only) X(ioctlv_path_without_nul) X(ioctlv_getpartition_bad_device) \
+	X(ioctl_filestats_on_module_fd) X(ioctl_setnandpath)
+
+#define EXFAT_WRAPPER(name) \
+	static void exfat_##name(void) \
+	{ \
+		if (ramdisk_format_ex(0, RD_EXFAT, 0) || ramdisk_format_ex(1, RD_EXFAT, 0)) \
+			hc_hang("formatting the RAM disks as exFAT failed"); \
+		test_##name(); \
+	}
+GENERIC_TESTS(EXFAT_WRAPPER)
+
+#define AS_FAT(name) { #name, test_##name, false },
+#define AS_EXFAT(name) { "exfat_" #name, exfat_##name, false },
+
 static const struct hc_test tests[] = {
-	{ "one_volume", test_one_volume, false },
-	{ "sd_and_usb_together", test_sd_and_usb_together, false },
-	{ "readdir_small_buffer", test_readdir_small_buffer, false },
-	{ "readdir_returns_names", test_readdir_returns_names, false },
-	{ "readdir_count_only_frees", test_readdir_count_only_frees, false },
-	{ "deletedir_long_path", test_deletedir_long_path, false },
-	{ "getusage_long_path", test_getusage_long_path, false },
-	{ "close_failure_frees", test_close_failure_frees, false },
-	{ "deletedir_deep_tree_refused", test_deletedir_deep_tree_refused, false },
-	{ "deletedir_tree_within_cap", test_deletedir_tree_within_cap, false },
-	{ "getusage_deep_tree_refused", test_getusage_deep_tree_refused, false },
-	{ "getusage_tree_within_cap", test_getusage_tree_within_cap, false },
-	{ "ioctlv_readdir_vector_count", test_ioctlv_readdir_vector_count, false },
-	{ "ioctlv_getusage_size_only", test_ioctlv_getusage_size_only, false },
-	{ "ioctlv_path_without_nul", test_ioctlv_path_without_nul, false },
-	{ "ioctlv_getpartition_bad_device", test_ioctlv_getpartition_bad_device, false },
-	{ "ioctl_filestats_on_module_fd", test_ioctl_filestats_on_module_fd, false },
-	{ "ioctl_setnandpath", test_ioctl_setnandpath, false },
+	GENERIC_TESTS(AS_FAT)
+	GENERIC_TESTS(AS_EXFAT)
 };
 
 int main(int argc, char **argv)

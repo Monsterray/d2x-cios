@@ -12,6 +12,9 @@
 #include "ffunicode.c"
 #include "ramdisk.h"
 
+_Static_assert(RD_FAT == FM_FAT && RD_FAT32 == FM_FAT32 && RD_EXFAT == FM_EXFAT && RD_SFD == FM_SFD,
+	       "ramdisk.h and ff.h disagree on the formats");
+
 /* Format a RAM disk (see ramdisk.h). VolToPart is the module's (fat_wrapper.c). */
 int ramdisk_format_ex(int drive, unsigned int fmt, int part)
 {
@@ -34,7 +37,7 @@ int ramdisk_format_ex(int drive, unsigned int fmt, int part)
 /* FAT12/16/32 by the volume's size, in a new partition table as before */
 int ramdisk_format(int drive)
 {
-	return ramdisk_format_ex(drive, FM_FAT | FM_FAT32, 0);
+	return ramdisk_format_ex(drive, RD_FAT | RD_FAT32, 0);
 }
 
 /* Make an open file (a descriptor of the module: its FIL) bytes long without

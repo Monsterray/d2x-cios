@@ -22,8 +22,14 @@ extern struct ramdisk ramdisk[2];
 void ramdisk_reset(unsigned int sectors);       /* two blank disks */
 int ramdisk_format(int drive);                  /* ff_unit.c: f_mkfs, FAT12/16/32 */
 
-/* ff_unit.c: format with f_mkfs. fmt is FM_FAT32, FM_EXFAT, ... (ff.h) with
-   FM_SFD for a drive without a partition table; part 0 makes a new partition
+/* The formats of ramdisk_format_ex (the values of FM_FAT ... in ff.h) */
+#define RD_FAT		0x01
+#define RD_FAT32	0x02
+#define RD_EXFAT	0x04
+#define RD_SFD		0x08
+
+/* ff_unit.c: format with f_mkfs. fmt is RD_FAT, RD_FAT32 or RD_EXFAT, with
+   RD_SFD for a drive without a partition table; part 0 makes a new partition
    table (or none with FM_SFD), 1 to 4 formats that partition of the table
    already on the disk (see ramdisk_set_partition). */
 int ramdisk_format_ex(int drive, unsigned int fmt, int part);
