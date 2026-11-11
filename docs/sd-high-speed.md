@@ -183,3 +183,14 @@ default since 11.1.0-rc2.
   `0x22` shows it; AC (3), as the reads use, is the next thing to try.
 - The CMD6 busy bits (status bits 287:272) are not checked: the switch is
   assumed complete when the status says function 1 is selected.
+
+## SD start-up on IOS 38 (2026-11-11)
+
+On `lrwii` the card was not usable through a cIOS on base 38 (slots 246 and the released 248; 251 on `devwii` was fine): `INIT` failed. Findings, in the order they were found:
+
+- IOS's own `RESETCARD` leaves the card status at 1 (inserted, not initialized), so `__sd0_initio()` takes the manual path (host reset, power, clock, CMD0, CMD8, ACMD41). libogc's `wiisd.c` takes the same path on the same Wii and succeeds; its code is the same as ours.
+- The first CMD8 returned rc 0 with an all-zero response word, so the echo check failed. Repeating CMD8 every 10 ms answered after 3 to 7 tries (variable); delays of 20 to 100 ms after power and clock, and a 187 kHz identification clock, changed nothing. After CMD8 was answered, `APPCMD` failed with an error whose low bits were 2.
+- The cause is the cache handling after the command. `__sdio_sendcommand()` flushed the response buffer before the call and invalidated it after. IOS 38's SD driver writes the response through the CPU cache and leaves it dirty; the invalidate threw that write away and the stale zero in memory was read. A retry worked when the line had been evicted (written back) in between. Flushing the response again before the invalidate keeps the driver's write. With that change the first CMD8 is answered at once and `INIT` returns 0 on slot 246 (base 38).
+- Host test: `tests/host/sdio/test_sdio.c` models a response that lands dirty in the cache (`response_survives_cache`, and `fresh_card_init`, which takes the manual path); both fail on the old code.
+
+`tests/wii/sdbench` has options for this kind of work: `--wait=MS`, `--inits=N`, `--probe=N` (IOS's own RESETCARD and GETSTATUS from the PC side) and `--libogc` (libogc's start-up first).

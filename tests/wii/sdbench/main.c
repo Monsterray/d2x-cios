@@ -11,7 +11,10 @@
  * 64-sector calls and 2 MB in 1-sector calls. On a build that answers 0x20 it
  * then sends 0x21 (forced fallback), prints the state (bit 1 set, when high
  * speed was on before) and reads the same area again: the CRC32 must match, and the speed shows the cost of
- * the slow path. Output goes to the TV and, until the IOS reload, to the PC
+ * the slow path. Init diagnostics (2026-11, base 38): --wait=MS waits before
+ * INIT, --inits=N repeats INIT while it fails, --probe=N prints IOS's own
+ * RESETCARD and GETSTATUS N times first, --libogc runs libogc's own SD
+ * start-up first. Output goes to the TV and, until the IOS reload, to the PC
  * through hbc_netlog; the whole report is saved to sd:/sdbench.txt
  * (tests/wii/sdbench.py fetches it). The last line starts with "RESULT".
  */
@@ -232,7 +235,8 @@ done:
 
 static int bench(int argc, char **argv)
 {
-	u32 ios = 249, mb = 32;
+	u32 ios = 249, mb = 32, wait_ms = 0, inits = 1, probes = 0;
+	bool libogc_first = false;
 	char why[96] = "";
 	bool bad = false;
 
@@ -241,6 +245,14 @@ static int bench(int argc, char **argv)
 			ios = atoi(argv[i] + 6);
 		else if (!strncmp(argv[i], "--mb=", 5))
 			mb = atoi(argv[i] + 5);
+		else if (!strncmp(argv[i], "--wait=", 7))       /* ms to wait before INIT */
+			wait_ms = atoi(argv[i] + 7);
+		else if (!strncmp(argv[i], "--probe=", 8))      /* IOS's own reset+status, N times */
+			probes = atoi(argv[i] + 8);
+		else if (!strcmp(argv[i], "--libogc"))          /* libogc's own SD init first */
+			libogc_first = true;
+		else if (!strncmp(argv[i], "--inits=", 8))      /* INIT calls while it fails */
+			inits = atoi(argv[i] + 8);
 	}
 	if (mb < 1)
 		mb = 1;
@@ -266,6 +278,33 @@ static int bench(int argc, char **argv)
 	}
 	show_cios_identity(ios);
 
+	for (u32 n = 0; n < probes; n++) {
+		/* what IOS's own SD driver says: RESETCARD (4), GETSTATUS (0x0b) */
+		u32 *st = memalign(32, 32);
+		s32 sfd = IOS_Open("/dev/sdio/slot0", 1);
+		s32 r1 = -1, r2 = -1;
+		if (sfd >= 0 && st) {
+			st[0] = 0;
+			r1 = IOS_Ioctl(sfd, 4, NULL, 0, st, 4);
+			u32 reset = st[0];
+			st[0] = 0;
+			r2 = IOS_Ioctl(sfd, 0x0b, NULL, 0, st, 4);
+			say("sdbench: probe %u: fd %d reset %d (0x%08x) status %d (0x%08x)\n", n, sfd, r1,
+			    reset, r2, st[0]);
+		} else
+			say("sdbench: probe %u: open slot0 = %d\n", n, sfd);
+		if (sfd >= 0)
+			IOS_Close(sfd);
+		free(st);
+		usleep(500000);
+	}
+
+	if (libogc_first) {
+		bool ok = __io_wiisd.startup();
+		say("sdbench: libogc __io_wiisd.startup = %d\n", ok);
+		__io_wiisd.shutdown();
+	}
+
 	/* An IOS heap is in MEM2: room for the ioctlv vectors and one 32 KB buffer. */
 	heap = iosCreateHeap(BIG * SECTOR + 4096);
 	fd = IOS_Open(dev_sdhc, 0);
@@ -281,8 +320,14 @@ static int bench(int argc, char **argv)
 		return 1;
 	}
 
+	if (wait_ms)
+		usleep(wait_ms * 1000);
 	ret = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_INIT, ":");
 	say("sdbench: INIT (0x%02x) = %d\n", SDHC_IOCTL_INIT, ret);
+	while (ret != 0 && --inits > 0) {
+		ret = IOS_IoctlvFormat(heap, fd, SDHC_IOCTL_INIT, ":");
+		say("sdbench: INIT again = %d\n", ret);
+	}
 	if (ret != 0) {
 		say("RESULT fail INIT returned %d\n", ret);
 		IOS_Close(fd);

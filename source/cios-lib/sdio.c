@@ -207,7 +207,10 @@ static s32 __sdio_sendcommand(u32 cmd, u32 cmd_type, u32 rsp_type, u32 arg, u32 
 	}else
 		ret = os_ioctl(__sd0_fd,  IOCTL_SDIO_SENDCMD, request, sizeof(struct _sdiorequest), response, sizeof(struct _sdioresponse));
 
-	/* Invalidate cache */
+	/* Invalidate cache. The driver wrote the response through the CPU cache: write
+	 * it back first, or the invalidate throws it away and a stale (zero) response
+	 * is read (IOS 38: the first CMD8 of the manual init, so no SD card on base 38) */
+	os_sync_after_write(response, sizeof(struct _sdioresponse));
 	os_sync_before_read(response, sizeof(struct _sdioresponse));
 
 	if (buffer)

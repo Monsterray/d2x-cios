@@ -99,9 +99,37 @@ static s32 do_cmd(struct _sdiorequest *r, void *buf, struct _sdioresponse *p)
 	return 0;
 }
 
-/* sdio.c includes cios-lib's own syscalls.h and timer.h: provide the calls */
-void __os_sync_before_read(void *p, s32 n) {}
-void __os_sync_after_write(void *p, s32 n) {}
+/* sdio.c includes cios-lib's own syscalls.h and timer.h: provide the calls.
+ * The driver (IOS 38's) writes the response through the CPU cache: the new
+ * value is dirty in the cache, memory still holds the old one. A write back
+ * (sync_after_write) makes it stick; an invalidate (sync_before_read) of a
+ * dirty response throws it away and the old value comes back. */
+static struct _sdioresponse *dirty_rsp, stale_rsp;
+
+void __os_sync_before_read(void *p, s32 n)
+{
+	if (dirty_rsp && p == (void *)dirty_rsp) {
+		*dirty_rsp = stale_rsp;
+		dirty_rsp = NULL;
+	}
+}
+
+void __os_sync_after_write(void *p, s32 n)
+{
+	if (dirty_rsp && p == (void *)dirty_rsp)
+		dirty_rsp = NULL;
+}
+
+/* A command whose response lands dirty in the cache */
+static s32 run_cmd(struct _sdiorequest *r, void *buf, struct _sdioresponse *p)
+{
+	struct _sdioresponse old = *p;
+	s32 rc = do_cmd(r, buf, p);
+
+	stale_rsp = old;
+	dirty_rsp = p;
+	return rc;
+}
 void Timer_Sleep(u32 us) {}
 
 s32 os_open(const char *d, s32 m) { return 3; }
@@ -142,7 +170,7 @@ s32 os_ioctl(s32 fd, s32 req, void *in, s32 bin, void *out, s32 bout)
 		*(u32 *)out = 1 | (fresh ? 0 : 0x10000) | 0x100000;
 		return 0;
 	case IOCTL_SDIO_SENDCMD:        /* a command without data */
-		return do_cmd(in, NULL, out);
+		return run_cmd(in, NULL, out);
 	}
 	return 0;
 }
@@ -152,7 +180,7 @@ s32 os_ioctlv(s32 fd, s32 req, s32 bin, s32 bout, ioctlv *v)
 	struct _sdiorequest *r = v[0].data;
 
 	/* data arrives through the DMA vector only when isdma is set */
-	return do_cmd(r, r->isdma ? v[1].data : NULL, v[2].data);
+	return run_cmd(r, r->isdma ? v[1].data : NULL, v[2].data);
 }
 
 /* ---- tests ---- */
@@ -165,6 +193,7 @@ static void reset_all(enum card c)
 	memset(&__sd0_hs_rec, 0, sizeof(__sd0_hs_rec));
 	memset(hc, 0, sizeof(hc));
 	clk_div = 0x80;
+	dirty_rsp = NULL;
 	log_[0] = 0;
 	__sd0_fd = -1;
 	__sd0_initialized = __sdio_initialized = 0;
@@ -309,6 +338,18 @@ static void test_fresh_card_init(void)
 	CHECK(sdio_Startup(), "startup of a card IOS has not initialized");
 	CHECK(strstr(log_, "C6c C6s H28=06 CLK0") != NULL, "HS after full init: %s", log_);
 	CHECK(sdio_HighSpeedState() == 1, "active");
+}
+
+/* The response to CMD8 must survive the cache handling after the command:
+ * the manual init reads the echo pattern from it. */
+static void test_response_survives_cache(void)
+{
+	struct _sdioresponse r;
+
+	reset_all(HS_CARD);
+	CHECK(__sdio_sendcommand(SDIO_CMD_SENDIFCOND, 0, SDIO_RESPONSE_R6, 0x1aa, 0, 0, NULL, &r, sizeof(r)) >= 0,
+	      "CMD8 sent");
+	CHECK((r.rsp_fields[0] & 0xff) == 0xaa, "CMD8 echo read back: %08x", r.rsp_fields[0]);
 }
 
 static void test_force_fallback(void)
@@ -466,6 +507,7 @@ static const struct hc_test tests[] = {
 	{ "reinit_reapplies", test_reinit_reapplies, false },
 	{ "reinit_after_fallback", test_reinit_after_fallback_stays_default, false },
 	{ "fresh_card_init", test_fresh_card_init, false },
+	{ "response_survives_cache", test_response_survives_cache, false },
 	{ "force_fallback", test_force_fallback, false },
 };
 
