@@ -82,3 +82,19 @@ Against the entry above: +896 bytes release, +1008 `+dbg`.
 The `+dbg` build fits, with 232 bytes to spare. If it must grow, the smallest region change is `exe` 0x3000 to 0x3400 and `ram` at 0x136d3400, length 0x8c00 (the IRQ9 vector stays at 0x136d0010). Each base needs a boot test before a release (`docs/mload.md`).
 
 The loader (with the flag check, the ioctls and the one-shot timer steps) adds about 3900 bytes of code to the release build, 4 KB of buffers to `.bss` (2 KB read buffer, 1 KB module head, the report and the list entries) and 44 bytes of strings.
+
+## The mload timer fix and the SD response flush (claude/mload-fixes, 2026-11-11)
+
+Measured as above (program headers, `exe` in use), against `develop` 8b774f2 (the figures in the paragraphs above): the `sdio.c` fix (one more `os_sync_after_write` call per command, [sd-high-speed.md](sd-high-speed.md)) costs 8 bytes in each module that links `sdio.c`; the `sdload.c` timer fix (stop before restart) did not change MLOAD's size beyond that.
+
+| Module | Region | Release used (free) | `+dbg` used (free) |
+| --- | --- | --- | --- |
+| MLOAD | 12288 | 9384 (2904) | 12096 (192) |
+| FAT | 24576 | 23304 (1272) | 24016 (560) |
+| EHCI | 20480 | 19128 (1352) | 20432 (48) |
+| USBS | 12288 | 12116 (172) | 12260 (28) |
+| DIPP | 8192 | 6716 (1476) | 7760 (432) |
+| ES | 8192 | 2872 (5320) | 2872 (5320) |
+| FFSP | 12288 | 6716 (5572) | 6716 (5572) |
+
+Before: MLOAD 9376 / 12088, FAT 23296 / 24008, EHCI 19120 / 20424, USBS 12108 (180) / 12252 (36). DIPP, ES and FFSP do not link `sdio.c`. The `ram` regions are unchanged except MLOAD `+dbg` and FAT, which did not move either (FAT 138944 / 139200 of 139264). USBS `+dbg` (28 free) and EHCI `+dbg` (48 free) are now the tightest; the next byte there needs a region change.
