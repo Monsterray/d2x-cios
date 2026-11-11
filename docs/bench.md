@@ -1,6 +1,6 @@
 # Bench results
 
-Measurements from the dev Wii and lrwii. The fixes they led to, and the open findings, are in [REVIEW.md](../REVIEW.md).
+Measurements from the dev Wii and lrwii. The fixes they led to, and the open findings, are in [REVIEW.md](../REVIEW.md). The SD speed work (request size, the model and its test plan) is in [sd-speed.md](sd-speed.md).
 
 ## Bench results (dev Wii, 2026-10-23)
 
