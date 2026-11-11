@@ -380,7 +380,7 @@ static void test_long_names(void)
 
 	/* FS-side listing (forFS) skips names over 12 characters, as IOS's own NAND does */
 	CHECK(fatw_readdir_fs("0:/", out, sizeof(out), &n) == 0 && n == 1, "readdir for FS: %u entries", n);
-	CHECK(!strcmp(out, "Hello.TXT"), "readdir for FS: \"%s\"", out);
+	CHECK(!strcmp(out, "Hello.TXT"), "readdir for FS: \"%.100s\"", out);
 
 	snprintf(path, sizeof(path), "0:/%s", name255);
 	CHECK(fatw_delete(path) == 0, "delete of the long name failed");

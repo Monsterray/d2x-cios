@@ -32,7 +32,7 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 .PHONY: all test clean
 all: test
 
-test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_exfat fat/test_diskio sdio/test_sdio dbg/test_dbg \
+test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_exfat fat/test_divmod64 fat/test_diskio sdio/test_sdio dbg/test_dbg \
 		ums/test_ums_dbg usbs/test_usbs_dbg sdio/test_sdio_dbg  fat/test_fat_dbg mloadsd/test_sdload
 	$(RUN) ./mloadsd/test_sdload
 	$(RUN) ./ums/test_ums
@@ -40,6 +40,7 @@ test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_exf
 	$(RUN) ./usbs/test_usbs_async
 	$(RUN) ./fat/test_fat
 	$(RUN) ./fat/test_exfat
+	$(RUN) ./fat/test_divmod64
 	$(RUN) ./fat/test_diskio
 	$(RUN) ./sdio/test_sdio
 	$(RUN) ./dbg/test_dbg
@@ -124,6 +125,10 @@ fat/test_exfat: fat/test_exfat.c fat/test_fat fat/ramdisk.h hostcheck.h
 	$(CC) $(ALL_CFLAGS) -I. -Ifat -I$(FATMOD) -c -o fat/test_exfat.o fat/test_exfat.c
 	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/test_exfat.o fat/ramdisk.o fat/ff_unit.o fat/fat_unit.o
 
+# divmod64.c, the module's 64-bit division, against the PC's own.
+fat/test_divmod64: fat/test_divmod64.c hostcheck.h $(FATMOD)/divmod64.c
+	$(CC) $(ALL_CFLAGS) -I. -I$(FATMOD) -o $@ fat/test_divmod64.c
+
 # The FAT module's diskio.c with the SD and EHCI drivers stubbed on RAM.
 fat/test_diskio: fat/test_diskio.c hostcheck.h fat/stub/mem.h $(FATMOD)/diskio.c \
 		$(FATMOD)/diskio.h
@@ -153,5 +158,5 @@ fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h h
 
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
-		fat/test_fat fat/test_exfat fat/test_diskio fat/*.o sdio/test_sdio dbg/test_dbg ums/test_ums_dbg \
+		fat/test_fat fat/test_exfat fat/test_divmod64 fat/test_diskio fat/*.o sdio/test_sdio dbg/test_dbg ums/test_ums_dbg \
 		usbs/test_usbs_dbg usbs/test_usbs_async sdio/test_sdio_dbg fat/test_fat_dbg mloadsd/test_sdload
