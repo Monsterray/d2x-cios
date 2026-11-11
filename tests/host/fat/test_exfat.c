@@ -55,6 +55,7 @@ const char *fatw_nandpath(void);
 void fatw_nand_path(char *dst, const char *nand, const char *name);
 int fatw_corruptions(void);
 int fatw_expand(unsigned int fd, unsigned long long bytes);
+unsigned long long fatw_free_bytes(int drive, int forget);
 int fatw_raw_seek(unsigned int fd, unsigned long long pos);
 unsigned long long fatw_raw_size(unsigned int fd);
 
@@ -276,6 +277,7 @@ static void test_file_over_4gb(void)
 	fresh(12582912, RD_EXFAT, RD_EXFAT);            /* 6 GB */
 	CHECK(fatw_mount(0) >= 0 && fatw_fstype(0) == T_EXFAT, "mount of the 6 GB volume failed");
 	CHECK(fatw_create("0:/big.bin") >= 0, "create failed");
+	unsigned long long free0 = fatw_free_bytes(0, 1);
 	long fd = fatw_open("0:/big.bin", FA_WRITE);
 	CHECK(fd > 0, "open failed");
 	CHECK(fatw_expand((unsigned int) fd, size) == 0, "making a 5 GB file failed");
@@ -319,13 +321,33 @@ static void test_file_over_4gb(void)
 	/* the disk is mostly holes, and deleting the file frees the clusters for another */
 	CHECK(ramdisk_chunks_used(0) < 4096, "%u chunks of the RAM disk in use", ramdisk_chunks_used(0));
 	CHECK(fatw_delete("0:/big.bin") == 0, "delete failed");
-	/* OPEN (docs/fatfs.md): a second file of the same 5 GB does not fit afterwards, f_expand
-	   answers FR_DENIED; not yet known whether the cause is f_expand or the freed space count. */
+	/*
+	 * Free space after the delete. The module only allocates cluster by cluster (FAT_Write), so the
+	 * question is whether the space comes back, by the cached count and by a scan of the bitmap, and
+	 * whether the next big file can be written normally. (f_expand, which the module does not call,
+	 * can refuse a second file of the same size: its search for one contiguous block starts at the
+	 * end of the last allocation and does not join the run that contains its start. docs/fatfs.md.)
+	 */
+	CHECK(fatw_free_bytes(0, 0) == free0 && fatw_free_bytes(0, 1) == free0,
+	      "free space after the delete: %llu cached, %llu scanned, %llu before",
+	      fatw_free_bytes(0, 0), fatw_free_bytes(0, 1), free0);
 	CHECK(fatw_create("0:/big2.bin") >= 0, "create the second file failed");
 	fd = fatw_open("0:/big2.bin", FA_WRITE);
 	CHECK(fd > 0, "open of the second file failed");
-	int r = fatw_expand((unsigned int) fd, 1024ULL * 1024 * 1024);
-	CHECK(r == 0, "a 1 GB file does not fit after the 5 GB one was deleted (%d)", r);
+	CHECK(fatw_raw_seek((unsigned int) fd, size) == 0 && fatw_raw_size((unsigned int) fd) == size,
+	      "a second 5 GB file does not fit after the first was deleted");
+	CHECK(fatw_write(fd, "TWO", 3) == 3, "write at the end of the second file failed");
+	fatw_close(fd);
+	CHECK(fatw_free_bytes(0, 0) < free0 - size && fatw_free_bytes(0, 1) == fatw_free_bytes(0, 0),
+	      "free space with the second file: %llu cached, %llu scanned", fatw_free_bytes(0, 0), fatw_free_bytes(0, 1));
+	CHECK(fatw_delete("0:/big2.bin") == 0, "delete of the second file failed");
+	CHECK(fatw_free_bytes(0, 0) == free0 && fatw_free_bytes(0, 1) == free0, "free space not back after the second delete");
+
+	/* f_expand of 1 GB still works after all that */
+	CHECK(fatw_create("0:/big3.bin") >= 0, "create the third file failed");
+	fd = fatw_open("0:/big3.bin", FA_WRITE);
+	int r = fd > 0 ? fatw_expand((unsigned int) fd, 1024ULL * 1024 * 1024) : -1;
+	CHECK(r == 0, "a 1 GB file does not fit after the 5 GB ones were deleted (%d)", r);
 	fatw_close(fd);
 	CHECK(fatw_live_blocks() == 0, "%d FIL blocks leaked", fatw_live_blocks());
 }

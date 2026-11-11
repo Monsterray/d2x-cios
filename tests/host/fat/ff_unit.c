@@ -57,3 +57,21 @@ unsigned long long fatw_raw_size(unsigned int fd)
 {
 	return f_size((FIL *)(uintptr_t)fd);
 }
+
+/* Free space of a drive in bytes by f_getfree (the cached count when valid, a scan if not);
+   ~0 on an error. forget != 0 first drops the cached count, so it is the bitmap's answer. */
+unsigned long long fatw_free_bytes(int drive, int forget)
+{
+	char path[3] = { (char)('0' + drive), ':', 0 };
+	FATFS *fsp;
+	DWORD n;
+
+	if (f_getfree(path, &n, &fsp) != FR_OK)
+		return ~0ULL;
+	if (forget) {
+		fsp->free_clst = 0xFFFFFFFF;
+		if (f_getfree(path, &n, &fsp) != FR_OK)
+			return ~0ULL;
+	}
+	return (unsigned long long)n * fsp->csize * SS(fsp);
+}
