@@ -101,6 +101,9 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 	case MLOAD_LOAD_ELF: {
 		void *data = vector[0].data;
 
+		/* The PPC writes the module area: a boot-time SD load ends first */
+		SdLoad_PpcRequest();
+
 		/* Load ELF */
 		ret = Elf_Load(data);
 
@@ -108,6 +111,8 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 	}
 
 	case MLOAD_RUN_ELF: {
+		SdLoad_PpcRequest();
+
 		/* Run ELF */
 		ret = Elf_Run();
 
@@ -119,6 +124,8 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		u32 stack = *(u32 *)vector[1].data;
 		u32 slen  = *(u32 *)vector[2].data;
 		u32 prio  = *(u32 *)vector[3].data;
+
+		SdLoad_PpcRequest();
 
 		/* Run thread */
 		ret = Elf_RunThread((void *)start, NULL, (void *)stack, slen, prio);
@@ -148,6 +155,8 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		u32 addr = *(u32 *)vector[0].data;
 		u32 val  = *(u32 *)vector[1].data;
 		u32 len  = *(u32 *)vector[2].data;
+
+		SdLoad_PpcRequest();
 
 		/* Invalidate cache */
 		os_sync_before_read((void *)addr, len);
@@ -195,12 +204,15 @@ static s32 __MLoad_Ioctlv(u32 cmd, ioctlv *vector, u32 inlen, u32 iolen)
 		break;
 	}
 
-	case MLOAD_GET_SD_REPORT: {
+	case MLOAD_GET_SD_REPORT:
 		/* What the loader of sd:/d2x/mload.txt did (sdload.h) */
-		ret = SdLoad_GetReport(vector[0].data, vector[0].len);
-
+		ret = SdLoad_IoctlReport(vector, inlen, iolen);
 		break;
-	}
+
+	case MLOAD_SD_LOAD:
+		/* Load the list now, once (sdload.h) */
+		ret = SdLoad_IoctlLoad(vector, inlen, iolen);
+		break;
 
 	default:
 		break;
@@ -316,8 +328,9 @@ int main(void)
 	if (ret < 0)
 		return ret;
 
-	/* Load the modules listed in sd:/d2x/mload.txt, one step per timer message */
-	SdLoad_Start(queuehandle);
+	/* Only a flag file on the NAND starts the SD module loader here (a timer
+	   and the SD card); otherwise nothing is touched until MLOAD_SD_LOAD */
+	SdLoad_Boot(queuehandle);
 
 	/* Main loop */
 	while (1) {
@@ -383,6 +396,10 @@ int main(void)
 			void *dst = (void *)offset;
 			void *src = message->write.data;
 			u32   len = message->write.length;
+
+			/* The PPC writes IOS memory, the module area for one: a
+			   boot-time SD load ends first */
+			SdLoad_PpcRequest();
 
 			/* Write data */
 			Swi_Memcpy(dst, src, len);

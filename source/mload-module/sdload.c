@@ -1,11 +1,16 @@
 /*
-	d2x cIOS: load extra modules from the SD card when the cIOS starts.
+	d2x cIOS: load extra modules from the SD card.
 	See sdload.h and docs/mload.md.
 
-	The loader is a state machine that MLOAD's main loop steps on a 20 ms
-	timer message: no thread, no stack, no Timer_Sleep. Each step may block
-	in the FAT module for a moment (a mount, one chunk of a file); the budget
-	of SDL_DEADLINE_MS is checked before every step and between the chunks.
+	The loader is a state machine, one small step at a time (a mount, one
+	2 KB chunk of a file). It never touches the SD card on its own:
+	- MLOAD_SD_LOAD runs the steps back to back, inside the ioctlv.
+	- A flag file on the NAND makes MLOAD run them at cIOS start instead, on a
+	  one-shot timer that MLOAD's main loop re-arms after each step: at most
+	  one timer message is ever queued, and the PPC's requests get their turn
+	  between steps. MLOAD_GET_SD_REPORT waits for such a run to end.
+	The budget of SDL_DEADLINE_MS is checked before every step. One FAT call
+	can still block past it (docs/mload.md, "Known limits").
 */
 
 #include "types.h"
@@ -17,6 +22,7 @@
 #include "sdload.h"
 #include "swi_mload.h"
 #include "syscalls.h"
+#include "timer.h"
 #include "tools.h"
 
 /* The area modules may load into: MLOAD's own exe_mem. The host test sets
@@ -37,6 +43,8 @@
 #define SDL_FAT_UMOUNT_SD	0xF1
 #define SDL_OPEN_READ		1
 #define SDL_MOUNT_TRIES		3
+#define SDL_PENDING		1	/* a module's step is done, more steps follow */
+#define SDL_FLAG_NOENT		(-106)	/* the file system's "no such file" */
 
 #define SDL_BUF			2048	/* one read: the list, or a chunk of a module */
 #define SDL_HEAD		1024	/* the start of a module: its header and tables */
@@ -67,13 +75,24 @@ typedef struct {
 	sdl_seg seg[SDL_MAX_PH];
 } sdl_elf;
 
+/* The module being loaded, between steps */
+typedef struct {
+	s32 fd;				/* -1 when none is open */
+	u32 phase, size, crc, pos;
+} sdl_mod;
+
+#define SDL_M_OPEN		0	/* sdl_mod.phase */
+#define SDL_M_PASS1		1	/* reading for the size, the CRC and the head */
+#define SDL_M_PASS2		2	/* copying the segments in */
+
 static struct {
-	u32 state;
-	s32 error;
-	s32 timer, fatfd;
-	u32 start, next_at;
+	u32 state, mode;
+	s32 error, flag;
+	s32 timer, fatfd, queue;
+	u32 start;
 	u32 mount_tries, idx, nitems, extra, ntaken;
 	u32 mounted;
+	sdl_mod   m;
 	sdl_item  items[SDL_MAX_MODULES];
 	sdl_range taken[SDL_MAX_MODULES];
 	sdl_elf   elf;
@@ -234,8 +253,10 @@ static u32 sdl_crc32(u32 crc, const u8 *p, u32 n)
    `hlen` bytes of the file (the header, the program headers and the note
    segment must be in them), `fsize` is the whole file's size, `taken` are
    the boxes of the modules already loaded. Returns 0, SDL_R_ELF (not a
-   module, or cut short) or SDL_R_RANGE (it would write outside the area, or
-   over another module, or its thread would not be in its own memory). */
+   module, or cut short), SDL_R_ALIGN (a segment that is not whole 32 byte
+   cache lines: the cache calls work on lines) or SDL_R_RANGE (it would write
+   outside the area, or over another module, or its entry or stack is not
+   inside one of its own segments). */
 static s32 sdl_check_elf(const u8 *h, u32 hlen, u32 fsize, const sdl_range *taken, u32 ntaken, sdl_elf *o)
 {
 	u32 base = SDL_AREA_BASE;
@@ -273,7 +294,7 @@ static s32 sdl_check_elf(const u8 *h, u32 hlen, u32 fsize, const sdl_range *take
 
 				switch (be32(h + off + j)) {
 				case 0x09: o->entry      = v; break;
-				case 0x0B: o->arg        = v; break;
+				case 0x0B: o->arg        = v; have |= 8; break;
 				case 0x7D: o->prio       = v; have |= 1; break;
 				case 0x7E: o->stack_size = v; have |= 2; break;
 				case 0x7F: o->stack      = v; have |= 4; break;
@@ -283,6 +304,8 @@ static s32 sdl_check_elf(const u8 *h, u32 hlen, u32 fsize, const sdl_range *take
 			/* A segment at 0 is the module table, which MLOAD never copies */
 			if (fs > ms)
 				return SDL_R_ELF;
+			if ((va | ms) & 31)
+				return SDL_R_ALIGN;
 			if (va < base || va > end || ms > end - va)
 				return SDL_R_RANGE;
 			if (off > fsize || fs > fsize - off)
@@ -305,14 +328,22 @@ static s32 sdl_check_elf(const u8 *h, u32 hlen, u32 fsize, const sdl_range *take
 		}
 	}
 
-	if (!o->nseg || have != 7)
+	if (!o->nseg || have != 15)
 		return SDL_R_ELF;
 
-	/* The thread must start and run inside the module's own memory */
-	if ((o->entry & ~1U) < o->lo || (o->entry & ~1U) >= o->hi)
+	/* The thread must start and run inside one segment of the module: the
+	   box around them can hold gaps that nothing wrote or zeroed */
+	if (!o->stack_size || o->stack_size > o->stack)
 		return SDL_R_RANGE;
-	if (o->stack < o->lo || o->stack > o->hi || !o->stack_size ||
-	    o->stack_size > o->stack - o->lo)
+	for (k = 0, i = 0, j = 0; k < o->nseg; k++) {
+		u32 a = o->seg[k].vaddr, b = a + o->seg[k].memsz;
+
+		if ((o->entry & ~1U) >= a && (o->entry & ~1U) < b)
+			i = 1;
+		if (o->stack - o->stack_size >= a && o->stack <= b)
+			j = 1;
+	}
+	if (!i || !j)
 		return SDL_R_RANGE;
 	if (!o->prio || o->prio > SDL_MAX_PRIO)
 		return SDL_R_RANGE;
@@ -376,6 +407,14 @@ static void sdl_finish(s32 err)
 	if (err && !S.error)
 		S.error = err;
 
+	/* A module in the middle of its load: closed, and it says why */
+	if (S.m.fd >= 0) {
+		os_close(S.m.fd);
+		S.m.fd = -1;
+		S.rep.entries[S.idx].result = err;
+	}
+	S.m.phase = SDL_M_OPEN;
+
 	if (S.mounted) {
 		sdl_fat(SDL_FAT_UMOUNT_SD, 0);
 		S.mounted = 0;
@@ -403,123 +442,128 @@ static void sdl_finish(s32 err)
 	S.state = SDL_ST_DONE;
 }
 
-/* Read and start one module. Returns 0 or SDL_R_*; SDL_E_TIMEOUT and
-   SDL_E_TITLE end the whole run. The entry gets its size and detail. */
-static s32 sdl_load_one(u32 i)
+/* One step of loading module i: one open, one 2 KB chunk, or the end of a
+   pass. Returns SDL_PENDING while more steps follow, else 0 or SDL_R_*;
+   SDL_E_TIMEOUT and SDL_E_TITLE end the whole run. The entry gets its size
+   and detail. Pass 1 (size, CRC, the head for the validator) writes nothing to
+   the area; pass 2 zeroes the segments and copies them in. */
+static s32 sdl_load_step(u32 i)
 {
 	sdl_item  *it = &S.items[i];
 	sdl_entry *en = &S.rep.entries[i];
 	sdl_elf   *e  = &S.elf;
-	u32 size = 0, crc = 0xFFFFFFFF, pos, k, c, o;
-	s32 fd, n, r = 0, det = 0;
+	sdl_mod   *m  = &S.m;
+	u32 k, c, o;
+	s32 n, r;
 
-	if (!it->name_ok)
-		return SDL_R_NAME;
+	if (m->phase == SDL_M_OPEN) {
+		if (!it->name_ok)
+			return SDL_R_NAME;
 
-	memcpy(sdl_path, SDL_DIR_PATH, sizeof(SDL_DIR_PATH) - 1);
-	for (k = 0; it->name[k]; k++)
-		sdl_path[sizeof(SDL_DIR_PATH) - 1 + k] = it->name[k];
-	sdl_path[sizeof(SDL_DIR_PATH) - 1 + k] = 0;
+		memcpy(sdl_path, SDL_DIR_PATH, sizeof(SDL_DIR_PATH) - 1);
+		for (k = 0; it->name[k]; k++)
+			sdl_path[sizeof(SDL_DIR_PATH) - 1 + k] = it->name[k];
+		sdl_path[sizeof(SDL_DIR_PATH) - 1 + k] = 0;
 
-	fd = os_open(sdl_path, SDL_OPEN_READ);
-	if (fd < 0) {
-		en->detail = fd;
-		return SDL_R_OPEN;
+		m->fd = os_open(sdl_path, SDL_OPEN_READ);
+		if (m->fd < 0) {
+			en->detail = m->fd;
+			m->fd = -1;
+			return SDL_R_OPEN;
+		}
+		m->phase = SDL_M_PASS1;
+		m->size  = 0;
+		m->crc   = 0xFFFFFFFF;
+		m->pos   = 0;
 	}
 
-	/* Pass 1: the size and the CRC, and the head kept for the validator.
-	   Nothing is written to the area yet. */
-	for (;;) {
+	if (m->phase == SDL_M_PASS1) {
+		n = os_read(m->fd, sdl_buf, SDL_BUF);
+		if (n < 0) {
+			en->detail = n;
+			r = SDL_R_READ;
+			goto fail;
+		}
+
+		if (n > 0) {
+			os_sync_before_read(sdl_buf, n);
+			if (m->size < SDL_HEAD) {
+				c = SDL_HEAD - m->size;
+				memcpy(sdl_head + m->size, sdl_buf, (u32)n < c ? (u32)n : c);
+			}
+			if (it->has_crc)
+				m->crc = sdl_crc32(m->crc, sdl_buf, n);
+
+			m->size += n;
+			if (m->size > SDL_AREA_SIZE) {
+				r = SDL_R_RANGE;
+				goto fail;
+			}
+			return SDL_PENDING;
+		}
+
+		/* The whole file has been read: check it before the area is touched */
+		en->size = m->size;
+
+		if (it->has_crc && ~m->crc != it->crc) {
+			r = SDL_R_CRC;
+			goto fail;
+		}
+
+		r = sdl_check_elf(sdl_head, m->size < SDL_HEAD ? m->size : SDL_HEAD,
+				  m->size, S.taken, S.ntaken, e);
+		if (r)
+			goto fail;
+
+		/* Past the budget, or with a title started, the area is not touched */
 		r = sdl_stop();
 		if (r)
-			goto close;
-
-		n = os_read(fd, sdl_buf, SDL_BUF);
-		if (n < 0) {
+			goto fail;
+		if (os_seek(m->fd, 0, 0) < 0) {
 			r = SDL_R_READ;
-			det = n;
-			goto close;
+			goto fail;
 		}
-		if (n == 0)
-			break;
 
-		os_sync_before_read(sdl_buf, n);
-		if (size < SDL_HEAD) {
-			c = SDL_HEAD - size;
-			memcpy(sdl_head + size, sdl_buf, (u32)n < c ? (u32)n : c);
+		/* The segments are zeroed first, as Elf_Load does */
+		for (k = 0; k < e->nseg; k++) {
+			os_sync_before_read(SDL_PTR(e->seg[k].vaddr), e->seg[k].memsz);
+			memset(SDL_PTR(e->seg[k].vaddr), 0, e->seg[k].memsz);
 		}
-		if (it->has_crc)
-			crc = sdl_crc32(crc, sdl_buf, n);
 
-		size += n;
-		if (size > SDL_AREA_SIZE) {
-			r = SDL_R_RANGE;
-			goto close;
-		}
+		m->phase = SDL_M_PASS2;
+		return SDL_PENDING;
 	}
 
-	en->size = size;
-
-	if (it->has_crc && ~crc != it->crc) {
-		r = SDL_R_CRC;
-		goto close;
-	}
-
-	r = sdl_check_elf(sdl_head, size < SDL_HEAD ? size : SDL_HEAD, size,
-			  S.taken, S.ntaken, e);
-	if (r)
-		goto close;
-
-	/* Pass 2: copy the segments in. The area is zeroed first, as Elf_Load
-	   does. Past the budget, or with a title started, it is not touched. */
-	r = sdl_stop();
-	if (r)
-		goto close;
-	if (os_seek(fd, 0, 0) < 0) {
+	/* Pass 2: one chunk of the file into the segments that hold it */
+	c = m->size - m->pos < SDL_BUF ? m->size - m->pos : SDL_BUF;
+	n = os_read(m->fd, sdl_buf, c);
+	if (n <= 0) {
+		en->detail = n;
 		r = SDL_R_READ;
-		goto close;
+		goto fail;
 	}
+	os_sync_before_read(sdl_buf, n);
 
 	for (k = 0; k < e->nseg; k++) {
-		os_sync_before_read(SDL_PTR(e->seg[k].vaddr), e->seg[k].memsz);
-		memset(SDL_PTR(e->seg[k].vaddr), 0, e->seg[k].memsz);
+		u32 so = e->seg[k].off, se = so + e->seg[k].filesz;
+		u32 a = m->pos > so ? m->pos : so;
+		u32 b = m->pos + n < se ? m->pos + n : se;
+
+		if (a < b)
+			memcpy((u8 *)SDL_PTR(e->seg[k].vaddr) + (a - so),
+			       sdl_buf + (a - m->pos), b - a);
 	}
 
-	for (pos = 0; pos < size; pos += n) {
-		r = sdl_stop();
-		if (r)
-			goto close;
-
-		c = size - pos < SDL_BUF ? size - pos : SDL_BUF;
-		n = os_read(fd, sdl_buf, c);
-		if (n <= 0) {
-			r = SDL_R_READ;
-			det = n;
-			goto close;
-		}
-		os_sync_before_read(sdl_buf, n);
-
-		/* The part of this chunk that each segment holds */
-		for (k = 0; k < e->nseg; k++) {
-			u32 so = e->seg[k].off, se = so + e->seg[k].filesz;
-			u32 a = pos > so ? pos : so;
-			u32 b = pos + n < se ? pos + n : se;
-
-			if (a < b)
-				memcpy((u8 *)SDL_PTR(e->seg[k].vaddr) + (a - so),
-				       sdl_buf + (a - pos), b - a);
-		}
-	}
+	m->pos += n;
+	if (m->pos < m->size)
+		return SDL_PENDING;
 
 	for (k = 0; k < e->nseg; k++)
 		os_sync_after_write(SDL_PTR(e->seg[k].vaddr), e->seg[k].memsz);
 	Swi_CallFunc(sdl_icinv, NULL, NULL);
 
-close:
-	os_close(fd);
-	en->detail = det;
-	if (r)
-		return r;
+	os_close(m->fd);
+	m->fd = -1;
 
 	/* Start it. The box is taken whether or not the thread starts: a module
 	   half run must not be written over. */
@@ -531,13 +575,13 @@ close:
 	   all three go to the thread as they are */
 	o = (u32)Elf_RunThread((void *)(uintptr_t)e->entry, (void *)(uintptr_t)e->arg,
 			       (void *)(uintptr_t)e->stack, e->stack_size, e->prio);
-	if ((s32)o < 0) {
-		en->detail = (s32)o;
-		return SDL_R_THREAD;
-	}
-
 	en->detail = (s32)o;
-	return 0;
+	return (s32)o < 0 ? SDL_R_THREAD : 0;
+
+fail:
+	os_close(m->fd);
+	m->fd = -1;
+	return r;
 }
 
 /* Read and parse sd:/d2x/mload.txt. Returns 0 or the overall error. */
@@ -582,46 +626,24 @@ static s32 sdl_read_list(void)
 
 /* ---- The interface ---- */
 
-s32 SdLoad_Start(s32 queue)
+static void sdl_begin(u32 mode)
 {
-	memset(&S, 0, sizeof(S));
-	S.fatfd = -1;
+	S.mode  = mode;
+	S.error = 0;
 	S.start = sdl_now();
-	S.next_at = S.start;
 	S.state = SDL_ST_WAIT_FAT;
-
-	S.timer = os_create_timer(SDL_TICK_US, SDL_TICK_US, queue, SDL_COOKIE);
-	if (S.timer < 0) {
-		s32 t = S.timer;
-
-		S.timer = -1;
-		S.state = SDL_ST_DONE;
-		S.error = SDL_E_TIMER;
-		return t;
-	}
-
-	return S.timer;
 }
 
-void SdLoad_Tick(void)
+/* One step of the state machine, with no pacing of its own */
+static void sdl_step(void)
 {
-	u32 now;
-	s32 r;
+	s32 r = sdl_stop();
 
-	if (S.state == SDL_ST_IDLE || S.state == SDL_ST_DONE)
-		return;
-
-	r = sdl_stop();
 	if (r) {
 		/* Not finding the FAT module in time is not a slow load */
 		sdl_finish(r == SDL_E_TIMEOUT && S.state == SDL_ST_WAIT_FAT ? SDL_E_NOFAT : r);
 		return;
 	}
-
-	now = sdl_now();
-	if ((s32)(now - S.next_at) < 0)
-		return;
-	S.next_at = now + SDL_TICK_TICKS;
 
 	switch (S.state) {
 	case SDL_ST_WAIT_FAT:
@@ -650,29 +672,133 @@ void SdLoad_Tick(void)
 		break;
 
 	case SDL_ST_LOAD:
-		r = sdl_load_one(S.idx);
+		r = sdl_load_step(S.idx);
+		if (r == SDL_PENDING)
+			break;
+
+		S.m.phase = SDL_M_OPEN;
 		S.rep.entries[S.idx].result = r;
-		if (r == SDL_E_TIMEOUT || r == SDL_E_TITLE) {
+		if (r == SDL_E_TIMEOUT || r == SDL_E_TITLE)
 			sdl_finish(r);
-		} else if (++S.idx >= S.nitems) {
+		else if (++S.idx >= S.nitems)
 			sdl_finish(0);
-		}
 		break;
 	}
 }
 
-s32 SdLoad_GetReport(void *out, u32 len)
+/* Run the steps back to back until the run ends; the FAT module's start is
+   polled every SDL_TICK_US. Bounded by the budget, which sdl_step checks. */
+static void sdl_drive(void)
 {
-	if (len < sizeof(sdl_report))
+	while (S.state != SDL_ST_DONE) {
+		sdl_step();
+		if (S.state == SDL_ST_WAIT_FAT)
+			Timer_Sleep(SDL_TICK_US);
+	}
+}
+
+static s32 sdl_vec_ok(const ioctlv *v, u32 inlen, u32 iolen)
+{
+	if (inlen != 0 || iolen < 1 || !v || !v[0].data || v[0].len < sizeof(sdl_report))
 		return IPC_EINVAL;
 
+	return 0;
+}
+
+static void sdl_fill(void *out)
+{
 	S.rep.magic   = SDL_REPORT_MAGIC;
 	S.rep.version = SDL_REPORT_VERSION;
 	S.rep.state   = S.state;
 	S.rep.error   = S.error;
+	S.rep.mode    = S.mode;
+	S.rep.flag    = S.flag;
 	if (S.state != SDL_ST_IDLE && S.state != SDL_ST_DONE)
 		S.rep.elapsed_ms = sdl_ms(sdl_now() - S.start);
 
 	memcpy(out, &S.rep, sizeof(sdl_report));
+}
+
+void SdLoad_Boot(s32 queue)
+{
+	s32 fd;
+
+	memset(&S, 0, sizeof(S));
+	S.fatfd = S.timer = S.m.fd = -1;
+
+	/* The only thing done without being asked: one open of a file on the
+	   NAND. No flag, no timer, no SD, no FAT. */
+	fd = os_open(SDL_FLAG_PATH, SDL_OPEN_READ);
+	S.flag = fd < 0 ? fd : 0;
+	if (fd < 0)
+		return;
+	os_close(fd);
+
+	S.timer = os_create_timer(SDL_TICK_US, 0, queue, SDL_COOKIE);
+	if (S.timer < 0) {
+		S.timer = -1;
+		S.error = SDL_E_TIMER;
+		return;
+	}
+
+	sdl_begin(SDL_M_AUTO);
+}
+
+void SdLoad_Tick(void)
+{
+	if (S.state == SDL_ST_IDLE || S.state == SDL_ST_DONE || S.timer < 0)
+		return;
+
+	sdl_step();
+
+	/* One shot: the next message is queued only now, so a long step cannot
+	   leave a pile of them in MLOAD's 8-entry queue. Polling for the FAT
+	   module waits SDL_TICK_US; the other steps SDL_STEP_US, just long enough
+	   for the PPC's requests to get in between. */
+	if (S.state != SDL_ST_DONE)
+		os_restart_timer(S.timer, S.state == SDL_ST_WAIT_FAT ? SDL_TICK_US : SDL_STEP_US, 0);
+}
+
+void SdLoad_PpcRequest(void)
+{
+	/* A boot-time run is between two steps and the PPC is about to write
+	   the area it loads into: stop before the PPC's request is handled, and
+	   never write the area again */
+	if (S.state != SDL_ST_IDLE && S.state != SDL_ST_DONE)
+		sdl_finish(SDL_E_BUSY);
+}
+
+s32 SdLoad_IoctlLoad(ioctlv *vector, u32 inlen, u32 iolen)
+{
+	s32 r = sdl_vec_ok(vector, inlen, iolen);
+
+	if (r)
+		return r;
+
+	if (S.state == SDL_ST_IDLE) {
+		sdl_begin(SDL_M_IOCTL);
+		sdl_drive();
+	} else {
+		/* It ran, or a boot-time run is still going: wait for it, load nothing */
+		sdl_drive();
+		r = SDL_ALREADY;
+	}
+
+	sdl_fill(vector[0].data);
+	return r;
+}
+
+s32 SdLoad_IoctlReport(ioctlv *vector, u32 inlen, u32 iolen)
+{
+	s32 r = sdl_vec_ok(vector, inlen, iolen);
+
+	if (r)
+		return r;
+
+	/* An app that knows the boot-time run exists waits here, then opens the SD card */
+	if (S.state != SDL_ST_IDLE)
+		sdl_drive();
+
+	sdl_fill(vector[0].data);
 	return 0;
 }

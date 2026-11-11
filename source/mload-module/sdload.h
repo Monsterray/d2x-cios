@@ -1,9 +1,12 @@
 /*
-	d2x cIOS: load extra modules from the SD card when the cIOS starts.
+	d2x cIOS: load extra modules from the SD card.
 
 	MLOAD reads sd:/d2x/mload.txt, checks each module named there
-	(sd:/d2x/mload/NAME) and starts it in its own thread. docs/mload.md has
-	the design, the limits and the security notes.
+	(sd:/d2x/mload/NAME) and starts it in its own thread. It does this only
+	when asked: a loader app calls MLOAD_SD_LOAD, or the cIOS is told to do
+	it at start by a flag file on the NAND. Without either, MLOAD makes no
+	SD or FAT call at all. docs/mload.md has the design, the limits and the
+	security notes.
 
 	The list parser, the name check, the CRC and the ELF validator are plain
 	functions on byte buffers; tests/host/mloadsd tests them, and the whole
@@ -13,7 +16,12 @@
 #ifndef _SDLOAD_H_
 #define _SDLOAD_H_
 
+#include "ipc.h"
 #include "types.h"
+
+/* The flag file on the NAND (read through the IOS file system, never the SD
+   card): when it exists, MLOAD loads the list by itself at cIOS start */
+#define SDL_FLAG_PATH		"/shared2/d2x/mload.cfg"
 
 /* Files on the SD card */
 #define SDL_LIST_PATH		"fat/d2x/mload.txt"
@@ -24,7 +32,8 @@
 #define SDL_NAME_MAX		31	/* characters; the IOS path stays under 64 bytes */
 #define SDL_LIST_MAX		2048	/* bytes of the list that are read */
 #define SDL_DEADLINE_MS		5000	/* from the start to the last step */
-#define SDL_TICK_US		20000	/* the timer's period */
+#define SDL_TICK_US		20000	/* the timer's delay while polling for the FAT module */
+#define SDL_STEP_US		1000	/* and between the other steps (one shot, re-armed after each) */
 
 /* Message the timer sends to MLOAD's queue (outside every mapped address,
    so it cannot be an IPC message pointer) */
@@ -45,7 +54,8 @@
 #define SDL_E_LISTIO		-4	/* the list could not be read */
 #define SDL_E_TIMEOUT		-5	/* the 5 s budget ran out */
 #define SDL_E_TITLE		-6	/* a title is running: never load then */
-#define SDL_E_TIMER		-7	/* no timer */
+#define SDL_E_TIMER		-7	/* no timer for the boot-time run */
+#define SDL_E_BUSY		-8	/* the PPC wrote to the module area: a boot-time run stops */
 
 /* Per module results (entry.result); 0 is success */
 #define SDL_R_NAME		-10	/* not a plain name, or a bad crc32= */
@@ -57,6 +67,15 @@
 #define SDL_R_THREAD		-16
 #define SDL_R_LIMIT		-17	/* over SDL_MAX_MODULES (counted in skipped, not listed) */
 #define SDL_R_NOTRUN		-18	/* never tried: the run ended first */
+#define SDL_R_ALIGN		-19	/* a segment address or size is not a multiple of 32 */
+
+/* How the run was started (report.mode) */
+#define SDL_M_NONE		0	/* not run */
+#define SDL_M_AUTO		1	/* at cIOS start, by the flag file */
+#define SDL_M_IOCTL		2	/* by MLOAD_SD_LOAD */
+
+/* What MLOAD_SD_LOAD returns besides 0 (the run happened now) */
+#define SDL_ALREADY		1	/* it had run before: the report is the old one */
 
 /* The report /dev/mload returns for MLOAD_GET_SD_REPORT. All fields are
    32 bits, big endian on the Wii. */
@@ -79,12 +98,22 @@ typedef struct {
 	u32 loaded;			/* modules started */
 	u32 skipped;			/* list lines not started, extras included */
 	u32 elapsed_ms;			/* from the start to now, or to the end */
+	u32 mode;			/* SDL_M_* */
+	s32 flag;			/* the flag file's open result at start: 0 found, else the IOS error */
 	sdl_entry entries[SDL_MAX_MODULES];
 } sdl_report;
 
 /* Prototypes */
-s32  SdLoad_Start(s32 queue);	/* create the timer; its id, or a negative error */
+void SdLoad_Boot(s32 queue);	/* at start: look for the flag file; no flag, nothing else happens */
 void SdLoad_Tick(void);		/* one step, on the timer's message */
-s32  SdLoad_GetReport(void *out, u32 len);	/* 0, or IPC_EINVAL when len is short */
+void SdLoad_PpcRequest(void);	/* the PPC is about to write the module area: end a boot-time run */
+
+/* The two ioctlv commands; the output vector is vector[0] (inlen 0, iolen >= 1)
+   and holds at least sizeof(sdl_report). Both return IPC_EINVAL for anything
+   else. MLOAD_SD_LOAD runs the load now and returns 0, or SDL_ALREADY when it
+   had run before (then nothing is loaded again). MLOAD_GET_SD_REPORT returns 0;
+   while a boot-time run is still going it first waits for it to end. */
+s32  SdLoad_IoctlLoad(ioctlv *vector, u32 inlen, u32 iolen);
+s32  SdLoad_IoctlReport(ioctlv *vector, u32 inlen, u32 iolen);
 
 #endif
