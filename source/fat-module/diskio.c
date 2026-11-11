@@ -7,6 +7,7 @@
 
 #include <string.h>
 
+#include "ff.h"
 #include "diskio.h"
 #include "mem.h"
 #include "sdio.h"
@@ -25,8 +26,13 @@
 /* Largest bounce buffer for an unaligned transfer (the heap is 112 KB) */
 #define BOUNCE_MAX		(16 * 1024)
 
+/* Most sectors handed to a driver in one request. FatFs R0.08b asked for 255 at
+   most (its count was a BYTE); R0.16 asks for a whole run inside one cluster, and
+   an exFAT cluster can be 32 MB. */
+#define DISK_MAX_SECTORS	255
 
-static s32 __disk_io(BYTE drv, DWORD sector, u32 count, void *buffer, int write)
+
+static s32 __disk_io(BYTE drv, LBA_t sector, u32 count, void *buffer, int write)
 {
 	switch (drv) {
 	case DRIVE_SDHC:
@@ -42,7 +48,7 @@ static s32 __disk_io(BYTE drv, DWORD sector, u32 count, void *buffer, int write)
 }
 
 /* Transfer sectors to or from an unaligned buffer, BOUNCE_MAX at a time */
-static s32 __disk_bounce(BYTE drv, BYTE *buff, DWORD sector, u32 count, u32 secsz, int write)
+static s32 __disk_bounce(BYTE drv, BYTE *buff, LBA_t sector, u32 count, u32 secsz, int write)
 {
 	u32 chunk = BOUNCE_MAX / secsz;
 	void *buffer;
@@ -75,6 +81,35 @@ static s32 __disk_bounce(BYTE drv, BYTE *buff, DWORD sector, u32 count, u32 secs
 	Mem_Free(buffer);
 
 	return ret;
+}
+
+/* Read or write count sectors, DISK_MAX_SECTORS at a time */
+static DRESULT __disk_transfer(BYTE drv, BYTE *buff, LBA_t sector, UINT count, int write)
+{
+	u32 secsz = SECTOR_SZ(drv);
+
+	if (!secsz || !count)
+		return RES_ERROR;
+
+	while (count) {
+		u32 n = (count < DISK_MAX_SECTORS) ? count : DISK_MAX_SECTORS;
+		s32 ret;
+
+		/* An aligned buffer is used directly, an unaligned one bounced */
+		if ((u32)buff & 31)
+			ret = __disk_bounce(drv, buff, sector, n, secsz, write);
+		else
+			ret = __disk_io(drv, sector, n, buff, write);
+
+		if (!ret)
+			return RES_ERROR;
+
+		buff   += n * secsz;
+		sector += n;
+		count  -= n;
+	}
+
+	return RES_OK;
 }
 
 
@@ -113,41 +148,17 @@ DSTATUS disk_status(BYTE drv)
 	return ret ? RES_OK : STA_NODISK;
 }
 
-DRESULT disk_read(BYTE drv, BYTE *buff, DWORD sector, BYTE count)
+DRESULT disk_read(BYTE drv, BYTE *buff, LBA_t sector, UINT count)
 {
-	u32 secsz = SECTOR_SZ(drv);
-	s32 ret;
-
-	if (!secsz || !count)
-		return RES_ERROR;
-
-	/* An aligned buffer is read directly, an unaligned one bounced */
-	if ((u32)buff & 31)
-		ret = __disk_bounce(drv, buff, sector, count, secsz, 0);
-	else
-		ret = __disk_io(drv, sector, count, buff, 0);
-
-	return (ret) ? RES_OK : RES_ERROR;
+	return __disk_transfer(drv, buff, sector, count, 0);
 }
 
-#if _READONLY == 0
-DRESULT disk_write(BYTE drv, const BYTE *buff, DWORD sector, BYTE count)
+#if !FF_FS_READONLY
+DRESULT disk_write(BYTE drv, const BYTE *buff, LBA_t sector, UINT count)
 {
-	u32 secsz = SECTOR_SZ(drv);
-	s32 ret;
-
-	if (!secsz || !count)
-		return RES_ERROR;
-
-	/* An aligned buffer is written directly, an unaligned one bounced */
-	if ((u32)buff & 31)
-		ret = __disk_bounce(drv, (BYTE *)buff, sector, count, secsz, 1);
-	else
-		ret = __disk_io(drv, sector, count, (void *)buff, 1);
-
-	return (ret) ? RES_OK : RES_ERROR;
+	return __disk_transfer(drv, (BYTE *)buff, sector, count, 1);
 }
-#endif /* _READONLY */
+#endif /* !FF_FS_READONLY */
 
 DRESULT disk_ioctl(BYTE drv, BYTE ctrl, void *buff)
 {
@@ -161,7 +172,9 @@ DRESULT disk_ioctl(BYTE drv, BYTE ctrl, void *buff)
 }
 
 
-u32 get_fattime(void)
+/* The module has no clock: every time stamp is 1980-01-01 00:00:00 (the DOS
+   epoch). A zero stamp is not a valid FAT date, and exFAT readers reject it. */
+DWORD get_fattime(void)
 {
-	return 0;
+	return 0x00210000;
 }

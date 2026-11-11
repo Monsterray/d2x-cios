@@ -21,6 +21,7 @@
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
@@ -38,14 +39,35 @@
 
 /* Variables */
 /* One work area per volume: FatFs keeps a pointer to it for each drive. */
-static FATFS fatFs[_VOLUMES] ATTRIBUTE_ALIGN(32);
+static FATFS fatFs[FF_VOLUMES] ATTRIBUTE_ALIGN(32);
 
-PARTITION VolToPart[_VOLUMES]  ATTRIBUTE_ALIGN(32) = {
-	{0,4}, {1,4}
+/* The window of a work area is the DMA target of the sector reads (see ff.h) */
+typedef char __fatfs_win_is_aligned[(offsetof(FATFS, win) % 32) ? -1 : 1];
+
+/* Which partition each volume mounts: 0 is none, 1 to 4 the partition (FatFs
+   counts from 1; the IPC calls and GETPARTITION count from 0). */
+#define PART_NONE	0
+
+PARTITION VolToPart[FF_VOLUMES]  ATTRIBUTE_ALIGN(32) = {
+	{0,PART_NONE}, {1,PART_NONE}
 };
 
-/* Long file name buffer */
-static char  lfnBuf[_MAX_LFN + 1] ATTRIBUTE_ALIGN(32);
+/* The directory entry the walks below read into. One for the module: it handles
+   one request at a time, and a recursive walk has built its path from an entry's
+   name before it goes into the next directory. (A FILINFO is over 300 bytes: on
+   the stack of each level it would not fit the thread's 12 KB.) */
+static FILINFO fno ATTRIBUTE_ALIGN(32);
+
+/* Drive prefixes of the paths */
+static const char *driveRoot[FF_VOLUMES] = { "0:/", "1:/" };
+
+/* The sizes and positions the IPC calls return are 32 bits (struct stats, struct
+   fstats): an exFAT file of 4 GB or more reports 0xFFFFFFFF, the most they hold.
+   FAT_GetUsage adds up the real sizes in 64 bits. */
+static u32 FAT_Size32(FSIZE_t size)
+{
+	return ((u64)size > 0xFFFFFFFFULL) ? 0xFFFFFFFF : (u32)size;
+}
 
 
 s32 __FAT_OpenDir(DIR *dir, const char *dirpath)
@@ -72,23 +94,24 @@ s32 __FAT_OpenDir(DIR *dir, const char *dirpath)
 	return FS_EFATAL;
 }
 
-s32 __FAT_ReadDirEntry(DIR *dir, FILINFO *fno)
+/* Read the next entry that is not . or .. (or hidden by a leading dot) into fno */
+s32 __FAT_ReadDirEntry(DIR *dir)
 {
 	s32 ret;
 
 	/* Loop */
 	while (1) {
 		/* Read entry */
-		ret = f_readdir(dir, fno);
+		ret = f_readdir(dir, &fno);
 		if (ret)
 			return FS_ENOENT;
 
 		/* Read end */
-		if (fno->fname[0] == '\0')
+		if (fno.fname[0] == '\0')
 			return FS_ENOENT;
 
 		/* Check entry */
-		if (fno->fname[0] != '.')
+		if (fno.fname[0] != '.')
 			break;
 	}
 
@@ -101,24 +124,23 @@ s32 __FAT_MountPartition(u8 device, u8 partition)
 	s32 ret;
 
 	/* Set partition */
-	VolToPart[device].pt = partition;
+	VolToPart[device].pt = partition + 1;
 
-	/* Mount device */
-	ret = f_mount(device, &fatFs[device]);
+	/* Mount device (FatFs mounts it on the first access, the root directory below) */
+	ret = f_mount(&fatFs[device], driveRoot[device], 0);
 	if (!ret) {
 		DIR d;
-		char *root = (device == 0) ? "0:/" : "1:/";
 
 		/* Open root directory */
-		if (f_opendir(&d, root) == FR_OK)
+		if (f_opendir(&d, driveRoot[device]) == FR_OK)
 			return FS_SUCCESS;
 
 		/* Unmount device */
-		f_mount(device, NULL);
+		f_mount(NULL, driveRoot[device], 0);
 	}
 
 	/* Reset partition */
-	VolToPart[device].pt = 4;
+	VolToPart[device].pt = PART_NONE;
 
 	return FS_EFATAL;
 }
@@ -168,26 +190,29 @@ s32 FAT_Unmount(u8 device)
 {
 	s32 ret;
 
+	if (device >= FF_VOLUMES)
+		return FS_EFATAL;
+
 	/* Unmount device */
-	ret = f_mount(device, NULL);
+	ret = f_mount(NULL, driveRoot[device], 0);
 	if (ret)
 		return FS_EFATAL;
 
 	/* Reset partition */
-	VolToPart[device].pt = 4;
+	VolToPart[device].pt = PART_NONE;
 
 	return FS_SUCCESS;
 }
 
 s32 FAT_GetPartition(u8 device, u32 *partition)
 {
-	if (device >= _VOLUMES)
+	if (device >= FF_VOLUMES)
 		return IPC_EINVAL;
 
-	if (VolToPart[device].pt >= 4)
+	if (VolToPart[device].pt == PART_NONE)
 		return -1;
 
-	*partition = VolToPart[device].pt;
+	*partition = VolToPart[device].pt - 1;
    
 	return 0;
 }
@@ -222,7 +247,7 @@ s32 FAT_Open(const char *path, u32 mode)
 		Mem_Free(fil);
 
 		/* File sharing control disabled. See issue 11. */
-		if (_FS_SHARE == 0)
+		if (FF_FS_LOCK == 0)
 			return FS_ENOENT;
 
 		/* File sharing control enabled */
@@ -250,7 +275,7 @@ s32 FAT_Read(s32 fd, void *buffer, u32 len)
 {
 	FIL *fil = (FIL *)fd;
 
-	u32 read;
+	UINT read;
 	s32 ret;
 
 	/* Read file */
@@ -272,7 +297,7 @@ s32 FAT_Write(s32 fd, void *buffer, u32 len)
 {
 	FIL *fil = (FIL *)fd;
 
-	u32 wrote;
+	UINT wrote;
 	s32 ret;
 
 	/* Write file */
@@ -293,20 +318,20 @@ s32 FAT_Write(s32 fd, void *buffer, u32 len)
 s32 FAT_Seek(s32 fd, s32 where, s32 whence)
 {
 	FIL *fil = (FIL *)fd;
-	u32 offset;
+	long long offset;
 
-	/* Calculate offset */
+	/* Calculate offset (in 64 bits: a file can be over 4 GB on exFAT) */
 	switch (whence) {
 	case SEEK_SET:
 		offset = where;
 		break;
 
 	case SEEK_CUR:
-		offset = fil->fptr  + where;
+		offset = (long long)f_tell(fil) + where;
 		break;
 
 	case SEEK_END:
-		offset = fil->fsize + where;
+		offset = (long long)f_size(fil) + where;
 		break;
 
 	default:
@@ -319,15 +344,18 @@ s32 FAT_Seek(s32 fd, s32 where, s32 whence)
 	// FIX:
  	// Check added in d2x v4beta2 to prevent from increasing
  	// the file size when seeking out of the file.
-	if(offset <= f_size(fil)) {
+	// The position is the return value, a signed 32 bits: a position of 2 GB
+	// or more cannot be told from an error, so a seek there fails (with the
+	// file position unchanged) instead of returning a negative number.
+	if (offset >= 0 && offset <= (long long)f_size(fil) && offset <= 0x7FFFFFFF) {
 		s32 ret;
 
 		/* Seek file */
-		ret = f_lseek(fil, offset);
+		ret = f_lseek(fil, (FSIZE_t)offset);
 
 		/* No error */
 		if (!ret)
-			return offset;
+			return (s32)offset;
 	}
 
 	return FS_EFATAL;
@@ -387,7 +415,6 @@ s32 FAT_CreateFile(const char *filepath)
 s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 entries, u8 forFS)
 {
 	DIR     dir;
-	FILINFO fno;
 
 	char *buffer = NULL;
 	u32   cnt = 0, pos = 0;
@@ -416,22 +443,18 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 			return IPC_ENOMEM;
 	}
 
-	/* Setup LFN */
-	fno.lfname = lfnBuf;
-	fno.lfsize = sizeof(lfnBuf);
-
 	/* Read directory */
 	while (!entries || (entries > cnt)) {
 		u32 len;
 		char *name;
 
 		/* Read entry */
-		ret = __FAT_ReadDirEntry(&dir, &fno);
+		ret = __FAT_ReadDirEntry(&dir);
 		if (ret)
 			break;
 
-		/* Get name */
-		name = (*fno.lfname) ? fno.lfname : fno.fname;
+		/* Get name (the long name when there is one) */
+		name = fno.fname;
 
 		/* Request coming from FS */
 		if (forFS) {
@@ -444,7 +467,7 @@ s32 FAT_ReadDir(const char *dirpath, char *outbuf, u32 buflen, u32 *outlen, u32 
 		}
 		else {
 			/* Get length */
-			len = strnlen(name, _MAX_LFN);
+			len = strnlen(name, FF_MAX_LFN);
 		}
 
 		/* Copy entry */
@@ -519,7 +542,6 @@ s32 FAT_Delete(const char *path)
 static s32 __FAT_DeleteDir(const char *dirpath, u32 depth)
 {
 	DIR     dir;
-	FILINFO fno;
 
 	s32 ret;
 
@@ -531,22 +553,18 @@ static s32 __FAT_DeleteDir(const char *dirpath, u32 depth)
 	if (ret)
 		return ret;
 
-	/* Setup LFN */
-	fno.lfname = lfnBuf;
-	fno.lfsize = sizeof(lfnBuf);
-
 	/* Read directory */
 	for (;;) {
-		char  path[_MAX_LFN + 1];
+		char  path[FF_MAX_LFN + 1];
 		char *name;
 
 		/* Read entry */
-		ret = __FAT_ReadDirEntry(&dir, &fno);
+		ret = __FAT_ReadDirEntry(&dir);
 		if (ret)
 			break;
 
 		/* Get name */
-		name = (*fno.lfname) ? fno.lfname : fno.fname;
+		name = fno.fname;
 
 		/* The entry's path must fit: a tree can be deeper than _MAX_LFN */
 		if (strlen(dirpath) + 1 + strlen(name) >= sizeof(path))
@@ -609,17 +627,7 @@ s32 FAT_Rename(const char *oldname, const char *newname)
 
 s32 FAT_GetStats(const char *path, struct stats *stats)
 {
-	FILINFO fno;
 	s32     ret;
-
-	// FIX:
-	// Initialization code added in d2x v4beta2 because members lfname 
-	// and lfsize MUST be inited before using FILEINFO structure.
-	// Now games like Max & the Magic Marker, FFCC My Life as a King
-	// and FFCC My Life as a Darklord are working poperly.
-	/* Setup LFN */
-	fno.lfname = lfnBuf;
-	fno.lfsize = sizeof(lfnBuf);
 
 	/* Get stats */
 	ret = f_stat(path, &fno);
@@ -631,7 +639,7 @@ s32 FAT_GetStats(const char *path, struct stats *stats)
 		case FR_OK:
 			/* Fill info */
 			if (stats) {
-				stats->size   = fno.fsize;
+				stats->size   = FAT_Size32(fno.fsize);
 				stats->date   = fno.fdate;
 				stats->time   = fno.ftime;
 				stats->attrib = fno.fattrib;
@@ -652,13 +660,13 @@ s32 FAT_GetFileStats(s32 fd, struct fstats *stats)
 	FIL *fil = (FIL *)fd;
 
 	/* No file */
-	if (!fil->fs)
+	if (!fil->obj.fs)
 		return FS_EFATAL;
 
 	/* Fill stats */
 	if (stats) {
-		stats->length = fil->fsize;
-		stats->pos    = fil->fptr;
+		stats->length = FAT_Size32(f_size(fil));
+		stats->pos    = FAT_Size32(f_tell(fil));
 	}
 
 	return FS_SUCCESS;
@@ -667,7 +675,6 @@ s32 FAT_GetFileStats(s32 fd, struct fstats *stats)
 static s32 __FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs, u8 forFS, u32 depth)
 {
 	DIR     dir;
-	FILINFO fno;
 	s32 ret;
 
 	/* See FAT_MAX_DEPTH */
@@ -679,22 +686,18 @@ static s32 __FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs,
 	if (ret)
 		return ret;
 
-	/* Setup LFN */
-	fno.lfname = lfnBuf;
-	fno.lfsize = sizeof(lfnBuf);
-
 	/* Read directory */
 	for (;;) {
 		char *name;
 		u32 len;
 
 		/* Read entry */
-		ret = __FAT_ReadDirEntry(&dir, &fno);
+		ret = __FAT_ReadDirEntry(&dir);
 		if (ret)
 			break;
 
 		/* Get name */
-		name = (*fno.lfname) ? fno.lfname : fno.fname;
+		name = fno.fname;
 
 		/* Request coming from FS */
 		if (forFS) {
@@ -709,7 +712,7 @@ static s32 __FAT_GetUsage(const char *dirpath, u64 *size, u32 *files, u32 *dirs,
 
 		/* Entry is subdirectory */
 		if (fno.fattrib & AM_DIR) {
-			char subdirpath[_MAX_LFN + 1];
+			char subdirpath[FF_MAX_LFN + 1];
 
 			/* The subdirectory's path must fit: a tree can be deeper than _MAX_LFN */
 			len = strlen(dirpath);

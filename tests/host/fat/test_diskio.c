@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "fat_types.h"
 #include "types.h"
 #include "sdio.h"
 #include "usbstorage.h"
@@ -177,6 +176,34 @@ static void test_bad_drive(void)
 	CHECK(disk_read(0, buffer_at(base, 0), 0, 0) == RES_ERROR, "zero-sector read succeeded");
 }
 
+/* FatFs R0.16 asks for a whole run of sectors at once (an exFAT cluster can be
+   32 MB): the drivers get at most 255 sectors a time, aligned buffer or not */
+static void test_long_run_is_chunked(void)
+{
+	static u8 base[600 * 512 + 64];
+	u8 *buf = buffer_at(base, 0);
+	CHECK(disk_read(0, buf, 10, 600) == RES_OK, "aligned 600-sector read failed");
+	CHECK(calls == 3 && largest == 255, "%d calls, largest %u sectors", calls, largest);
+	CHECK(memcmp(buf, disk[0] + 10 * 512, 600 * 512) == 0, "wrong data");
+	calls = 0;
+	largest = 0;
+	buf = buffer_at(base, 5);
+	CHECK(disk_read(0, buf, 20, 600) == RES_OK, "unaligned 600-sector read failed");
+	CHECK(unaligned == 0 && largest <= 32, "unaligned %d, largest %u sectors", unaligned, largest);
+	CHECK(memcmp(buf, disk[0] + 20 * 512, 600 * 512) == 0, "wrong data");
+	CHECK(alloc_live == 0, "%d blocks leaked", alloc_live);
+	for (int i = 0; i < 600 * 512; i++)
+		buf[i] = (u8)(i * 3);
+	CHECK(disk_write(1, buf, 100, 600) == RES_OK, "unaligned 600-sector write failed");
+	CHECK(memcmp(buf, disk[1] + 100 * 512, 600 * 512) == 0, "wrong data on disk");
+}
+
+/* The time stamp is the DOS epoch, 1980-01-01, not the invalid zero */
+static void test_fattime_is_dos_epoch(void)
+{
+	CHECK(get_fattime() == 0x00210000, "get_fattime() is %08x", (unsigned)get_fattime());
+}
+
 static const struct hc_test tests[] = {
 	{ "aligned_read_is_direct", test_aligned_read_is_direct, false },
 	{ "unaligned_read_large", test_unaligned_read_large, false },
@@ -186,6 +213,8 @@ static const struct hc_test tests[] = {
 	{ "unaligned_failure_stops", test_unaligned_failure_stops, false },
 	{ "no_bounce_memory", test_no_bounce_memory, false },
 	{ "bad_drive", test_bad_drive, false },
+	{ "long_run_is_chunked", test_long_run_is_chunked, false },
+	{ "fattime_is_dos_epoch", test_fattime_is_dos_epoch, false },
 };
 
 int main(int argc, char **argv)

@@ -21,7 +21,7 @@ endif
 
 # Flags
 ARCH	=	-mcpu=arm926ej-s -mthumb -mthumb-interwork -mbig-endian
-CFLAGS	=	$(ARCH) -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -ffunction-sections -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
+CFLAGS	=	$(ARCH) -std=gnu99 -I. -I../cios-lib -ffreestanding -fno-builtin -ffunction-sections -fomit-frame-pointer -Os -Wall -ffunction-sections -Wno-builtin-macro-redefined -D__TIME__=\"$(BUILD_TIME)\" -D__DATE__=\"$(BUILD_DATE)\"
 CFLAGS	+=	$(EXTRA_CFLAGS)
 # SD high speed is on in every build (docs/sd-high-speed.md); -DSDIO_NO_HIGH_SPEED turns it off.
 # cios-lib, fat-module and mload-module must all agree, so each Makefile has this block.
@@ -37,7 +37,7 @@ LIBS	=	../cios-lib/cios-lib.a
 TARGET	=	fat-module
 
 # Objects
-OBJS	=	ccsbcs.o		\
+OBJS	=	ffunicode.o		\
 		diskio.o		\
 		fat_wrapper.o		\
 		ff.o			\

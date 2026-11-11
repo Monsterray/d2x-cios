@@ -20,7 +20,6 @@
 #undef true
 #undef false
 
-#include "fat_types.h"
 #include "types.h"
 #include "sdio.h"
 #include "usbstorage.h"

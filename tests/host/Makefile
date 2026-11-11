@@ -109,8 +109,8 @@ usbs/test_usbs_async: usbs/test_usbs_async.c hostcheck.h $(USBS)/usb2.c $(USBS)/
 # (fat/fat_unit.c).
 FATMOD := ../../source/fat-module
 fat/test_fat: fat/test_fat.c fat/fat_unit.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h \
-		fat/fat_types.h hostcheck.h fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c \
-		$(FATMOD)/ff.h $(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c
+		hostcheck.h fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c \
+		$(FATMOD)/ff.h $(FATMOD)/ffconf.h $(FATMOD)/ffunicode.c $(CIOSLIB)/fat_tools.c
 	$(CC) $(ALL_CFLAGS) -I. -Ifat -I$(FATMOD) -c -o fat/test_fat.o fat/test_fat.c
 	$(CC) $(ALL_CFLAGS) -Ifat -I$(FATMOD) -c -o fat/ramdisk.o fat/ramdisk.c
 	$(CC) $(ALL_CFLAGS) -Wno-implicit-fallthrough -Ifat -I$(FATMOD) -c -o fat/ff_unit.o fat/ff_unit.c
@@ -119,7 +119,7 @@ fat/test_fat: fat/test_fat.c fat/fat_unit.c fat/ff_unit.c fat/ramdisk.c fat/ramd
 	$(CC) $(ALL_CFLAGS) -no-pie -o $@ fat/test_fat.o fat/ramdisk.o fat/ff_unit.o fat/fat_unit.o
 
 # The FAT module's diskio.c with the SD and EHCI drivers stubbed on RAM.
-fat/test_diskio: fat/test_diskio.c fat/fat_types.h hostcheck.h fat/stub/mem.h $(FATMOD)/diskio.c \
+fat/test_diskio: fat/test_diskio.c hostcheck.h fat/stub/mem.h $(FATMOD)/diskio.c \
 		$(FATMOD)/diskio.h
 	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -I. -Ifat -Ifat/stub -I$(FATMOD) -I$(CIOSLIB) \
 		-o $@ fat/test_diskio.c
@@ -135,7 +135,7 @@ sdio/test_sdio_dbg: sdio/test_sdio_dbg.c hostcheck.h $(DBG_DEPS) $(CIOSLIB)/sdio
 	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -DSDIO_HIGH_SPEED -DSDIO_HS_DEBUG -Wno-pointer-to-int-cast -I. -Idbg \
 		-I$(MLOADMOD) -I$(CIOSLIB) -o $@ sdio/test_sdio_dbg.c dbg/swi_host.c
 
-fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h fat/fat_types.h hostcheck.h \
+fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h hostcheck.h \
 		$(DBG_DEPS) fat/stub/*.h $(FATMOD)/fat_wrapper.c $(FATMOD)/main.c $(FATMOD)/ff.c $(FATMOD)/ff.h \
 		$(FATMOD)/ffconf.h $(CIOSLIB)/fat_tools.c
 	$(CC) $(ALL_CFLAGS) -Ifat -I$(FATMOD) -c -o fat/dbg_ramdisk.o fat/ramdisk.c

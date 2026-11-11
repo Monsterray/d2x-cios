@@ -9,7 +9,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "fat_types.h"
 
 #include "types.h"
 #include "sdio.h"
@@ -91,8 +90,9 @@ void fatw_reset(void)
 	arena_used = 0;
 	arena_live = 0;
 	arena_corrupt = 0;
-	f_mount(0, NULL);
-	f_mount(1, NULL);
+	f_mount(NULL, "0:", 0);
+	f_mount(NULL, "1:", 0);
+	VolToPart[0].pt = VolToPart[1].pt = 0;
 }
 
 int fatw_live_blocks(void) { return arena_live; }

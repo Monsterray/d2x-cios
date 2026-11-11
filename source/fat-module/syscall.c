@@ -1,5 +1,5 @@
 /*------------------------------------------------------------------------*/
-/* Sample code of OS dependent controls for FatFs R0.08                   */
+/* OS dependent controls for FatFs (after ChaN's ffsystem.c)           */
 /* (C)ChaN, 2010                                                          */
 /*------------------------------------------------------------------------*/
 
@@ -7,7 +7,7 @@
 #include "mem.h"
 
 
-#if _USE_LFN == 3	/* LFN with a working buffer on the heap */
+#if FF_USE_LFN == 3	/* LFN with a working buffer on the heap */
 /*------------------------------------------------------------------------*/
 /* Allocate a memory block                                                */
 /*------------------------------------------------------------------------*/
