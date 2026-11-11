@@ -8,6 +8,7 @@ Notes for people working on the cIOS. For setup and the build, start with [CONTR
 | [sd-high-speed.md](sd-high-speed.md) | you touch the SD card driver: how 50 MHz is switched on, the fallback, the `-DSDIO_NO_HIGH_SPEED` opt-out |
 | [debug-build.md](debug-build.md) | you chase a hang inside IOS: the `+dbg` build, its trace, watchdog and fault injection |
 | [mload.md](mload.md) | you touch MLOAD or load modules from the SD card: how mload works, the SD loader (files, limits, report), security, the Wii test steps, BootMii-reborn notes |
+| [fatfs.md](fatfs.md) | you touch the FAT module's FatFs (R0.16, exFAT), its size split or `divmod64.c`: what changed from R0.08b, the limits, the Wii test plan |
 | [module-size.md](module-size.md) | a module grows: each module's fixed size and how much room is left |
 | [bench.md](bench.md) | you compare a measurement from a Wii (USB, SD, Wi-Fi) |
 | [wii-mini.md](wii-mini.md) | you touch the Wii Mini bases (57 v31775/v31776) or the IOP module they add: what came from d2xl, what is unchecked |
