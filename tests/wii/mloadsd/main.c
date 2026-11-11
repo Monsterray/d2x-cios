@@ -1,15 +1,21 @@
 /*
  * mloadsd: check the SD module loader of d2x's MLOAD (docs/mload.md).
  *
- *     hbc.py run mloadsd.dol --ios=249 [--expect=none]
+ *     hbc.py run mloadsd.dol --ios=249 [--auto] [--expect=none]
  *
  * Needs, on the SD card, sd:/d2x/mload.txt naming the test module and the
  * module itself in sd:/d2x/mload/ (docs/mload.md, "Testing on a Wii"). Reloads
- * to the cIOS, prints its identity, asks /dev/mload for the loader's report
- * (MLOAD_GET_SD_REPORT) until the loader is done (up to 10 s), prints it, then
- * opens /dev/mloadtest, which the test module registers, and sends it ioctl 1:
- * the answer must be 0x4D4C5453. It writes nothing to the card but the report
- * sd:/mloadsd.txt, and never touches the cIOS or the NAND.
+ * to the cIOS, prints its identity, then
+ *   default: calls MLOAD_SD_LOAD (0 = it ran now, 1 = it had run before) and
+ *            prints the report;
+ *   --auto:  calls MLOAD_GET_SD_REPORT first, before any SD use of its own,
+ *            and expects mode 1 (the loader ran at start, by the NAND flag).
+ * It then opens /dev/mloadtest, which the test module registers, and sends it
+ * ioctl 1: the answer must be 0x4D4C5453. It writes nothing to the card but
+ * the report sd:/mloadsd.txt, and never touches the cIOS.
+ *
+ * --mkflag / --rmflag: NAND WRITES, only with the owner's OK. Create or delete
+ * /shared2/d2x/mload.cfg (the flag for auto mode) and exit.
  *
  * --expect=loaded (default): at least one module started and /dev/mloadtest
  *                            answers. RESULT ok or RESULT fail.
@@ -34,6 +40,9 @@
 extern void __exception_setreload(int t);
 
 #define MLOAD_GET_SD_REPORT 0x4D4C44F0   /* source/mload-module/module.h */
+#define MLOAD_SD_LOAD       0x4D4C44F1
+#define FLAG_DIR  "/shared2/d2x"
+#define FLAG_PATH "/shared2/d2x/mload.cfg"
 #define MLT_IOCTL_PING      1            /* testmod/main.c */
 #define MLT_MAGIC           0x4D4C5453
 
@@ -43,6 +52,7 @@ extern void __exception_setreload(int t);
 #define SDL_MAX_MODULES 8
 #define SDL_REPORT_MAGIC 0x53444D4C
 #define SDL_ST_DONE 5
+#define SDL_REPORT_VERSION 1
 
 struct sdl_entry {
 	char name[SDL_NAME_MAX + 1];
@@ -55,8 +65,11 @@ struct sdl_report {
 	u32 magic, version, state;
 	s32 error;
 	u32 count, loaded, skipped, elapsed_ms;
+	u32 mode;
+	s32 flag;
 	struct sdl_entry entries[SDL_MAX_MODULES];
 };
+_Static_assert(sizeof(struct sdl_report) == 392, "sdload.h: sdl_report is 392 bytes");
 
 static const char *error_name(s32 e)
 {
@@ -69,6 +82,7 @@ static const char *error_name(s32 e)
 	case -5: return "the 5 s budget ran out";
 	case -6: return "a title was running";
 	case -7: return "no timer";
+	case -8: return "BUSY: the PPC wrote to the module area";
 	default: return "unknown";
 	}
 }
@@ -86,6 +100,7 @@ static const char *result_name(s32 r)
 	case -16: return "the thread did not start";
 	case -17: return "over the 8 module limit";
 	case -18: return "never tried: the run ended first";
+	case -19: return "ALIGN: a segment address or size is not a multiple of 32";
 	default:  return "unknown";
 	}
 }
@@ -182,22 +197,70 @@ done:
 	free(tmd);
 }
 
+/* NAND writes: the flag file for auto mode. Owner's OK first. */
+static int flag_file(bool make)
+{
+	char dir[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = FLAG_DIR;
+	char path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = FLAG_PATH;
+	s32 r = ISFS_Initialize();
+	if (r < 0) {
+		say("RESULT fail ISFS_Initialize %d\n", (int) r);
+		return 1;
+	}
+	if (make) {
+		r = ISFS_CreateDir(dir, 0, ISFS_OPEN_RW, ISFS_OPEN_RW, ISFS_OPEN_RW);
+		say("mloadsd: ISFS_CreateDir %s = %d (-105 is: exists)\n", dir, (int) r);
+		r = ISFS_CreateFile(path, 0, ISFS_OPEN_RW, ISFS_OPEN_RW, ISFS_OPEN_RW);
+		say("mloadsd: ISFS_CreateFile %s = %d (-105 is: exists)\n", path, (int) r);
+		if (r < 0 && r != -105) {
+			say("RESULT fail mkflag %d\n", (int) r);
+			return 1;
+		}
+		say("RESULT ok flag created\n");
+	} else {
+		r = ISFS_Delete(path);
+		say("mloadsd: ISFS_Delete %s = %d (-106 is: none)\n", path, (int) r);
+		if (r < 0 && r != -106) {
+			say("RESULT fail rmflag %d\n", (int) r);
+			return 1;
+		}
+		say("RESULT ok flag removed\n");
+	}
+	return 0;
+}
+
 static int check(int argc, char **argv)
 {
 	u32 ios = 249;
-	bool expect_none = false;
+	bool expect_none = false, auto_mode = false, mkflag = false, rmflag = false;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strncmp(argv[i], "--ios=", 6))
 			ios = atoi(argv[i] + 6);
 		else if (!strcmp(argv[i], "--expect=none"))
 			expect_none = true;
+		else if (!strcmp(argv[i], "--auto"))
+			auto_mode = true;
+		else if (!strcmp(argv[i], "--mkflag"))
+			mkflag = true;
+		else if (!strcmp(argv[i], "--rmflag"))
+			rmflag = true;
+		else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+			printf("mloadsd [--ios=N] [--auto] [--expect=none]\n"
+			       "  --auto     expect the loader to have run at start (NAND flag): mode 1\n"
+			       "  --mkflag   NAND WRITE: create %s (needs the owner's OK)\n"
+			       "  --rmflag   NAND WRITE: delete it (needs the owner's OK)\n",
+			       FLAG_PATH);
+			return 0;
+		}
 	}
 
 	console_setup();
+	if (mkflag || rmflag)
+		return flag_file(mkflag);
 	hbc_netlog_init();
-	say("mloadsd: running on IOS%d v%d; reloading to %u; expecting %s\n", IOS_GetVersion(),
-	    IOS_GetRevision(), ios, expect_none ? "no module" : "the test module");
+	say("mloadsd: running on IOS%d v%d; reloading to %u; %s mode; expecting %s\n", IOS_GetVersion(),
+	    IOS_GetRevision(), ios, auto_mode ? "auto" : "SD_LOAD", expect_none ? "no module" : "the test module");
 
 	/* Reloading IOS takes the network down: close the log, and tell libogc
 	 * its network is gone, so a new hbc_netlog_init() starts it again. */
@@ -228,27 +291,31 @@ static int check(int argc, char **argv)
 		say("RESULT fail no memory for the report\n");
 		return 1;
 	}
-	for (int tries = 0; tries < 100; tries++) {
-		memset(rep, 0, sizeof(*rep));
+	memset(rep, 0, sizeof(*rep));
+	if (auto_mode) {
+		/* Before any SD use of this app: GET_SD_REPORT waits for the run to end */
 		ret = IOS_IoctlvFormat(heap, fd, MLOAD_GET_SD_REPORT, ":d", rep, sizeof(*rep));
-		if (ret < 0 || rep->magic != SDL_REPORT_MAGIC || rep->state == SDL_ST_DONE)
-			break;
-		usleep(100000);
+		say("mloadsd: MLOAD_GET_SD_REPORT = %d\n", (int) ret);
+	} else {
+		ret = IOS_IoctlvFormat(heap, fd, MLOAD_SD_LOAD, ":d", rep, sizeof(*rep));
+		say("mloadsd: MLOAD_SD_LOAD = %d (0 ran now, 1 had run before, -8 BUSY, -19 ALIGN)\n",
+		    (int) ret);
 	}
 	if (ret < 0) {
-		say("mloadsd: MLOAD_GET_SD_REPORT = %d (a cIOS without the SD loader?)\n", ret);
+		say("mloadsd: the ioctl failed (a cIOS without the SD loader?)\n");
 		IOS_Close(fd);
-		say("RESULT fail report ioctl %d\n", ret);
+		say("RESULT fail ioctl %d\n", (int) ret);
 		return 1;
 	}
-	if (rep->magic != SDL_REPORT_MAGIC) {
+	if (rep->magic != SDL_REPORT_MAGIC || rep->version != SDL_REPORT_VERSION) {
 		IOS_Close(fd);
-		say("RESULT fail report magic %08x\n", rep->magic);
+		say("RESULT fail report magic %08x version %u\n", rep->magic, rep->version);
 		return 1;
 	}
-	say("mloadsd: report v%u: state %u, error %d (%s), %u listed, %u started, %u skipped, %u ms\n",
-	    rep->version, rep->state, (int) rep->error, error_name(rep->error), rep->count, rep->loaded,
-	    rep->skipped, rep->elapsed_ms);
+	say("mloadsd: report v%u: mode %u, flag %d, state %u, error %d (%s), %u listed, %u started, "
+	    "%u skipped, %u ms\n",
+	    rep->version, rep->mode, (int) rep->flag, rep->state, (int) rep->error,
+	    error_name(rep->error), rep->count, rep->loaded, rep->skipped, rep->elapsed_ms);
 	for (u32 i = 0; i < rep->count && i < SDL_MAX_MODULES; i++) {
 		struct sdl_entry *e = &rep->entries[i];
 		e->name[SDL_NAME_MAX] = 0;
@@ -270,7 +337,11 @@ static int check(int argc, char **argv)
 	    MLT_IOCTL_PING, (unsigned) magic, MLT_MAGIC);
 
 	if (!done) {
-		say("RESULT fail the loader was not done after 10 s (state %u)\n", rep->state);
+		say("RESULT fail the loader was not done (state %u)\n", rep->state);
+		return 1;
+	}
+	if (auto_mode && rep->mode != 1) {
+		say("RESULT fail auto mode expected mode 1, got %u (flag %d)\n", rep->mode, (int) rep->flag);
 		return 1;
 	}
 	if (expect_none) {
