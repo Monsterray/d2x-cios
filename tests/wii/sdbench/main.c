@@ -654,15 +654,17 @@ static int bench(int argc, char **argv)
 		__io_wiisd.shutdown();
 	}
 
-	/* An IOS heap is in MEM2: room for the ioctlv vectors and one 32 KB buffer. */
-	heap = iosCreateHeap(maxsec * SECTOR + 4096);
+	/* The IPC heap is 128 KB in all and others hold most of it: it only gets the ioctlv
+	 * vectors (a 134 KB heap failed with -22). The data buffer is plain MEM2. */
+	heap = iosCreateHeap(4096);
 	fd = IOS_Open(dev_sdhc, 0);
 	if (heap < 0 || fd < 0) {
 		say("sdbench: open /dev/sdio/sdhc: heap %d, fd %d (no such device?)\n", heap, fd);
 		say("RESULT fail open /dev/sdio/sdhc heap=%d fd=%d\n", heap, fd);
 		return 1;
 	}
-	u8 *buf = iosAlloc(heap, maxsec * SECTOR);    /* MEM2, 32-byte aligned */
+	u8 *buf = (u8 *) (((u32) SYS_GetArena2Lo() + 31) & ~31u);    /* MEM2, 32-byte aligned */
+	SYS_SetArena2Lo(buf + maxsec * SECTOR);
 	if (!buf) {
 		IOS_Close(fd);
 		say("RESULT fail no memory for the buffer\n");
