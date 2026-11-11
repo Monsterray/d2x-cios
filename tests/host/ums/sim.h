@@ -40,6 +40,7 @@ struct ehci_device;
 struct sim {
 	/* the drive */
 	u8 data[SIM_SECTORS * SIM_SECTOR_SIZE];
+	u32 sectors;                    /* READ CAPACITY: set by sim_reset(), drive 1 is smaller */
 	u8 sense_key, asc;
 	struct ehci_device *dev;        /* the host's view of it (toggles) */
 
@@ -138,10 +139,11 @@ void sim_hc_write(int reg, u32 v);
 int ums_plug(void);             /* mount the drive as USBStorage_Init() does */
 void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
+u32 ums_sectors(void);          /* the capacity of the selected drive, in sectors */
 int ums_enum_port(void);        /* ehci_init_port(0), as ehci_reset_port() ends */
 void ums_set_dev_id(int id);    /* the id of the device USBStorage_Init() sees on port 0 */
 void ums_set_dev_id_port(int port, int id);     /* the same on root port 0 or 1 */
-void ums_select(int port);      /* USBStorage_Select(): the logical port the next calls go to */
+int ums_select(int port);      /* USBStorage_Select(): the logical port the next calls go to */
 int ums_selected(void);
 int ums_fd_port(int fd);        /* loop.c's fd -> port table */
 int ums_fd_set_port(int fd, unsigned port);

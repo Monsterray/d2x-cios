@@ -383,7 +383,7 @@ static void start_command(const u8 *cbw)
 		sim.phase = SIM_DATA_IN;
 		break;
 	case 0x25:                      /* READ CAPACITY(10) */
-		put_be32(sim.in_buf, SIM_SECTORS - 1);
+		put_be32(sim.in_buf, sim.sectors - 1);
 		put_be32(sim.in_buf + 4, SIM_SECTOR_SIZE);
 		sim.phase = SIM_DATA_IN;
 		break;
@@ -612,6 +612,8 @@ void sim_reset(void)
 		for (size_t i = 0; i < sizeof(sims[d].data); i++)
 			sims[d].data[i] = (u8)(i * 7 + 3 + d * 0x55);     /* drives differ */
 	}
+	for (int d = 0; d < SIM_DRIVES; d++)
+		sims[d].sectors = SIM_SECTORS - d * 1024;       /* the drives differ in size too */
 	sims[1].disconnected = true;    /* nothing in the second socket, and EHCI released */
 	sims[1].owner = true;           /* the port to OHCI at boot (ehci_release_ports) */
 	sim.hc_cmd = H_ASE | 1;         /* RUN, async schedule on */

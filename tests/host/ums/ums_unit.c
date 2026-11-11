@@ -117,7 +117,7 @@ int ums_enum_port(void)
 }
 void ums_set_dev_id(int id) { ehci->devices[0].id = id; }
 void ums_set_dev_id_port(int port, int id) { ehci->devices[port].id = id; }
-void ums_select(int port) { USBStorage_Select(port); }
+int ums_select(int port) { return USBStorage_Select(port); }
 int ums_selected(void) { return ums_cur; }
 int ums_fd_port(int fd) { return fdport_get(fd); }
 int ums_fd_set_port(int fd, unsigned port) { return fdport_set(fd, port, UMS_PORTS); }
@@ -177,6 +177,11 @@ u32 ums_sector_size(void)
 	u32 size = 0;
 	USBStorage_Get_Capacity(&size);
 	return size;
+}
+
+u32 ums_sectors(void)
+{
+	return USBStorage_Get_Capacity(NULL);
 }
 
 /* A Bulk-Only reset recovery as the driver does it (USBStorage_Reset). */

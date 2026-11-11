@@ -630,6 +630,230 @@ static void test_ladder_unfixable_fault_fails_in_time(void)
 	IN_TIME("gave up");
 }
 
+/* ---- two drives: logical ports 0 and 1 (docs/usb-ports.md) ----
+ * Drive 0 is on root port 0, drive 1 in the second socket, which EHCI gave to
+ * OHCI at boot (sim.owner). The two differ in data and in size. A test works
+ * on a port by ums_select(), as loop.c does for each request, and on a
+ * simulated drive by sim_sel(). */
+
+/* READ CAPACITY gives the last LBA, and the driver keeps it as it is */
+#define CAP(i) (sims[i].sectors - 1)
+
+/* UMS_INIT on logical port 1 with a drive in the second socket; leaves port 1
+ * selected */
+static void mount_port1(void)
+{
+	sim_sel(1);
+	sim.disconnected = false;
+	ums_select(1);
+	CHECK(ums_init() == 0, "UMS_INIT on port 1 failed: %s", sim_summary());
+	CHECK(ums_mounted(), "port 1 not mounted");
+}
+
+/* Drive 0 mounted as the default port, drive 1 by UMS_INIT on port 1; leaves
+ * port 0 selected */
+static void mount_both(void)
+{
+	mount();
+	mount_port1();
+	ums_select(0);
+	sim_sel(0);
+}
+
+/* A read on a logical port, the data compared with that port's drive */
+static bool read_port(int port, u32 sector, u32 n)
+{
+	ums_select(port);
+	if (!USBStorage_Read_Sectors(sector, n, buf))
+		return false;
+	return memcmp(buf, sims[port].data + (size_t)sector * SECTOR, (size_t)n * SECTOR) == 0;
+}
+
+/* The second socket belongs to OHCI until the first UMS_INIT on port 1 takes it
+ * back, once. */
+static void test_port1_init_acquires_once(void)
+{
+	CHECK(sims[1].owner, "the second socket is not with OHCI at the start");
+	mount_port1();
+	CHECK(sims[1].acquires == 1, "acquired %u times", sims[1].acquires);
+	CHECK(!sims[1].owner, "the port is still with OHCI");
+	CHECK(ums_sector_size() == SECTOR && ums_sectors() == CAP(1), "capacity %u", ums_sectors());
+	CHECK(read_port(1, 7, 2), "read of port 1 failed: %s", sim_summary());
+	/* a second UMS_INIT (GX sends one per port, again) does not take it again */
+	CHECK(ums_init() == 0, "second UMS_INIT failed");
+	CHECK(sims[1].acquires == 1, "acquired %u times", sims[1].acquires);
+	CHECK(read_port(1, 9, 1), "read failed after the second UMS_INIT");
+	/* and port 0 was not touched */
+	ums_select(0);
+	CHECK(!ums_mounted(), "port 0 mounted by a UMS_INIT on port 1");
+	CHECK(sims[0].port_resets == 0 && sims[0].portsc_writes == 0, "port 0 touched: %s", sim_summary());
+}
+
+/* UMS_INIT on port 1 with nothing in the socket fails at once, mounts nothing and
+ * leaves port 0 as it was */
+static void test_port1_init_without_a_drive_fails(void)
+{
+	mount();
+	CHECK_OK();
+	ums_select(1);
+	CHECK(ums_init() != 0, "UMS_INIT succeeded with no drive in the second socket");
+	CHECK(!ums_mounted(), "mounted nothing");
+	CHECK(sim.now_us < 2000000, "took %s", sim_summary());
+	CHECK(!USBStorage_Read_Sectors(1, 1, buf), "read from an empty port");
+	CHECK(read_port(0, 3, 1), "port 0 read failed: %s", sim_summary());
+	/* the drive is plugged in later: the next UMS_INIT finds it */
+	sim_sel(1);
+	sim.disconnected = false;
+	ums_select(1);
+	CHECK(ums_init() == 0, "UMS_INIT failed once the drive is there: %s", sim_summary());
+	CHECK(read_port(1, 3, 1), "read of port 1 failed");
+}
+
+/* Each port has its own drive: data, capacity, reads alternating between them,
+ * and a write lands on its own drive only */
+static void test_two_drives_alternate(void)
+{
+	u32 c0, c1, r0, r1;
+	mount_both();
+	CHECK_OK();
+	r0 = sims[0].bot_resets;        /* mounting has its own */
+	r1 = sims[1].bot_resets;
+	ums_select(0);
+	c0 = ums_sectors();
+	ums_select(1);
+	c1 = ums_sectors();
+	CHECK(c0 == CAP(0) && c1 == CAP(1) && c0 != c1, "capacities %u and %u", c0, c1);
+	CHECK(memcmp(sims[0].data + 10 * SECTOR, sims[1].data + 10 * SECTOR, SECTOR) != 0, "the drives hold the same data");
+	for (int i = 0; i < 24; i++)
+		CHECK(read_port(i & 1, 10 + i, 1 + (i % 5)), "read %d on port %d failed: %s", i, i & 1, sim_summary());
+
+	fill(buf, 8 * SECTOR, 0x42);
+	back[0] = sims[0].data[300 * SECTOR];
+	ums_select(1);
+	CHECK(USBStorage_Write_Sectors(300, 8, buf), "write failed: %s", sim_summary());
+	CHECK(memcmp(sims[1].data + 300 * SECTOR, buf, 8 * SECTOR) == 0, "the data did not land on drive 1");
+	CHECK(sims[0].data[300 * SECTOR] == back[0], "drive 0 changed by a write to port 1");
+	CHECK(sims[0].writes_ok == 0, "drive 0 saw a write");
+	CHECK(read_port(0, 300, 8) && read_port(1, 300, 8), "read back failed");
+	CHECK(sims[0].bot_resets == r0 && sims[1].bot_resets == r1, "BOT resets while alternating");
+}
+
+/* A drive unplugged on port 1 does not stop port 0: its request fails after
+ * UMS_GONE_MS (3 s), then at once, and the drive on port 0 is read the whole time. */
+static void test_port1_gone_fails_after_a_bound_then_at_once(void)
+{
+	u64 t;
+	mount_both();
+	CHECK_OK();
+	sim_sel(1);
+	sim_unplug_for(0);
+	t = sim.now_us;
+	CHECK(!read_port(1, 20, 1), "read from an unplugged drive succeeded");
+	CHECK(sim.now_us - t >= 3000000ull && sim.now_us - t <= 4500000ull, "gave up after %.2f s", (sim.now_us - t) / 1e6);
+	CHECK(read_port(0, 21, 4), "port 0 read failed: %s", sim_summary());
+	t = sim.now_us;
+	for (int i = 0; i < 5; i++)
+		CHECK(!read_port(1, 22 + i, 1), "a request to the gone drive succeeded");
+	CHECK(sim.now_us - t < 100000, "failing at once took %.3f s", (sim.now_us - t) / 1e6);
+	CHECK(read_port(0, 30, 2), "port 0 read failed after: %s", sim_summary());
+	ums_select(0);
+	CHECK(!unplug_device, "the unplug of port 1 marked port 0");
+	CHECK(ums_keepalive_ready(), "port 0 is not kept alive");
+	ums_select(1);
+	CHECK(!ums_keepalive_ready(), "the keepalive would wait for the gone drive on port 1");
+}
+
+/* The drive comes back (CSC): port 1 recovers, with its own data, and port 0
+ * is as it was */
+static void test_port1_replug_recovers(void)
+{
+	mount_both();
+	CHECK_OK();
+	sim_sel(1);
+	sim_unplug_for(0);
+	CHECK(!read_port(1, 20, 1), "read from an unplugged drive succeeded");
+	CHECK(!read_port(1, 21, 1), "read succeeded while gone");
+	sim_sel(1);
+	sim.disconnected = false;
+	sim.csc = true;
+	CHECK(read_port(1, 22, 3), "read failed after the replug: %s", sim_summary());
+	CHECK(read_port(1, 400, 1) && read_port(0, 401, 1), "reads failed after the replug");
+	/* gone again, and back before the bound runs out: the request waits and succeeds */
+	sim_sel(1);
+	sim_unplug_for(1500000ull);
+	CHECK(read_port(1, 23, 2), "read failed with a replug inside the bound: %s", sim_summary());
+	CHECK(read_port(0, 24, 1), "port 0 failed: %s", sim_summary());
+}
+
+/* A drive on port 1 that is there but answers nothing: its request fails at the
+ * deadline (as port 0's does), and port 0 keeps working */
+static void test_port1_stuck_drive_errors_at_the_deadline(void)
+{
+	u64 t;
+	mount_both();
+	CHECK_OK();
+	sim_sel(1);
+	sim.ppc = false;
+	sim.stall_csw = 1000000;
+	t = sim.now_us;
+	CHECK(!read_port(1, 50, 1), "read from a stuck drive succeeded");
+	CHECK(sim.now_us - t <= (u64)(ums_request_ms + 2000) * 1000, "gave up after %.1f s", (sim.now_us - t) / 1e6);
+	CHECK(read_port(0, 51, 4), "port 0 read failed: %s", sim_summary());
+	CHECK(!read_port(1, 52, 1), "second read from a stuck drive succeeded");
+	ums_select(1);
+	CHECK(ums_is_dead(), "port 1 not dead after two failed requests");
+	ums_select(0);
+	CHECK(!ums_is_dead(), "port 0 dead because port 1 is");
+	CHECK(read_port(0, 53, 1), "port 0 read failed after port 1 died");
+	/* UMS_INIT on port 1 gives the drive its chance again */
+	sim_sel(1);
+	sim.stall_csw = 0;
+	ums_select(1);
+	CHECK(ums_init() == 0, "UMS_INIT on port 1 failed: %s", sim_summary());
+	CHECK(read_port(1, 54, 1), "read failed after UMS_INIT");
+}
+
+/* Without a word about ports the module is as before: port 0, root port 0,
+ * and the second socket is not touched */
+static void test_default_port_is_unchanged(void)
+{
+	mount();
+	CHECK_OK();
+	CHECK(ums_selected() == 0, "port %d selected at start", ums_selected());
+	CHECK(USBStorage_Read_Sectors(10, 3, buf), "read failed: %s", sim_summary());
+	CHECK(memcmp(buf, sims[0].data + 10 * SECTOR, 3 * SECTOR) == 0, "other data");
+	CHECK(ums_sectors() == CAP(0), "capacity");
+	CHECK(sims[1].portsc_writes == 0 && sims[1].acquires == 0 && sims[1].cbws == 0 && sims[1].owner,
+	      "the second socket was touched");
+	CHECK(ums_select(2) < 0 && ums_selected() == 0, "a port 2 was accepted");
+	sim_unplug_for(10 * 1000000ull);
+	CHECK(USBStorage_Read_Sectors(10, 1, buf), "port 0 gave up waiting for a replug: %s", sim_summary());
+	CHECK(sim.now_us >= 10 * 1000000ull, "did not wait for the replug");
+}
+
+/* loop.c's fd -> port table */
+static void test_fd_port_table(void)
+{
+	CHECK(ums_fd_port(3) == 0 && ums_fd_port(0) == 0, "default is not port 0");
+	CHECK(ums_fd_set_port(3, 1) == 0 && ums_fd_port(3) == 1, "SET_PORT 1 not kept");
+	CHECK(ums_fd_port(4) == 0 && ums_fd_port(2) == 0, "another fd moved with it");
+	CHECK(ums_fd_set_port(3, 2) < 0 && ums_fd_port(3) == 1, "port 2 accepted");
+	CHECK(ums_fd_set_port(3, 0) == 0 && ums_fd_port(3) == 0, "back to port 0 not kept");
+	CHECK(ums_fd_set_port(9, 0) == 0 && ums_fd_port(9) == 0, "port 0 for a new fd");
+	/* the table has 8 slots; fd 3 still holds one (on port 0), so 7 more fit */
+	for (int fd = 20; fd < 27; fd++)
+		CHECK(ums_fd_set_port(fd, 1) == 0, "slot %d refused", fd - 20);
+	CHECK(ums_fd_set_port(40, 1) < 0, "a ninth fd on port 1 was accepted");
+	CHECK(ums_fd_set_port(40, 0) == 0 && ums_fd_port(40) == 0, "port 0 needs no slot");
+	for (int fd = 20; fd < 27; fd++)
+		CHECK(ums_fd_port(fd) == 1, "fd %d lost its port", fd);
+	/* close: the slot is free and the fd is on port 0 again (fd numbers are reused) */
+	ums_fd_forget(23);
+	CHECK(ums_fd_port(23) == 0, "closed fd keeps its port");
+	CHECK(ums_fd_set_port(41, 1) == 0 && ums_fd_port(41) == 1, "the freed slot was not reused");
+	CHECK(ums_fd_port(22) == 1 && ums_fd_port(24) == 1, "close moved another fd");
+}
+
 /* Not tested here: a request to the SD card after the drive died. The host
  * harness has no SD card; the keepalive tests above stand for it. */
 
@@ -674,6 +898,14 @@ static const struct hc_test tests[] = {
 	{ "ladder_escalates_when_the_remount_works", test_ladder_escalates_when_the_remount_works, false },
 	{ "ladder_without_ppc_fails_in_time", test_ladder_without_ppc_fails_in_time, false },
 	{ "ladder_unfixable_fault_fails_in_time", test_ladder_unfixable_fault_fails_in_time, false },
+	{ "port1_init_acquires_once", test_port1_init_acquires_once, false },
+	{ "port1_init_without_a_drive_fails", test_port1_init_without_a_drive_fails, false },
+	{ "two_drives_alternate", test_two_drives_alternate, false },
+	{ "port1_gone_fails_after_a_bound_then_at_once", test_port1_gone_fails_after_a_bound_then_at_once, false },
+	{ "port1_replug_recovers", test_port1_replug_recovers, false },
+	{ "port1_stuck_drive_errors_at_the_deadline", test_port1_stuck_drive_errors_at_the_deadline, false },
+	{ "default_port_is_unchanged", test_default_port_is_unchanged, false },
+	{ "fd_port_table", test_fd_port_table, false },
 };
 
 static void setup(void)

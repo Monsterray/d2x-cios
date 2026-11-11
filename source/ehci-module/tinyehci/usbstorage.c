@@ -1550,10 +1550,13 @@ s_printf("\n***************************************************\nUSBStorage_Init
 #endif
 
 	// The second socket: EHCI gave it to OHCI at boot (ehci_release_ports),
-	// whatever was in it. Take it back and see what is plugged in now.
-	if(ums_cur != 0 && (ehci_readl(&ehci->regs->port_status[p]) & PORT_OWNER))
+	// whatever was in it. Take it back, and see what is plugged in now: a
+	// drive plugged in since the last call is reset and enumerated here, so
+	// this one call mounts it (port 0 needs a second call, as before).
+	if(ums_cur != 0)
 	{
-		ehci_acquire_port(p);
+		if(ehci_readl(&ehci->regs->port_status[p]) & PORT_OWNER)
+			ehci_acquire_port(p);
 		present = ehci_readl(&ehci->regs->port_status[p]) & PORT_CONNECT;
 	}
 
