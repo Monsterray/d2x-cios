@@ -113,7 +113,7 @@
 */
 
 
-#define FF_USE_LFN		3
+#define FF_USE_LFN		1	/* d2x: static buffers (1120 bytes in .bss), so no call can fail for lack of heap */
 #define FF_MAX_LFN		255
 /* The FF_USE_LFN switches the support for LFN (long file name).
 /

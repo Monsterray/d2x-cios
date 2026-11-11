@@ -44,8 +44,7 @@ OBJS	=	divmod64.o		\
 		ff.o			\
 		led.o			\
 		main.o			\
-		start.o			\
-		syscall.o
+		start.o
 
 $(TARGET).elf: $(OBJS) $(LIBS)
 	@printf ' LD\t%s\n' $@

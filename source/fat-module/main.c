@@ -427,7 +427,9 @@ s32 __FAT_Initialize(u32 *queuehandle)
 {
 	/* Heap space */
 	//static u32 heapspace[0x8000] ATTRIBUTE_ALIGN(32);
-	static u32 heapspace[0x7000] ATTRIBUTE_ALIGN(32);
+	/* 0x120 words (1152 bytes) less than before: FatFs's name buffers are static
+	   now (ffconf.h, FF_USE_LFN 1: 1120 bytes), the module's RAM stays the same. */
+	static u32 heapspace[0x6EE0] ATTRIBUTE_ALIGN(32);
 
 	void *buffer = NULL;
 	s32   ret;
