@@ -5,13 +5,29 @@
 #include "ehci_dev.h"
 #include "hostcheck.h"
 
-struct sim sim;
+sim_t sims[SIM_DRIVES];
+sim_t *sim_p = &sims[0];
 int unplug_device, handshake_mode;
 u32 usb_timeout = 1000 * 1000;
 
 #define XFER_US 125     /* one bulk transfer: about a USB 2.0 microframe */
 #define EP_IN   0x81
 #define EP_OUT  0x02
+
+/* The drive a root port has: port 0 is drive 0, the second socket drive 1 */
+static int drive_of(int port) { return port == 0 ? 0 : 1; }
+
+void sim_sel(int drive)
+{
+	sim_t *to = &sims[drive];
+
+	if (to == sim_p)
+		return;
+	to->now_us = sim_p->now_us;
+	to->limit_us = sim_p->limit_us;
+	to->hung = sim_p->hung;
+	sim_p = to;
+}
 
 static void tick(u64 us)
 {
@@ -31,6 +47,7 @@ void ehci_msleep(int ms) { tick((u64)ms * 1000); }
 #define P_CSC 0x2
 #define P_PE  0x4
 #define P_PP  0x1000
+#define P_OWNER 0x2000
 
 static void port_update(void)
 {
@@ -48,22 +65,29 @@ static void port_update(void)
 
 #define POWER_ON_CONNECT_US 150000      /* a drive shows again this long after power on */
 
-u32 sim_portsc_read(void)
+u32 sim_portsc_read(int port)
 {
+	sim_sel(drive_of(port));
 	port_update();
 	if (sim.unpowered)
 		return 0;
-	return P_PP | (sim.disconnected ? 0 : P_CCS | P_PE) | (sim.csc ? P_CSC : 0);
+	/* routed to OHCI: EHCI sees the owner bit, and no enabled port */
+	return P_PP | (sim.owner ? P_OWNER : 0) | (sim.disconnected ? 0 : P_CCS | (sim.owner ? 0 : P_PE)) |
+	       (sim.csc ? P_CSC : 0);
 }
 
 static void bus_reset(void);
 
-void sim_portsc_write(u32 v)
+void sim_portsc_write(int port, u32 v)
 {
+	sim_sel(drive_of(port));
 	port_update();
 	sim.portsc_writes++;
 	if (v & P_CSC)
 		sim.csc = false;
+	if (sim.owner && !(v & P_OWNER))
+		sim.acquires++;
+	sim.owner = (v & P_OWNER) != 0;
 	if (!sim.ppc)
 		return;                 /* PORT_POWER is read-only without PPC */
 	if (!sim.unpowered && !(v & P_PP)) {
@@ -85,53 +109,60 @@ void sim_portsc_write(u32 v)
 #define S_ASS  0x8000
 #define S_IAA  0x20
 
+/* The controller is one: its registers are drive 0's, the time is the selected drive's */
 static void hc_update(void)
 {
-	if (sim.iaa_pending && !sim.iaa_never && sim.now_us >= sim.iaa_at_us) {
-		sim.iaa_set = true;
-		sim.iaa_pending = false;
+	sim_t *h = &sims[0];
+
+	if (h->iaa_pending && !h->iaa_never && sim.now_us >= h->iaa_at_us) {
+		h->iaa_set = true;
+		h->iaa_pending = false;
 	}
 }
 
 u32 sim_hc_read(int reg)
 {
+	sim_t *h = &sims[0];
+
 	hc_update();
 	switch (reg) {
 	case SIM_HC_CMD:
-		return sim.hc_cmd;
+		return h->hc_cmd;
 	case SIM_HC_STS:
-		return (sim.hc_ass ? S_ASS : 0) | (sim.iaa_set ? S_IAA : 0);
+		return (h->hc_ass ? S_ASS : 0) | (h->iaa_set ? S_IAA : 0);
 	default:
-		return sim.async_next;
+		return h->async_next;
 	}
 }
 
 void sim_hc_write(int reg, u32 v)
 {
+	sim_t *h = &sims[0];
+
 	switch (reg) {
 	case SIM_HC_CMD:
-		if ((v & H_IAAD) && !(sim.hc_cmd & H_IAAD)) {
-			sim.doorbells++;
-			sim.iaa_pending = true;
-			sim.iaa_at_us = sim.now_us + 300;       /* the next frame */
+		if ((v & H_IAAD) && !(h->hc_cmd & H_IAAD)) {
+			h->doorbells++;
+			h->iaa_pending = true;
+			h->iaa_at_us = sim.now_us + 300;       /* the next frame */
 		}
-		if ((sim.hc_cmd & H_ASE) && !(v & H_ASE)) {
-			sim.ase_clears++;
-			if (!sim.ass_stuck)
-				sim.hc_ass = false;
+		if ((h->hc_cmd & H_ASE) && !(v & H_ASE)) {
+			h->ase_clears++;
+			if (!h->ass_stuck)
+				h->hc_ass = false;
 		}
-		if (!(sim.hc_cmd & H_ASE) && (v & H_ASE)) {
-			sim.ase_sets++;
-			sim.hc_ass = true;
+		if (!(h->hc_cmd & H_ASE) && (v & H_ASE)) {
+			h->ase_sets++;
+			h->hc_ass = true;
 		}
-		sim.hc_cmd = v;
+		h->hc_cmd = v;
 		break;
 	case SIM_HC_STS:
 		if (v & S_IAA)
-			sim.iaa_set = false;
+			h->iaa_set = false;
 		break;
 	default:
-		sim.async_next = v;
+		h->async_next = v;
 	}
 }
 
@@ -147,7 +178,7 @@ void sim_unplug_for(u64 us)
 static bool port_gone(void)
 {
 	port_update();
-	if (sim.disconnected) {
+	if (sim.disconnected || sim.owner) {
 		sim.port_xfers_gone++;
 		unplug_device = 1;
 		return true;
@@ -193,12 +224,12 @@ static int enumerate(int port)
 		return sim_enum_hook(port);
 	return 0;
 }
-int ehci_reset_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
-int ehci_reset_port2(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
-void ehci_adquire_port(int port) { (void)port; tick(15000); }
-int ehci_reset_device(struct ehci_device *dev) { (void)dev; if (port_gone()) return -ENODEV; sim.dev_resets++; tick(60000); port_reset(); return 0; }
+int ehci_reset_port(int port) { sim_sel(drive_of(port)); if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
+int ehci_reset_port2(int port) { sim_sel(drive_of(port)); if (port_gone()) return -ENODEV; sim.port_resets++; tick(60000); port_reset(); return enumerate(port); }
+void ehci_adquire_port(int port) { sim_sel(drive_of(port)); tick(15000); }
+int ehci_reset_device(struct ehci_device *dev) { sim_sel(drive_of(dev->port)); if (port_gone()) return -ENODEV; sim.dev_resets++; tick(60000); port_reset(); return 0; }
 /* ehci_reset_usb_port(): the bus reset of ehci.c, about 110 ms */
-int ehci_reset_usb_port(int port) { (void)port; if (port_gone()) return -ENODEV; sim.port_resets++; tick(110000); port_reset(); return 0; }
+int ehci_reset_usb_port(int port) { sim_sel(drive_of(port)); if (port_gone()) return -ENODEV; sim.port_resets++; tick(110000); port_reset(); return 0; }
 
 void *USB_Alloc(int size) { return calloc(1, size + 32); }
 void USB_Free(void *ptr) { free(ptr); }
@@ -228,6 +259,7 @@ static usb_configurationdesc sim_conf;
 
 s32 USB_GetDescriptors(struct ehci_device *fd, usb_devdesc *udd)
 {
+	sim_sel(drive_of(fd->port));
 	sim.dev = fd;
 	memset(udd, 0, sizeof(*udd));
 	udd->bLength = USB_DT_DEVICE_SIZE;
@@ -266,6 +298,7 @@ void USB_FreeDescriptors(usb_devdesc *udd)
 s32 ehci_control_message(struct ehci_device *dev, u8 type, u8 req, u16 value, u16 index,
 			 u16 len, void *buf)
 {
+	sim_sel(drive_of(dev->port));
 	sim.dev = dev;
 	if (port_gone())
 		return -ENODEV;
@@ -510,8 +543,10 @@ static bool stuck_blocks(u8 ep, u16 len, const u8 *p)
 s32 ehci_bulk_message(struct ehci_device *dev, u8 ep, u16 len, void *data)
 {
 	bool in = ep & 0x80;
-	u8 *drive_toggle = in ? &sim.toggle_in : &sim.toggle_out;
+	u8 *drive_toggle;
 	u8 *p = data;
+	sim_sel(drive_of(dev->port));
+	drive_toggle = in ? &sim.toggle_in : &sim.toggle_out;
 	sim.dev = dev;
 	if (port_gone())
 		return -ENODEV;
@@ -571,9 +606,14 @@ s32 ehci_bulk_message(struct ehci_device *dev, u8 ep, u16 len, void *data)
 
 void sim_reset(void)
 {
-	memset(&sim, 0, sizeof(sim));
-	for (size_t i = 0; i < sizeof(sim.data); i++)
-		sim.data[i] = (u8)(i * 7 + 3);
+	sim_p = &sims[0];
+	for (int d = 0; d < SIM_DRIVES; d++) {
+		memset(&sims[d], 0, sizeof(sims[d]));
+		for (size_t i = 0; i < sizeof(sims[d].data); i++)
+			sims[d].data[i] = (u8)(i * 7 + 3 + d * 0x55);     /* drives differ */
+	}
+	sims[1].disconnected = true;    /* nothing in the second socket, and EHCI released */
+	sims[1].owner = true;           /* the port to OHCI at boot (ehci_release_ports) */
 	sim.hc_cmd = H_ASE | 1;         /* RUN, async schedule on */
 	sim.hc_ass = true;
 	unplug_device = 0;

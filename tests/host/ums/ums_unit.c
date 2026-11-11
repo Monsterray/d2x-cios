@@ -21,11 +21,11 @@ static struct ehci_regs sim_regs;
 static struct ehci_qh_head sim_async = { .qh_dma = 0x1000 };
 static struct ehci_hcd sim_hcd = { .regs = &sim_regs, .num_port = 1, .async = &sim_async };
 struct ehci_hcd *ehci = &sim_hcd;
-/* PORTSC (port 0), USBCMD and USBSTS are simulated: sim.c keeps them */
+/* PORTSC (ports 0 and 1), USBCMD and USBSTS are simulated: sim.c keeps them */
 static u32 sim_rd(volatile u32 *a)
 {
-	if (a == &sim_regs.port_status[0])
-		return sim_portsc_read();
+	if (a >= &sim_regs.port_status[0] && a < &sim_regs.port_status[4])
+		return sim_portsc_read(a - &sim_regs.port_status[0]);
 	if (a == &sim_regs.command)
 		return sim_hc_read(SIM_HC_CMD);
 	if (a == &sim_regs.status)
@@ -34,8 +34,8 @@ static u32 sim_rd(volatile u32 *a)
 }
 static void sim_wr(u32 v, volatile u32 *a)
 {
-	if (a == &sim_regs.port_status[0])
-		sim_portsc_write(v);
+	if (a >= &sim_regs.port_status[0] && a < &sim_regs.port_status[4])
+		sim_portsc_write(a - &sim_regs.port_status[0], v);
 	else if (a == &sim_regs.command)
 		sim_hc_write(SIM_HC_CMD, v);
 	else if (a == &sim_regs.status)
@@ -90,6 +90,7 @@ void USB_FreeDescriptors(usb_devdesc *udd);
 #include "ehci_enum.h"
 #include "usbstorage.h"
 #include "usbstorage.c"
+#include "fdport.h"
 
 static struct ehci_device sim_dev = { .desc = { .idVendor = 0x1234, .idProduct = 0x5678 }, .id = 1 };
 
@@ -115,25 +116,39 @@ int ums_enum_port(void)
 	return ehci_init_port(0);
 }
 void ums_set_dev_id(int id) { ehci->devices[0].id = id; }
+void ums_set_dev_id_port(int port, int id) { ehci->devices[port].id = id; }
+void ums_select(int port) { USBStorage_Select(port); }
+int ums_selected(void) { return ums_cur; }
+int ums_fd_port(int fd) { return fdport_get(fd); }
+int ums_fd_set_port(int fd, unsigned port) { return fdport_set(fd, port, UMS_PORTS); }
+void ums_fd_forget(int fd) { fdport_forget(fd); }
 int ums_mounted(void) { return __mounted == 1; }
 
 /* Forget the device without talking to it, for the next test. */
 void ums_unplug(void)
 {
-	if (__usbfd.buffer)
-		USB_Free(__usbfd.buffer);
-	memset(&__usbfd, 0, sizeof(__usbfd));
-	memset(&_old_udd, 0, sizeof(_old_udd));
-	__lun = 16;
-	__mounted = 0;
-	ums_init_done = 0;
-	unplug_device = 0;
+	/* both logical ports, then back on port 0 */
+	for (int p = UMS_PORTS - 1; p >= 0; p--) {
+		USBStorage_Select(p);
+		if (__usbfd.buffer)
+			USB_Free(__usbfd.buffer);
+		memset(&__usbfd, 0, sizeof(__usbfd));
+		memset(&_old_udd, 0, sizeof(_old_udd));
+		__lun = 16;
+		__mounted = 0;
+		ums_init_done = 0;
+		unplug_device = 0;
+		ums_dead = 0;
+		ums_fail_n = 0;
+		ums_gone_failed = 0;
+		ehci->devices[p].id = 0;
+		ehci->devices[p].toggles = 0;
+	}
+	for (int i = 0; i < PORT_FDS; i++)
+		port_fd[i] = 0;
 	handshake_mode = 0;
 	usb_timeout = 1000 * 1000;
 	sim_dev.toggles = 0;
-	ums_dead = 0;
-	ums_fail_n = 0;
-	ehci->devices[0].id = 0;
 	ehci_enum_disarm();
 	sim_enum_hook = enum_hook;
 }

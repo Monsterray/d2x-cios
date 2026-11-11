@@ -32,6 +32,8 @@
 #define SIM_SECTOR_SIZE 512
 #define SIM_SECTORS     4096
 #define SIM_MAXPACKET   512
+#define SIM_DRIVES      2       /* drive 0 on root port 0, drive 1 on SIM_PORT1 */
+#define SIM_PORT1       1
 
 struct ehci_device;
 
@@ -66,6 +68,8 @@ struct sim {
 
 	/* the port (PORTSC): the drive can be unplugged and come back */
 	bool disconnected;      /* CCS = 0 */
+	bool owner;             /* PORT_OWNER: the port is routed to the OHCI companion */
+	u32 acquires;           /* PORT_OWNER written 1 -> 0: the port taken back */
 	bool csc;               /* PORTSC.CSC, write-1-to-clear */
 	u64 replug_at_us;       /* when it comes back (0: never by itself) */
 	u32 portsc_writes, port_xfers_gone;
@@ -103,7 +107,19 @@ struct sim {
 	bool hung;
 };
 
-extern struct sim sim;
+/*
+ * Two drives share one controller and one clock. `sim` is the drive that is
+ * selected: the simulation selects by itself the drive a call is meant for
+ * (by the device's or the register's port), and a test selects with
+ * sim_sel() before it sets up or looks at the other one. Selecting copies the
+ * clock (now_us, limit_us, hung) over, so the selected drive always has the
+ * time. The controller's registers (hc_*, doorbells) live in drive 0.
+ */
+typedef struct sim sim_t;
+extern sim_t sims[SIM_DRIVES];
+extern sim_t *sim_p;
+#define sim (*sim_p)
+void sim_sel(int drive);
 
 /* sim.c calls this from ehci_reset_port() when sim.silent or sim.no_setaddr:
    the enumeration that ehci_reset_port() does after the bus reset (ums_unit.c) */
@@ -112,8 +128,8 @@ extern int (*sim_enum_hook)(int port);
 void sim_reset(void);           /* a fresh drive, no faults, time 0 */
 const char *sim_summary(void);
 void sim_unplug_for(u64 us);    /* unplug now; it is back (CSC set) after us */
-u32 sim_portsc_read(void);
-void sim_portsc_write(u32 v);
+u32 sim_portsc_read(int port);
+void sim_portsc_write(int port, u32 v);
 enum { SIM_HC_CMD, SIM_HC_STS, SIM_HC_ASYNC_NEXT };
 u32 sim_hc_read(int reg);
 void sim_hc_write(int reg, u32 v);
@@ -124,6 +140,12 @@ void ums_unplug(void);          /* forget it, without talking to it */
 u32 ums_sector_size(void);
 int ums_enum_port(void);        /* ehci_init_port(0), as ehci_reset_port() ends */
 void ums_set_dev_id(int id);    /* the id of the device USBStorage_Init() sees on port 0 */
+void ums_set_dev_id_port(int port, int id);     /* the same on root port 0 or 1 */
+void ums_select(int port);      /* USBStorage_Select(): the logical port the next calls go to */
+int ums_selected(void);
+int ums_fd_port(int fd);        /* loop.c's fd -> port table */
+int ums_fd_set_port(int fd, unsigned port);
+void ums_fd_forget(int fd);
 int ums_mounted(void);
 extern const unsigned ums_request_ms;  /* the driver's USBSTORAGE_REQUEST_MS */
 s32 ums_reset(void);            /* USBStorage_Reset(): Bulk-Only reset recovery */

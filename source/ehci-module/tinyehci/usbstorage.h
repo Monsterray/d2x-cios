@@ -68,6 +68,12 @@ s32 USBStorage_Try_Device(struct ehci_device *fd);
 void USBStorage_Umount(void);
 int USBStorage_Keepalive_Ready(void);
 
+/* Logical USB ports (docs/usb-ports.md): each has its own drive state.
+   USBStorage_Select() makes one the target of every USBStorage_* call that
+   follows, until the next Select. 0 when port is in range, else -1. */
+#define UMS_PORTS 2
+s32 USBStorage_Select(u32 port);
+
 #ifdef __cplusplus
    }
 #endif /* __cplusplus */

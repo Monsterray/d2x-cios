@@ -24,6 +24,8 @@
 #define USB_IOCTL_UMS_SET_VERBOSE		(UMS_BASE+0x6)
 #define USB_IOCTL_UMS_UMOUNT			(UMS_BASE+0x10)
 #define USB_IOCTL_UMS_WATCHDOG			(UMS_BASE+0x80)
+/* The USB port (0 or 1) of the calling fd: one u32 in. Without it, port 0. */
+#define USB_IOCTL_UMS_SET_PORT			(UMS_BASE+0x83)
 /* EHCI_DEBUG_LOG builds only */
 #define USB_IOCTL_UMS_DEBUG_LOG			(UMS_BASE+0x90)
 #define USB_IOCTL_UMS_SET_TIMEOUT		(UMS_BASE+0x91)

@@ -400,7 +400,11 @@ static void test_init_silent_drive_with_id_fails_in_time(void)
 	sim.silent = true;
 	ums_set_dev_id(1);
 	CHECK(ums_init() < 0, "UMS_INIT succeeded on a silent drive: %s", sim_summary());
-	CHECK(sim.now_us < TEN_S, "UMS_INIT took %s", sim_summary());
+	/* The 8 s budget, and the port reset that ends a failed UMS_INIT (which
+	   runs on the Wii too: the simulated controller has one port, the Wii's
+	   module loops over four and ends the same way). It used to end after the
+	   budget alone because the loop over the ports stopped at one. */
+	CHECK(sim.now_us < TEN_S + 4000000ull, "UMS_INIT took %s", sim_summary());
 	CHECK(!ums_mounted(), "mounted a silent drive");
 }
 

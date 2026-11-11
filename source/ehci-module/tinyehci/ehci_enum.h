@@ -44,6 +44,7 @@ int ehci_enum_expired(void)
 }
 
 void ehci_adquire_port(int port);
+#include "ehci_acquire.h"
 s32 USB_ClearHalt(struct ehci_device *fd, u8 endpoint);
 
 /* 'e' records why enumeration gave up: a = phase, b = result, x 'e' */
@@ -111,7 +112,7 @@ int ehci_init_port(int port)
 	if (retval < 0)
 		EHCI_ENUM_GIVE_UP(4, retval);
 
-	int cnt=2;
+	int cnt=port+2;	/* a device of its own on each port: the same address on two ports would answer together */
 	tries=0;
 	do{
 		ehci_msleep(100);

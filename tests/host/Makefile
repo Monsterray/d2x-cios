@@ -18,6 +18,7 @@ WARN    := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
            -Wno-unused-label -Wno-misleading-indentation
 SAN     ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TINYEHCI := ../../source/ehci-module/tinyehci
+EHCIMOD  := ../../source/ehci-module
 USBS     := ../../source/usb-module
 CIOSLIB  := ../../source/cios-lib
 
@@ -70,7 +71,7 @@ DBG_DEPS  := dbg/swi_host.c dbg/dbg_host.h $(MLOADMOD)/dbg_core.c $(CIOSLIB)/d2x
 
 ums/test_ums_dbg: ums/test_ums_dbg.c ums/ums_unit.c $(SIM_DEPS) $(DBG_DEPS) $(TINYEHCI)/usb.c \
 		$(TINYEHCI)/usb.h $(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
-	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(TINYEHCI) -I$(MLOADMOD) -I$(CIOSLIB) -o $@ \
+	$(CC) $(ALL_CFLAGS) $(DBG_FLAGS) -I. -Iums -Idbg -I$(TINYEHCI) -I$(EHCIMOD) -I$(MLOADMOD) -I$(CIOSLIB) -o $@ \
 		ums/test_ums_dbg.c ums/sim.c ums/ums_unit.c dbg/swi_host.c
 
 usbs/test_usbs_dbg: usbs/test_usbs_dbg.c usbs/glue_sim.c usbs/usbs_unit.c usbs/stub/*.h $(SIM_DEPS) \
@@ -85,8 +86,8 @@ usbs/test_usbs_dbg: usbs/test_usbs_dbg.c usbs/glue_sim.c usbs/usbs_unit.c usbs/s
 	$(CC) $(ALL_CFLAGS) -o $@ usbs/dbg_test.o usbs/dbg_sim.o usbs/dbg_glue.o usbs/dbg_swi.o usbs/dbg_unit.o
 
 ums/test_ums: ums/test_ums.c ums/ums_unit.c $(SIM_DEPS) $(TINYEHCI)/usb.c $(TINYEHCI)/usb.h \
-		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h
-	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -o $@ ums/test_ums.c ums/sim.c ums/ums_unit.c
+		$(TINYEHCI)/usbstorage.c $(TINYEHCI)/usbstorage.h $(EHCIMOD)/fdport.h $(TINYEHCI)/ehci_acquire.h $(TINYEHCI)/ehci_enum.h
+	$(CC) $(ALL_CFLAGS) -I. -Iums -I$(TINYEHCI) -I$(EHCIMOD) -o $@ ums/test_ums.c ums/sim.c ums/ums_unit.c
 
 # The USBS code is built with cios-lib's types (s32 is long there), apart
 # from the simulation; usbs/stub stands in for cios-lib's ipc.h, mem.h and

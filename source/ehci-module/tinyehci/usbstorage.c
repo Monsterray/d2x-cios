@@ -233,6 +233,30 @@ static u8 __mounted = 0;
 static u16 __vid = 0;
 static u16 __pid = 0;
 
+/*
+ * Two drives (docs/usb-ports.md): logical port 0 and 1, each a drive on an EHCI
+ * root port of its own. The statics above and below are the state of the drive
+ * that is selected, the live one; USBStorage_Select() parks it in ums_park[] and
+ * loads the other's. The module serves one request at a time, so nothing else
+ * touches them in between. Logical port 0 is what a loader that never sends
+ * SET_PORT gets, on root port 0 as before.
+ *
+ * The EHCI root port of each logical port. Which root port is the second
+ * socket is not verified on a Wii: d2x v9 used root port 1 (taken back from
+ * OHCI on demand, see ehci_acquire_port); this tree otherwise keeps ports 0
+ * and 3 (ehci_release_ports). One constant to change.
+ */
+static const u8 ums_root_port[UMS_PORTS] = { 0, 1 };
+static u8 ums_cur;			/* the logical port whose state is live */
+#define UMS_ROOT()	ums_root_port[ums_cur]
+
+/* How long a request to the second drive waits for it to be plugged in again,
+   in ms. Port 0 waits without limit (a game survives a replug, rule 1 of
+   __USBStorage_Sectors); the one thread of the module must not stay blocked
+   by a gone drive on port 1, so it gives up after this and fails at once
+   until the drive is back. */
+#define UMS_GONE_MS		3000
+
 //0x1377E000
 
 //#define MEM_PRINT 1
@@ -1488,13 +1512,21 @@ static s32 __USBStorage_Init(void);
  * mounted, so sector requests fail at once with no USB traffic, until the
  * next UMS_INIT or a replug (the loader asks again; nothing retries on a timer).
  */
+static int ums_port_present(void);
+
 s32 USBStorage_Init(void)
 {
 	s32 ret;
 
 	debug_printf("usbstorage init %d\n", ums_init_done);
 	if(ums_init_done)
-		return ums_init_dead();
+	{
+		// The second drive, gone (a request gave up waiting for it): this call
+		// starts afresh, and takes the port back from OHCI if it went there.
+		if(ums_cur == 0 || !unplug_device || ums_port_present())
+			return ums_init_dead();
+		USBStorage_Umount();
+	}
 
 	ehci_enum_arm(EHCI_ENUM_INIT_MS);
 	ret = __USBStorage_Init();
@@ -1504,69 +1536,60 @@ s32 USBStorage_Init(void)
 
 static s32 __USBStorage_Init(void)
 {
-	int i;
+	int p = UMS_ROOT();
+	struct ehci_device *dev = &ehci->devices[p];
+	int present = dev->id != 0;
+	u32 status;
 
 	try_status=-1;
+	dev->port = p;
 
 #ifdef MEM_PRINT
 s_printf("\n***************************************************\nUSBStorage_Init()\n***************************************************\n\n");
 
 #endif
 
-	for(i = 0;i<ehci->num_port; i++){
-		struct ehci_device *dev = &ehci->devices[i];
-				
-		dev->port=i;
+	// The second socket: EHCI gave it to OHCI at boot (ehci_release_ports),
+	// whatever was in it. Take it back and see what is plugged in now.
+	if(ums_cur != 0 && (ehci_readl(&ehci->regs->port_status[p]) & PORT_OWNER))
+	{
+		ehci_acquire_port(p);
+		present = ehci_readl(&ehci->regs->port_status[p]) & PORT_CONNECT;
+	}
 
-		if(dev->id != 0){
-					
-							
-			handshake_mode=1;
-			if(ehci_reset_port(0)>=0)
-			{
-
-				if(USBStorage_Try_Device(dev)==0) 
-				{
-					first_access=true;handshake_mode=0;ums_init_done = 1;unplug_device=0;
-					#ifdef MEM_PRINT
-					s_printf("USBStorage_Init() Ok\n");
-									
-					#endif
-
-					return 0;
-				}
-			}
-
-		}
-		else
+	if(present)
+	{
+		handshake_mode=1;
+		if(ehci_reset_port(p)>=0 && USBStorage_Try_Device(dev)==0)
 		{
-			u32 status;
-			handshake_mode=1;
-			status = ehci_readl(&ehci->regs->port_status[0]);
-
+			first_access=true;handshake_mode=0;ums_init_done = 1;unplug_device=0;
 			#ifdef MEM_PRINT
-			s_printf("USBStorage_Init() status %x\n",status);
-					
+			s_printf("USBStorage_Init() Ok\n");
+
 			#endif
-					
-			if(status & 1)
-			{
-				if(ehci_reset_port2(0)<0)
-				{
-					ehci_msleep(100);
-					ehci_reset_port(0);
-				}
-				return -101;
-			}
-			else 
-			{
-				return -100;
-			}
+
+			return 0;
 		}
 	}
 
-	
-	return try_status;
+	handshake_mode=1;
+	status = ehci_readl(&ehci->regs->port_status[p]);
+
+	#ifdef MEM_PRINT
+	s_printf("USBStorage_Init() status %x\n",status);
+
+	#endif
+
+	if(status & 1)
+	{
+		if(ehci_reset_port2(p)<0)
+		{
+			ehci_msleep(100);
+			ehci_reset_port(p);
+		}
+		return -101;
+	}
+	return -100;
 }
 
 // FIX d2x v4beta1
@@ -1674,14 +1697,14 @@ int unplug_procedure(void)
 			// rung 3, unless a port reset did not help this request already
 			if(!(ums_port_resets_req > 0 && ums_power_ok())) {
 				ums_port_resets_req++;
-				if(ehci_reset_port2(/*__usbfd.usb_fd->port*/0)>=0 && ehci_reset_port(0)>=0)
+				if(ehci_reset_port2(UMS_ROOT())>=0 && ehci_reset_port(UMS_ROOT())>=0)
 					retval = ums_remount(ums_rung3_budget_ms());
 				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '3', retval, 0);
 			}
 			// rung 4
 			if(retval != 0 && ums_power_ok()) {
 				ums_power_tried = 1;
-				if(ehci_port_power_cycle(0)>=0 && ehci_reset_port(0)>=0)
+				if(ehci_port_power_cycle(UMS_ROOT())>=0 && ehci_reset_port(UMS_ROOT())>=0)
 					retval = ums_remount(0);
 				D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, '4', retval, 0);
 			}
@@ -1712,10 +1735,48 @@ int unplug_procedure(void)
 static int ums_dead;
 static int ums_fail_n;		/* failed remounts with the drive present */
 static u32 ums_fail_t0;		/* timer at the start of the request of the first */
+static int ums_gone_failed;	/* a request to a drive on port 1 gave up waiting for it */
+
+/* The parked state of the drive that is not selected (see ums_root_port). */
+struct ums_ctx {
+	usbstorage_handle usbfd;
+	usb_devdesc old_udd;
+	u32 fail_t0;
+	int init_done, dead, fail_n, unplug, gone_failed;
+	u16 vid, pid;
+	u8 lun, mounted;
+};
+static struct ums_ctx ums_park[UMS_PORTS];
+
+s32 USBStorage_Select(u32 port)
+{
+	struct ums_ctx *c;
+
+	if(port >= UMS_PORTS)
+		return -1;
+	if(port == ums_cur)
+		return 0;
+
+	c = &ums_park[ums_cur];
+	c->usbfd = __usbfd; c->old_udd = _old_udd; c->fail_t0 = ums_fail_t0;
+	c->init_done = ums_init_done; c->dead = ums_dead; c->fail_n = ums_fail_n;
+	c->unplug = unplug_device; c->gone_failed = ums_gone_failed;
+	c->vid = __vid; c->pid = __pid; c->lun = __lun; c->mounted = __mounted;
+
+	ums_cur = port;
+	c = &ums_park[port];
+	if(c->lun == 0 && c->usbfd.usb_fd == NULL)	// never used: no drive, "no LUN"
+		c->lun = 16;
+	__usbfd = c->usbfd; _old_udd = c->old_udd; ums_fail_t0 = c->fail_t0;
+	ums_init_done = c->init_done; ums_dead = c->dead; ums_fail_n = c->fail_n;
+	unplug_device = c->unplug; ums_gone_failed = c->gone_failed;
+	__vid = c->vid; __pid = c->pid; __lun = c->lun; __mounted = c->mounted;
+	return 0;
+}
 
 static u32 ums_portsc(void)
 {
-	return ehci_readl(&ehci->regs->port_status[0]);
+	return ehci_readl(&ehci->regs->port_status[UMS_ROOT()]);
 }
 
 /* A drive on the port, owned by EHCI. Reads PORTSC only; CSC is
@@ -1737,7 +1798,7 @@ static void ums_dead_enter(void)
 	u32 s = ums_portsc();
 	/* Forget an old CSC so that a later one means a replug: clear it the
 	   way Linux does (write 1 to CSC, the other change bits as 0). */
-	ehci_writel((s & ~PORT_RWC_BITS) | PORT_CSC, &ehci->regs->port_status[0]);
+	ehci_writel((s & ~PORT_RWC_BITS) | PORT_CSC, &ehci->regs->port_status[UMS_ROOT()]);
 	ums_dead = 1;
 	D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_RESET, 'd', ums_fail_n, 0);
 }
@@ -1806,6 +1867,7 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 	s32 retval;
 	int tries=0;
 	int gone=0;     // unplug_procedure() found no drive during this request
+	u32 gone_t0=0;
 
 	if(__mounted != 1)
 		return false;
@@ -1828,11 +1890,24 @@ static s32 __USBStorage_Sectors(u8 write, u32 sector, u32 numSectors, void *buff
 		{
 			int replugged;
 			if(!ums_port_present()) {
+				if(ums_cur != 0) {      // port 1: the wait has a limit, and
+					if(!gone)       // once it ran out, requests fail at
+						gone_t0 = get_timer();   // once until it is back
+					if(ums_gone_failed ||
+					   (s32)(get_timer() - gone_t0) >= UMS_GONE_MS * UMS_TICKS_PER_MS) {
+						ums_gone_failed = 1;
+						UMS_LOG('E', 0, tries, -3);
+						D2XDBG_EV(D2XDBG_M_EHCI, D2XDBG_E_END, 0, -3, tries);
+						ums_deadline_stop();
+						return false;
+					}
+				}
 				gone = 1;               // rule 1: no drive, keep waiting
 				ums_fail_n = 0;
 				ehci_msleep(100);
 				continue;
 			}
+			ums_gone_failed = 0;
 			if(gone) {
 				// It was really gone and is back: this request starts afresh
 				gone = 0;

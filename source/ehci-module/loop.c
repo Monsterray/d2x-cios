@@ -35,6 +35,7 @@
 #include "stealth.h"
 #include "syscalls.h"
 #include "usbstorage.h"
+#include "fdport.h"
 #include "utils.h"
 #include "wbfs.h"
 
@@ -49,7 +50,6 @@ static u32 timerId;
 static u32 discovered = 0;
 static u32 ums_mode   = 0;
 static u32 watchdog   = 1;
-
 
 char *__EHCI_ParseHex(char *base, s32 *val)
 {
@@ -87,6 +87,9 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 
 	/* Invalidate cache */
 	InvalidateVector(vector, inlen, iolen);
+
+	/* The drive of this fd's port */
+	USBStorage_Select(fdport_get(fd));
 
 	/* Parse IOCTLV command */
 	switch (cmd) {
@@ -218,6 +221,13 @@ s32 __EHCI_Ioctlv(s32 fd, u32 cmd, ioctlv *vector, u32 inlen, u32 iolen, s32 *ac
 		break;
 	}
 
+	case USB_IOCTL_UMS_SET_PORT: {
+		/* From now on this fd uses the drive of that port */
+		ret = (inlen >= 1) ? fdport_set(fd, *(u32 *)vector[0].data, UMS_PORTS) : -1;
+
+		break;
+	}
+
 	case USB_IOCTL_UMS_WATCHDOG: {
 		u32 value = *(u32 *)vector[0].data;
 
@@ -310,37 +320,59 @@ s32 __EHCI_OpenDevice(char *devname, s32 fd)
 	return ehci_open_device(vid, pid, fd);
 }
 
+/* One keepalive read from the drive of a port. 0: no drive mounted there, 1: there is
+   (the timer must run), -1: no memory. */
+static int __EHCI_Keepalive(u32 port)
+{
+	void *buffer;
+	u32   nbSectors, sectorSz;
+
+	USBStorage_Select(port);
+
+	/* Get device info */
+	nbSectors = USBStorage_Get_Capacity(&sectorSz);
+	if (!nbSectors)
+		return 0;
+
+	/* Not while the drive is dead (retried slowly instead) or unplugged
+	   (the wait for a replug would hold up this thread and the SD card
+	   with it) */
+	if (USBStorage_Keepalive_Ready()) {
+		/* Allocate buffer */
+		buffer = Mem_Alloc(sectorSz);
+		if (!buffer)
+			return -1;
+
+		/* Read random sector */
+		USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
+
+		/* Free buffer */
+		Mem_Free(buffer);
+	}
+
+	return 1;
+}
+
 void __EHCI_Watchdog(void)
 {
-	void *buffer = NULL;
-	u32   nbSectors, sectorSz;
+	u32 port;
+	int ret, active = 0;
 
 	/* UMS mode */
 	if (ums_mode) {
-		/* Get device info */
-		nbSectors = USBStorage_Get_Capacity(&sectorSz);
+		/* Every mounted drive, so that a disk that parks its heads on
+		   the second port stays awake too */
+		for (port = 0; port < UMS_PORTS; port++) {
+			ret = __EHCI_Keepalive(port);
+			if (ret < 0)
+				return;
 
-		/* Device available */
-		if (nbSectors) {
-			/* Not while the drive is dead (retried slowly instead) or
-			   unplugged (the wait for a replug would hold up this
-			   thread and the SD card with it) */
-			if (USBStorage_Keepalive_Ready()) {
-				/* Allocate buffer */
-				buffer = Mem_Alloc(sectorSz);
-				if (!buffer)
-					return;
-
-				/* Read random sector */
-				USBStorage_Read_Sectors(rand() % nbSectors, 1, buffer);
-
-				/* Free buffer */
-				Mem_Free(buffer);
-			}
-
-			/* Restart watchdog timer */
-			os_restart_timer(timerId, WATCHDOG_TIMER, 0);
+			active |= ret;
 		}
+
+		/* Restart watchdog timer */
+		if (active)
+			os_restart_timer(timerId, WATCHDOG_TIMER, 0);
 	}
 }
 
@@ -462,6 +494,8 @@ s32 EHCI_Loop(void)
 				ehci_close_device(ehci_fd_to_dev(message->fd));
 			else
 				ums_mode = 0;
+
+			fdport_forget(message->fd);
 
 			/* Success */
 			ret = 0;
