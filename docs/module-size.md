@@ -71,7 +71,9 @@ Against the entry above: +896 bytes release, +1008 `+dbg`.
 | Build | `exe` used (`.init` + `.text`) | Free of 12288 | `ram` end (`.bss`) | Free of 0x9000 |
 | --- | --- | --- | --- | --- |
 | Release, before (`develop`) | 5456 | 2736 of 8192 | about 0x136d9184 | about 7800 |
-| Release | 8800 | 3488 | 0x136db244 | 3516 |
-| `+dbg` | 11516 | 772 | 0x136db6d4 | 2348 |
+| Release | 9344 | 2944 | 0x136db284 | 3452 |
+| `+dbg` | 12056 | 232 | 0x136db6f4 | 2316 |
 
-The loader adds 3344 bytes of code to the release build, 4 KB of buffers to `.bss` (2 KB read buffer, 1 KB module head, the report and the list entries) and 44 bytes of strings.
+The `+dbg` build fits, with 232 bytes to spare. If it must grow, the smallest region change is `exe` 0x3000 to 0x3400 and `ram` at 0x136d3400, length 0x8c00 (the IRQ9 vector stays at 0x136d0010). Each base needs a boot test before a release (`docs/mload.md`).
+
+The loader (with the flag check, the ioctls and the one-shot timer steps) adds about 3900 bytes of code to the release build, 4 KB of buffers to `.bss` (2 KB read buffer, 1 KB module head, the report and the list entries) and 44 bytes of strings.
