@@ -47,6 +47,7 @@ OBJS	=	debug.o		\
 		gpio.o		\
 		main.o		\
 		patches.o	\
+		sdload.o	\
 		start.o		\
 		swi.o		\
 		swi_asm.o	\

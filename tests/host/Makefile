@@ -33,7 +33,8 @@ RUN := $(shell command -v timeout >/dev/null 2>&1 && echo timeout 300)
 all: test
 
 test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_diskio sdio/test_sdio dbg/test_dbg \
-		ums/test_ums_dbg usbs/test_usbs_dbg sdio/test_sdio_dbg  fat/test_fat_dbg
+		ums/test_ums_dbg usbs/test_usbs_dbg sdio/test_sdio_dbg  fat/test_fat_dbg mloadsd/test_sdload
+	$(RUN) ./mloadsd/test_sdload
 	$(RUN) ./ums/test_ums
 	$(RUN) ./usbs/test_usbs
 	$(RUN) ./usbs/test_usbs_async
@@ -50,6 +51,15 @@ test: ums/test_ums usbs/test_usbs usbs/test_usbs_async fat/test_fat fat/test_dis
 MLOADMOD := ../../source/mload-module
 dbg/test_dbg: dbg/test_dbg.c hostcheck.h $(MLOADMOD)/dbg_core.c $(CIOSLIB)/d2xdbg.h
 	$(CC) $(ALL_CFLAGS) -I. -I$(CIOSLIB) -I$(MLOADMOD) -o $@ dbg/test_dbg.c
+
+# MLOAD's SD module loader (mload-module/sdload.c): the list parser, the CRC,
+# the ELF validator and the state machine, on a fake of the IOS calls and with
+# the module area as an array. mloadsd/stub/types.h gives cios-lib's headers
+# their sizes with the host's bool; the module's own .c is included by the test.
+mloadsd/test_sdload: mloadsd/test_sdload.c hostcheck.h mloadsd/stub/types.h $(MLOADMOD)/sdload.c \
+		$(MLOADMOD)/sdload.h
+	$(CC) $(ALL_CFLAGS) -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -I. -Imloadsd/stub \
+		-I$(MLOADMOD) -I$(CIOSLIB) -o $@ mloadsd/test_sdload.c
 
 # Modules built as the +dbg variant (-DD2X_DEBUG): the debug area runs on the
 # PC (dbg/swi_host.c), with each test's own types (D2XDBG_HAVE_TYPES).
@@ -138,4 +148,4 @@ fat/test_fat_dbg: fat/test_fat_dbg.c fat/ff_unit.c fat/ramdisk.c fat/ramdisk.h f
 clean:
 	rm -f ums/test_ums ums/test_ums.exe usbs/test_usbs usbs/test_usbs.exe usbs/*.o \
 		fat/test_fat fat/test_diskio fat/*.o sdio/test_sdio dbg/test_dbg ums/test_ums_dbg \
-		usbs/test_usbs_dbg usbs/test_usbs_async sdio/test_sdio_dbg fat/test_fat_dbg
+		usbs/test_usbs_dbg usbs/test_usbs_async sdio/test_sdio_dbg fat/test_fat_dbg mloadsd/test_sdload
